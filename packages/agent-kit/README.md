@@ -35,6 +35,8 @@ Deny rules always beat allow rules, in any settings file. `settings.local.json` 
 
 These rules are the first layer, not a security boundary: Claude Code's docs say so, and the [live test](../../docs/research/R4-guardrails-tested.md) confirmed it.
 
+**`templates/.claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, or the repo's `packages/foreman`). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
+
 **`templates/.claude/hooks/guard.ts`** is the PreToolUse guard, wired in by the settings file. It needs Bun.
 - **It parses each command**, so it catches what text rules miss:
   - `git -C . push origin main`, a bare `git push` while on main

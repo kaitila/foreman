@@ -23,6 +23,7 @@ test("the expected templates exist", () => {
   for (const f of [
     ".claude/settings.json",
     ".claude/hooks/guard.ts",
+    ".claude/hooks/session-start.ts",
     ".claude/skills/ship/SKILL.md",
     ".claude/skills/verify/SKILL.md",
     ".claude/agents/test-writer.md",

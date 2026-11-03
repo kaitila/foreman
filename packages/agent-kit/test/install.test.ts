@@ -62,6 +62,7 @@ test("a rule listed as omitted is not re-added by a second init, and init says s
   const file = join(target, ".claude", "settings.json");
   // The project removes a deny rule, an ask rule and the guard hook on purpose, and records it.
   const guard = baseline.hooks.PreToolUse[0].hooks[0].command;
+  const start = baseline.hooks.SessionStart[0].hooks[0].command;
   const s = JSON.parse(readFileSync(file, "utf8"));
   s.permissions.deny = s.permissions.deny.filter((r: string) => r !== "Bash(rm -rf *)");
   s.permissions.ask = s.permissions.ask.filter((r: string) => r !== "Bash(ssh *)");
@@ -69,13 +70,13 @@ test("a rule listed as omitted is not re-added by a second init, and init says s
   writeFileSync(file, JSON.stringify(s));
   writeFileSync(
     join(target, ".claude", "agent-kit.json"),
-    JSON.stringify({ omit: ["Bash(rm -rf *)", "Bash(ssh *)", guard, "Bash(not-in-baseline *)"] }),
+    JSON.stringify({ omit: ["Bash(rm -rf *)", "Bash(ssh *)", guard, start, "Bash(not-in-baseline *)"] }),
   );
   for (let run = 0; run < 2; run++) {
     const r = install(target);
     expect(r.merged).toEqual([]);
     expect(r.kept).toContain(join(".claude", "settings.json"));
-    expect(r.omitted.sort()).toEqual(["Bash(rm -rf *)", "Bash(ssh *)", guard].sort());
+    expect(r.omitted.sort()).toEqual(["Bash(rm -rf *)", "Bash(ssh *)", guard, start].sort());
     // Only the typo warns; entries for baseline rules and hooks (removed or not) don't.
     expect(r.unmatchedOmit).toEqual(["Bash(not-in-baseline *)"]);
     const after = JSON.parse(readFileSync(file, "utf8"));
@@ -112,11 +113,12 @@ test("an omitted rule the project kept itself stays; omit applies to a fresh ins
 
 test("omitting a whole list or every hook leaves it out, not the baseline's copy", () => {
   const guard = baseline.hooks.PreToolUse[0].hooks[0].command;
-  const { settings, omitted } = mergeSettings({}, baseline, [...baseline.permissions.ask, guard]);
+  const start = baseline.hooks.SessionStart[0].hooks[0].command;
+  const { settings, omitted } = mergeSettings({}, baseline, [...baseline.permissions.ask, guard, start]);
   expect(settings.permissions?.ask).toBeUndefined();
   expect(settings.hooks).toBeUndefined();
   expect(settings.permissions?.deny).toEqual(baseline.permissions.deny);
-  expect(omitted).toEqual([...baseline.permissions.ask, guard]);
+  expect(omitted).toEqual([...baseline.permissions.ask, guard, start]);
 });
 
 test("a malformed omit file stops init with a clear error", () => {
