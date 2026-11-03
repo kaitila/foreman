@@ -210,10 +210,27 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
 export async function mergeQueue(
   f: Foreman,
   actor: Actor,
-  opts: QueueOptions & { once?: boolean; intervalSeconds?: number; onPass?: (r: QueueEntry[]) => void } = {},
+  opts: QueueOptions & {
+    once?: boolean;
+    intervalSeconds?: number;
+    onPass?: (r: QueueEntry[]) => void;
+    /**
+     * Opens foreman again. A long-lived loop calls it before every pass after the first and
+     * closes the old one, so a pass never reads through a connection that has held a read
+     * snapshot open since the loop started (T-0050).
+     */
+    reopen?: () => Foreman;
+  } = {},
 ): Promise<QueueEntry[]> {
   const sleep = opts.sleep ?? defaultSleep;
-  for (;;) {
+  for (let pass = 0; ; pass++) {
+    if (pass > 0 && opts.reopen) {
+      const old = f;
+      f = opts.reopen();
+      try {
+        old.db.close();
+      } catch {}
+    }
     const r = await mergeQueuePass(f, actor, opts);
     opts.onPass?.(r);
     if (opts.once) return r;

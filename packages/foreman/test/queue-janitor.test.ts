@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { type Actor, Foreman } from "../src/core";
 import { janitor } from "../src/janitor";
 import { DEFAULT_PROTECTED, type Policy } from "../src/policy";
-import { judgeChecks, mergeQueuePass } from "../src/queue";
+import { judgeChecks, mergeQueue, mergeQueuePass } from "../src/queue";
 import { openDb } from "../src/store";
 
 const human: Actor = { name: "ada", kind: "human" };
@@ -197,5 +197,57 @@ describe("janitor (real git)", () => {
 
     const dry = await janitor(f, { name: "janitor", kind: "agent" }, { now: () => clock, dryRun: true, releasePorts: async () => true });
     expect(dry.removed).toEqual([]); // nothing left to remove; the dirty one is still kept
+  });
+});
+
+describe("merge queue loop, two Foreman instances on one database file (T-0050)", () => {
+  /** Runs two loop passes; between them another instance approves a task. `held` leaves a read open on the loop's connection. */
+  async function loopSeesLateApproval(held: boolean, reopen: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-loop-"));
+    try {
+      const path = join(dir, "foreman.db");
+      const gh = fakeGitHub();
+      const writer = new Foreman(openDb(path), null, Date.now, gh.policy);
+      const looper = new Foreman(openDb(path), null, Date.now, gh.policy);
+      writer.create({ title: "seed", acceptance: ["cmd: true"], paths: ["src/**"] }, human);
+      const reports: { id: string; action: string }[][] = [];
+      let ids: string[] = [];
+      let passes = 0;
+      const stuck = held ? looper.db.query("SELECT * FROM tasks").iterate() : null;
+      stuck?.next();
+      await mergeQueue(looper, queue, {
+        run: gh.run,
+        cwd: "/repo",
+        settleSeconds: 0,
+        dryRun: true,
+        intervalSeconds: 0,
+        reopen: reopen ? () => new Foreman(openDb(path), null, Date.now, gh.policy) : undefined,
+        sleep: async () => {
+          if (passes === 1 && !ids.length) ids = [approvedTask(writer, gh, 1)];
+        },
+        onPass: (r) => {
+          reports.push(r);
+          if (++passes === 2) throw new Error("stop");
+        },
+      }).catch((e) => {
+        if (e.message !== "stop") throw e;
+      });
+      return { first: reports[0]!, second: reports[1]!, ids };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a pass sees a task approved through another instance after the loop started", async () => {
+    const r = await loopSeesLateApproval(false, false);
+    expect(r.first).toEqual([]);
+    expect(r.second.map((e) => [e.id, e.action])).toEqual([[r.ids[0]!, "would_merge"]]);
+  });
+
+  test("even when the loop's connection holds a read open, reopening each pass sees it", async () => {
+    const stale = await loopSeesLateApproval(true, false);
+    expect(stale.second).toEqual([]); // the failure mode: a pinned snapshot hides the approval
+    const r = await loopSeesLateApproval(true, true);
+    expect(r.second.map((e) => [e.id, e.action])).toEqual([[r.ids[0]!, "would_merge"]]);
   });
 });

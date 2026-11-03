@@ -307,6 +307,7 @@ export async function main(argv: string[]): Promise<number | null> {
         settleSeconds: num(o["settle-seconds"], 30, "--settle-seconds"),
         intervalSeconds: num(o.interval, 60, "--interval"),
         onPass: show,
+        reopen: () => Foreman.open(),
       });
       return 0;
     }
