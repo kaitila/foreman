@@ -9,10 +9,16 @@
 //     inline scripts (`bun -e`, `node -e`, `python -c`, ...)
 //   - edits outside the paths of the foreman task this agent has claimed, through the
 //     edit tools or the shell (redirects, tee, cp, mv, install, touch, sed -i)
+//   - what the agent's role may not do: the deny rules foreman resolves from foreman.json
+//     "roles" for FOREMAN_ACTOR, matched against every command the shell would run
+//
+// The rules are a guardrail, not a security boundary: a script can still do what a
+// rule names (see the README).
 //
 // It parses commands, so quoted text that only mentions `.env` is fine.
 // It fails closed: a payload it can't read is blocked, and so is an edit whose task
-// paths can't be checked because foreman is unreachable.
+// paths can't be checked because foreman is unreachable, and so is every call of an agent
+// session (FOREMAN_ACTOR set) whose role rules foreman can't give.
 // Self-contained on purpose: a project gets a copy, with no package to install.
 import { relative, resolve, basename, isAbsolute } from "node:path";
 
@@ -30,6 +36,17 @@ export interface Context {
    * Throws when it should know but can't (FOREMAN_ACTOR set, foreman unreachable).
    */
   taskPaths: () => string[] | null;
+  /**
+   * Deny rules for this session's role, from foreman.json "roles" through foreman; null
+   * for a person's session (no FOREMAN_ACTOR). Throws when it should know but can't.
+   */
+  roleRules?: () => RoleRule[] | null;
+}
+
+/** A Claude Code permission rule (`Bash(ssh *)`, `Read(data/**)`, `mcp__deploy`) and the role block it came from. */
+export interface RoleRule {
+  rule: string;
+  role: string;
 }
 
 const PROTECTED = new Set(["main", "master"]);
@@ -238,11 +255,18 @@ const OPTIONAL_VALUE = new Set(["xargs -i", "xargs -e", "xargs -l"]);
 
 /** Drop `VAR=value` prefixes and wrappers such as `sudo`, `timeout 10`, `env -u NAME`. */
 function unwrap(words: string[]): string[] {
+  return unwrapLayers(words).at(-1)!;
+}
+
+/** The command at each layer of wrapping: `sudo timeout 5 ssh h` → itself, `timeout 5 ssh h`, `ssh h`. */
+function unwrapLayers(words: string[]): string[][] {
+  const layers: string[][] = [];
   let w = [...words];
   for (;;) {
     while (w.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]!)) w.shift();
+    layers.push([...w]);
     const head = w[0] ? basename(w[0]) : "";
-    if (!WRAPPERS.has(head)) return w;
+    if (!WRAPPERS.has(head)) return layers;
     w.shift();
     const valued = WRAPPER_VALUE_OPTS[head] ?? [];
     while (w.length && w[0]!.startsWith("-") && w[0] !== "-") {
@@ -272,6 +296,113 @@ function unwrap(words: string[]): string[] {
     }
     if (head === "timeout" && w.length && /^\d+(\.\d+)?[smhd]?$/.test(w[0]!)) w.shift(); // the duration
   }
+}
+
+// ---------- role rules (foreman.json "roles", resolved by foreman) ----------
+
+const EDIT_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/** `Bash(ssh *)` → { tool: "Bash", spec: "ssh *" }; `mcp__deploy` → { tool: "mcp__deploy", spec: null }. */
+function splitRule(rule: string): { tool: string; spec: string | null } {
+  const m = /^([^(]+)\((.*)\)$/s.exec(rule.trim());
+  return m ? { tool: m[1]!.trim(), spec: m[2]! } : { tool: rule.trim(), spec: null };
+}
+
+/**
+ * Claude Code's Bash rule matching: `*` matches anything, spaces included; the legacy
+ * `:*` suffix means ` *`. A trailing ` *` also matches the bare command, so
+ * `Bash(gh pr merge *)` denies `gh pr merge` with no arguments too.
+ */
+export function bashPatternMatches(pattern: string, command: string): boolean {
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ");
+  let p = norm(pattern);
+  if (p.endsWith(":*")) p = `${p.slice(0, -2)} *`;
+  const c = norm(command);
+  const re = (s: string) => new RegExp(`^${s.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
+  return re(p).test(c) || (p.endsWith(" *") && re(p.slice(0, -2)).test(c));
+}
+
+/** Claude Code's path rules: `//abs`, `~/home`, `/root-relative`, `relative`; a pattern without `/` matches at any depth. */
+export function pathPatternMatches(pattern: string, path: string, ctx: Pick<Context, "projectRoot" | "cwd">): boolean {
+  const home = process.env.HOME ?? "";
+  let glob: string;
+  if (pattern.startsWith("//")) glob = pattern.slice(1);
+  else if (pattern.startsWith("~/")) glob = `${home}/${pattern.slice(2)}`;
+  else if (pattern.startsWith("/")) glob = `${ctx.projectRoot}${pattern}`;
+  else {
+    const rel = pattern.replace(/^\.\//, "");
+    glob = rel.includes("/") ? `${ctx.projectRoot}/${rel}` : `${ctx.projectRoot}/**/${rel}`;
+  }
+  const g = new Bun.Glob(glob);
+  // A rule naming a directory covers what is inside it.
+  for (let p = isAbsolute(path) ? path : resolve(ctx.cwd, path); p !== "/" && p !== "."; p = resolve(p, "..")) {
+    if (g.match(p)) return true;
+  }
+  return false;
+}
+
+/** The role rules, or a reason to block when they should be known but can't be. */
+function loadRoleRules(ctx: Context): RoleRule[] | string {
+  try {
+    return ctx.roleRules?.() ?? [];
+  } catch (e) {
+    return `can't read your role's rules: ${(e as Error).message}`;
+  }
+}
+
+const denied = (r: RoleRule, what: string) =>
+  `${what} is denied to ${r.role === "agent" ? "agent sessions" : `${r.role} sessions`} by ${r.rule} (foreman.json roles.${r.role})`;
+
+/** A role rule that denies running this simple command (at any layer of wrappers). */
+function roleBashRule(words: string[], ctx: Context): string | null {
+  const rules = loadRoleRules(ctx);
+  if (typeof rules === "string") return rules;
+  const bash = rules.filter((r) => splitRule(r.rule).tool === "Bash");
+  if (!bash.length) return null;
+  const forms = new Set<string>();
+  for (const layer of unwrapLayers(words)) {
+    if (!layer.length) continue;
+    forms.add(layer.join(" "));
+    // `/usr/bin/ssh host` is `ssh host`.
+    forms.add([basename(layer[0]!), ...layer.slice(1)].join(" "));
+  }
+  for (const r of bash) {
+    const { spec } = splitRule(r.rule);
+    for (const f of forms) if (spec === null || bashPatternMatches(spec, f)) return denied(r, `\`${f}\``);
+  }
+  return null;
+}
+
+/** A role rule that denies this tool call (Read, the edit tools, MCP tools, others by name). */
+function roleToolRule(tool: string, input: Record<string, unknown>, ctx: Context): string | null {
+  const rules = loadRoleRules(ctx);
+  if (typeof rules === "string") return rules;
+  const path = String(input.file_path ?? input.notebook_path ?? "");
+  for (const r of rules) {
+    const { tool: t, spec } = splitRule(r.rule);
+    if (t === "Bash") continue; // checked command by command
+    let hit: boolean;
+    if (t.startsWith("mcp__") && tool.startsWith("mcp__")) {
+      // `mcp__server` covers the server's tools; `mcp__server__*` and exact names as globs.
+      hit = tool === t || (!t.slice(5).includes("__") && tool.startsWith(`${t}__`)) || new Bun.Glob(t).match(tool);
+    } else if (t === "Edit" && EDIT_TOOLS.includes(tool)) hit = spec === null || (!!path && pathPatternMatches(spec, path, ctx));
+    else if (t === tool) hit = spec === null || ((t === "Read" || EDIT_TOOLS.includes(t)) && !!path ? pathPatternMatches(spec, path, ctx) : true);
+    else hit = false;
+    if (hit) return denied(r, path ? `${tool} on ${path}` : tool);
+  }
+  return null;
+}
+
+/** A role rule that denies writing `path` from the shell (Edit-family rules with a path). */
+function roleWriteRule(path: string, ctx: Context): string | null {
+  if (path.startsWith("/dev/")) return null;
+  const rules = loadRoleRules(ctx);
+  if (typeof rules === "string") return rules;
+  for (const r of rules) {
+    const { tool, spec } = splitRule(r.rule);
+    if (EDIT_TOOLS.includes(tool) && spec !== null && pathPatternMatches(spec, path, ctx)) return denied(r, `writing ${path}`);
+  }
+  return null;
 }
 
 // ---------- rules ----------
@@ -529,6 +660,8 @@ export function checkCommand(command: string, ctx: Context, depth = 0): string |
       const r = editRule(target, ctx);
       if (r) return r;
     }
+    const roleHit = roleBashRule(raw, ctx);
+    if (roleHit) return roleHit;
     const words = unwrap(raw);
     if (!words.length) continue;
     const head0 = basename(words[0]!);
@@ -546,6 +679,8 @@ export function checkCommand(command: string, ctx: Context, depth = 0): string |
         const seg: string[] = [];
         for (k++; k < args0.length && args0[k] !== ";" && args0[k] !== "+" && args0[k] !== "\\;"; k++) seg.push(args0[k]!);
         if (!seg.length) continue;
+        const segHit = roleBashRule(seg, ctx);
+        if (segHit) return segHit;
         const h = basename(seg[0]!);
         // `{}` is each found file: a path under the first start directory.
         const firstStart = args0.find((a) => !a.startsWith("-") && a !== "(" && a !== "!") ?? ".";
@@ -595,6 +730,8 @@ export function checkCommand(command: string, ctx: Context, depth = 0): string |
 
 function editRule(path: string, ctx: Context): string | null {
   if (isEnvFile(path)) return `${basename(path)} holds secrets: agents don't write it`;
+  const roleHit = roleWriteRule(path, ctx);
+  if (roleHit) return roleHit;
   const abs = isAbsolute(path) ? path : resolve(ctx.cwd, path);
   const rel = relative(ctx.projectRoot, abs);
   if (rel.startsWith("..") || isAbsolute(rel)) return null; // outside the repo: not a task's business
@@ -615,8 +752,10 @@ export function decide(payload: { tool_name?: string; tool_input?: Record<string
   const input = payload.tool_input ?? {};
   let reason: string | null = null;
   if (tool === "Bash") reason = checkCommand(String(input.command ?? ""), ctx);
-  else if (tool === "Read") reason = isEnvFile(String(input.file_path ?? "")) ? ".env files hold secrets: agents don't read them" : null;
-  else if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool)) {
+  else if ((reason = roleToolRule(tool, input, ctx))) {
+    // the role may not use this tool here
+  } else if (tool === "Read") reason = isEnvFile(String(input.file_path ?? "")) ? ".env files hold secrets: agents don't read them" : null;
+  else if (EDIT_TOOLS.includes(tool)) {
     const p = String(input.file_path ?? input.notebook_path ?? "");
     reason = p ? editRule(p, ctx) : "edit without a file path";
   }
@@ -644,6 +783,7 @@ function foremanCmd(root: string): string[] | null {
 
 export function realContext(cwd: string): Context {
   let cached: string[] | null | undefined;
+  let rules: RoleRule[] | null | undefined;
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || sh(["git", "rev-parse", "--show-toplevel"], cwd) || cwd;
   return {
     projectRoot,
@@ -665,6 +805,22 @@ export function realContext(cwd: string): Context {
       }
       if (!tasks.length || tasks.some((t) => t.paths.length === 0)) return (cached = null);
       return (cached = tasks.flatMap((t) => t.paths));
+    },
+    roleRules: () => {
+      if (rules !== undefined) return rules;
+      if (!process.env.FOREMAN_ACTOR) return (rules = null); // a person's session: no role
+      // foreman resolves the rules (one source for this hook and the launch flags).
+      const fm = foremanCmd(projectRoot);
+      if (!fm) throw new Error("FOREMAN_ACTOR is set but foreman isn't installed (set FOREMAN_BIN)");
+      const out = sh([...fm, "policy", "--json"], projectRoot);
+      if (out === null) throw new Error(`FOREMAN_ACTOR is set but \`${fm.join(" ")} policy\` failed (a foreman older than this hook, or a bad foreman.json)`);
+      try {
+        const r = (JSON.parse(out) as { rules?: unknown }).rules;
+        if (!Array.isArray(r) || !r.every((x) => typeof x?.rule === "string" && typeof x?.role === "string")) throw new Error();
+        return (rules = r as RoleRule[]);
+      } catch {
+        throw new Error("foreman policy's answer wasn't the expected JSON");
+      }
     },
   };
 }

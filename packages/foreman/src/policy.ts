@@ -62,12 +62,15 @@ export const DEFAULT_NUMBERS: Record<string, NumberSource> = {
   decision: { glob: "docs/decisions/*", pattern: "^D(\\d+)" },
 };
 
-interface Config {
+export interface Config {
   protectedPaths?: string[];
   numbers?: Record<string, NumberSource>;
+  /** Deny rules per agent role; validated by roles.ts (D0019). */
+  roles?: unknown;
 }
 
-function loadConfig(root: string | null): Config {
+/** The repo's foreman.json, or {} without one. Throws if it isn't JSON. */
+export function loadConfig(root: string | null): Config {
   const file = root && join(root, "foreman.json");
   return file && existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Config) : {};
 }
