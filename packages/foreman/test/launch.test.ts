@@ -149,6 +149,47 @@ describe("buildLaunch", () => {
   });
 });
 
+describe("role deny rules from foreman.json (T-0055, D0019)", () => {
+  const withRoles = (roles: unknown) => {
+    const d = fresh("roles");
+    writeFileSync(join(d, "foreman.json"), JSON.stringify({ roles }));
+    return d;
+  };
+  const roles = {
+    agent: { deny: ["Bash(gh pr merge *)", "Bash(ssh *)"] },
+    worker: { deny: ["Bash(gh release *)"] },
+    verifier: { deny: ["mcp__deploy"] },
+    intake: { deny: ["Read(data/**)"] },
+  };
+
+  test("a worker's command line carries agent's and the worker's rules in --disallowedTools", () => {
+    const d = withRoles(roles);
+    const { cmd } = buildLaunch(base({ role: "worker", taskId: "T-1", cwd: d, repoRoot: d }));
+    const denied = list(cmd, "--disallowedTools");
+    expect(denied).toEqual([
+      "mcp__foreman__start_verify", "mcp__foreman__record_verdict", "mcp__foreman__mark_merged", "mcp__foreman__rework_task",
+      "Bash(gh pr merge *)", "Bash(ssh *)", "Bash(gh release *)",
+    ]);
+    // Another role's rules stay out; Bash itself stays allowed (deny beats allow for the rest).
+    expect(denied).not.toContain("mcp__deploy");
+    expect(list(cmd, "--allowedTools")).toContain("Bash");
+  });
+
+  test("each role gets its own, and policyRoot overrides where the file is read", () => {
+    const d = withRoles(roles);
+    const v = list(buildLaunch(base({ role: "verifier", taskId: "T-1", policyRoot: d })).cmd, "--disallowedTools");
+    expect(v).toEqual(expect.arrayContaining(["Bash(gh pr merge *)", "Bash(ssh *)", "mcp__deploy"]));
+    expect(v).not.toContain("Bash(gh release *)");
+    const i = list(buildLaunch(base({ role: "intake", policyRoot: d })).cmd, "--disallowedTools");
+    expect(i).toEqual(expect.arrayContaining(["Bash(ssh *)", "Read(data/**)"]));
+  });
+
+  test("no roles block: the role defaults only; a malformed one refuses to build the launch", () => {
+    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: fresh("none") })).cmd, "--disallowedTools")).toHaveLength(4);
+    expect(() => buildLaunch(base({ role: "worker", policyRoot: withRoles({ workers: {} }) }))).toThrow("unknown role");
+  });
+});
+
 describe("ancestorClaudeMds", () => {
   test("finds the three memory files in every ancestor, not in the root itself", () => {
     const top = fresh("anc");

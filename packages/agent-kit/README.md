@@ -51,6 +51,14 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
   - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo.
   - **With `FOREMAN_ACTOR` set but foreman unreachable**, writes in the repo are blocked with a reason, instead of quietly going unchecked.
   - **Known limits:** writes made by scripts and interpreters (`bun -e`, `python -c`, a build tool) aren't traced, and neither is `cd x && ...`. The verifier's changed-paths check is the backstop.
+- **Role rules:** with `FOREMAN_ACTOR` set, it asks foreman (`foreman policy --json`) for the deny rules `foreman.json` gives the session's role ([D0019](../../docs/decisions/D0019-role-deny-rules.md), [format](../foreman/README.md#role-rules)). A person's session (no `FOREMAN_ACTOR`) is never affected.
+  - **Bash rules** are matched against every command the shell would run, after the same unwrapping as the rules above: `bash -c`, `sh -c`, `eval`, `env`/`sudo`/`nice`/`timeout`/`xargs` and other wrappers, `$(...)`, backticks, heredocs fed to a shell, `find -exec`. So `Bash(ssh *)` also stops `bash -c 'ssh host true'`, `sudo timeout 5 ssh host` and `/usr/bin/ssh host`.
+  - **Matching follows Claude Code:** `*` matches anything, spaces included, and a trailing `:*` means ` *`. A trailing ` *` also matches the bare command, so `Bash(gh pr merge *)` stops `gh pr merge` too.
+  - **Other tools:** `Read(...)` applies to the Read tool. `Edit(...)` (and `Write(...)`) apply to every edit tool, and to files that shell commands write. `mcp__server` covers that server's tools. The hook's matcher includes `mcp__.*` for this. A project installed before the change keeps its old matcher: add `|mcp__.*` to it by hand.
+  - **Path patterns** follow Claude Code: `//abs`, `~/home`, `/from-project-root`, `relative`. A pattern with no `/` matches at any depth.
+  - **The block message** names the command, the rule and the role: `` `ssh host true` is denied to agent sessions by Bash(ssh *) (foreman.json roles.agent) ``.
+  - **With `FOREMAN_ACTOR` set and no answer from foreman**, every call is blocked. That covers foreman not installed, a bad `foreman.json`, and a foreman older than the hook (update both together).
+  - **Known limits:** it is a guardrail. A script, an interpreter, a build tool, or options placed between a rule's words (`git -C . push` vs `Bash(git push *)`) get past string rules. Read rules aren't applied to shell commands like `cat`. Only the tools in the hook's matcher are seen; foreman's launch adapter also passes the rules as `--disallowedTools`, which covers the rest for sessions it starts.
 - **It fails closed:** a payload it can't read, or an internal error, blocks the call.
 
 Live check: `bun run live-test` runs real headless Claude sessions against both layers, about $0.06 with Haiku. The other layers are CI and branch protection on the server.

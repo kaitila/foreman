@@ -6,11 +6,14 @@
 //   home dir otherwise picks up ~/.claude/CLAUDE.md and ~/CLAUDE.md as project
 //   instructions, even with its own config dir.
 // - Tools are explicit per role (an untrusted workspace ignores permissions.allow).
+// - foreman.json's role deny rules ("agent" and the role's own, D0019) are added to
+//   --disallowedTools, so the session can't drop them.
 // - Turns, budget and a wall-clock timeout that kills the whole process group.
 import { spawn as nodeSpawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { resolvePolicy } from "./roles";
 import { repoRoot } from "./store";
 
 export type Role = "worker" | "verifier" | "intake";
@@ -35,6 +38,11 @@ export interface LaunchOptions {
   configDir?: string;
   /** The repository whose ancestors are scanned for CLAUDE.md. Default: git toplevel of cwd. */
   repoRoot?: string;
+  /**
+   * Where foreman.json's role rules are read. Default: the main checkout of cwd (the
+   * file foreman itself reads), or repoRoot outside a git repository.
+   */
+  policyRoot?: string;
   /** Environment to inherit. Default: process.env. */
   baseEnv?: Record<string, string | undefined>;
 }
@@ -111,6 +119,14 @@ function gitToplevel(cwd: string): string {
   return p.exitCode === 0 ? p.stdout.toString().trim() : resolve(cwd);
 }
 
+function mainCheckout(cwd: string): string | null {
+  try {
+    return repoRoot(cwd);
+  } catch {
+    return null; // not a git repository
+  }
+}
+
 /** The default isolated config dir: <main checkout>/.foreman/claude-config. */
 export function defaultConfigDir(cwd = process.cwd()): string {
   return join(repoRoot(cwd), ".foreman", "claude-config");
@@ -125,7 +141,10 @@ export function buildLaunch(opts: LaunchOptions): LaunchSpec {
   const limits = ROLE_LIMITS[opts.role];
   const tools = ROLE_TOOLS[opts.role];
   const root = opts.repoRoot ?? gitToplevel(opts.cwd);
-  const disallowed = tools.disallowed;
+  const actor = actorFor(opts.role, opts.taskId);
+  // A malformed roles block throws here: no session starts without its limits.
+  const roleRules = resolvePolicy(opts.policyRoot ?? mainCheckout(opts.cwd) ?? root, actor).rules.map((r) => r.rule);
+  const disallowed = [...new Set([...tools.disallowed, ...roleRules])];
   const allowed = (opts.allowedTools ?? tools.allowed).filter((t) => !disallowed.includes(t));
   const settings = { claudeMdExcludes: ancestorClaudeMds(root) };
 
@@ -149,7 +168,7 @@ export function buildLaunch(opts: LaunchOptions): LaunchSpec {
     if (v !== undefined && !STRIPPED_ENV.includes(k)) env[k] = v;
   }
   env.CLAUDE_CONFIG_DIR = opts.configDir ?? defaultConfigDir(opts.cwd);
-  env.FOREMAN_ACTOR = actorFor(opts.role, opts.taskId);
+  env.FOREMAN_ACTOR = actor;
   return { cmd, env };
 }
 

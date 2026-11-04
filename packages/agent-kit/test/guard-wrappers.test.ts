@@ -64,7 +64,13 @@ describe("env and other wrappers with option values (T-0044)", () => {
   test("the hook itself lets the reported command through, with and without FOREMAN_ACTOR", () => {
     const root = join(import.meta.dir, "..", "..", "..");
     for (const actor of [undefined, "fm-test-nobody"]) {
-      const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: root, FOREMAN_ACTOR: actor };
+      // This tree's foreman, not whichever one is on the PATH (it may predate `policy`).
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: root,
+        FOREMAN_ACTOR: actor,
+        FOREMAN_BIN: `bun ${join(root, "packages/foreman/src/cli.ts")}`,
+      };
       if (!actor) delete env.FOREMAN_ACTOR;
       const p = Bun.spawnSync(["bun", join(import.meta.dir, "..", "templates/.claude/hooks/guard.ts")], {
         cwd: root,

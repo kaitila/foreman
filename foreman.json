@@ -16,5 +16,8 @@
     "**/tsconfig*.json",
     "AGENTS.md",
     "CLAUDE.md"
-  ]
+  ],
+  "roles": {
+    "$comment": "Deny rules per agent role (D0019): \"agent\" applies to every FOREMAN_ACTOR session, \"worker\", \"verifier\" and \"intake\" to actors named after them; a person's session gets none. None here yet. Example: \"agent\": { \"deny\": [\"Bash(gh pr merge *)\", \"Bash(ssh *)\"] }."
+  }
 }

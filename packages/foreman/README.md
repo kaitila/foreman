@@ -52,6 +52,7 @@ foreman merged T-0001              # refused if the PR moved after it was verifi
 foreman edit T-0001 --add-path "docs/**"   # while working: the holder may only add paths
 foreman rework T-0001 --reason "gap found after the verdict"   # back to ready; verify again
 foreman reserve decision           # next free Dnnnn, so parallel PRs never clash
+foreman policy --actor worker-T-1  # the deny rules foreman.json gives that agent (see Role rules)
 foreman export T-0001              # docs/tasks/T-0001.md
 foreman merge-queue --once         # merge one approved PR whose checks are green (--dry-run to look)
 foreman merge-queue                # the same, every 60 s until stopped (--interval, --settle-seconds 30)
@@ -114,6 +115,28 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   - **On merge:** `merged` is refused if the PR has changed since. Rework and verify again.
 - **Identity:** `FOREMAN_ACTOR` names the caller. A command Claude Code runs for the model (`CLAUDE_CODE_CHILD_SESSION=1`) counts as an agent. IDE terminals don't, even though Claude Code sets `CLAUDECODE=1` there. This is a guardrail, not a security boundary: branch protection and the verifier are the hard limits.
 
+## Role rules
+
+`foreman.json` can deny agents things the person's own sessions keep, such as merging or production commands ([D0019](../../docs/decisions/D0019-role-deny-rules.md)). The project's `.claude/settings.json` binds everyone; these bind only sessions with `FOREMAN_ACTOR` set.
+
+```json
+{ "roles": {
+    "agent":    { "deny": ["Bash(gh pr merge *)", "Bash(ssh *)"] },
+    "worker":   { "deny": ["Bash(gh release *)"] },
+    "verifier": { "deny": ["mcp__deploy"] },
+    "intake":   { "deny": ["Read(data/**)"] } } }
+```
+
+- **Entries** are Claude Code permission rules: `Bash(...)`, `Read(...)`, `Edit(...)`, `mcp__server` or `mcp__server__tool`, a tool name. A comma inside a rule isn't allowed, because `--disallowedTools` is comma-separated. Keys starting with `$` are comments.
+- **Who gets which:**
+  - `agent` applies to every `FOREMAN_ACTOR`.
+  - The role comes from the actor's prefix: `worker-T-0042` gets `worker`'s rules too, `verifier-…` gets `verifier`'s, `intake` gets `intake`'s.
+  - Any other name gets only `agent`.
+  - No `FOREMAN_ACTOR` (a person) gets none.
+- **One source:** `foreman policy [--actor name | --role r] --json` prints the rules that apply (`{actor, role, rules: [{rule, role}]}`). The default actor is `$FOREMAN_ACTOR`. The rules come from the main checkout's `foreman.json`, so editing the file in a worktree changes nothing. A malformed block (an unknown role, a key other than `deny`, an entry that isn't a rule) is an error. The guard hook asks this command; `resolvePolicy()` in `src/roles.ts` is the library call.
+- **Enforced twice:** agent-kit's guard hook matches the rules against every command and tool call, wrappers included (see [agent-kit](../agent-kit/README.md)). The launch adapter adds them to `--disallowedTools`.
+- **Not a security boundary:** a script or an interpreter can still do what a string rule names. See D0019 for the limits.
+
 ## Launch adapter
 
 `src/launch.ts` starts a headless Claude Code session (`claude -p`) for one role: `worker`, `verifier` or `intake`. It keeps the person's own setup out of the session.
@@ -124,6 +147,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   - `worker`: read and edit tools, `Bash`, `Agent`, `Skill`, and foreman's work tools one by one (list, next, show, create, claim, heartbeat, progress, submit, reserve, edit). `start_verify`, `record_verdict`, `mark_merged` and `rework_task` are disallowed, so a worker can't verify or merge.
   - `verifier`: read tools, `Bash`, `Skill`, and foreman's show, list, verify, verdict and heartbeat tools. Edit tools are disallowed.
   - `intake`: read tools and foreman's list, show and create tools. Edit tools, `Bash` and every other foreman tool are disallowed. The adapter can't restrict `Bash` to read-only commands, so intake gets none.
+  - **Plus the role rules:** `foreman.json`'s `agent` and role deny rules ([Role rules](#role-rules)) are added to `--disallowedTools`. They are read from the main checkout (the `policyRoot` option changes where). A malformed `roles` block stops the launch.
 - **MCP servers:** with the `mcpConfig` option the session gets exactly those servers (`--mcp-config` plus `--strict-mcp-config`), and the project's `.mcp.json` is not loaded. Without it, `.mcp.json` applies.
 - **Limits per role:** `--max-turns`, `--max-budget-usd` and a wall-clock timeout.
 - **Cleanup:** when a session ends, its process group gets SIGTERM, so leftover shells and servers go too. On timeout it gets SIGTERM, then SIGKILL after a grace period. Sessions still running are killed if foreman exits or gets SIGINT or SIGTERM.

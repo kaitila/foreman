@@ -14,6 +14,7 @@ import {
 import { toMarkdown } from "./export";
 import { janitor } from "./janitor";
 import { mergeQueue, type QueueEntry } from "./queue";
+import { repoRoot } from "./store";
 
 function num(v: string | undefined, fallback: number, flag: string): number {
   if (v === undefined) return fallback;
@@ -71,6 +72,10 @@ Running the loop
 Housekeeping
   reclaim                       release claims whose lease ran out, or whose pinned process is gone
   reserve <kind> [--task id]    next free number (also reads what is on disk: foreman.json "numbers")
+  policy [--actor name | --role r]
+                                deny rules that apply to an agent (foreman.json "roles"): "agent" plus
+                                the role from the actor's prefix (worker-, verifier-, intake-); default
+                                actor $FOREMAN_ACTOR; none for a person
   export <id> [--out dir]       write the task as markdown (default docs/tasks/<id>.md)
   mcp                           run the MCP server on stdio
   serve [--port 4499]           local web board on 127.0.0.1; approving there needs the token it prints
@@ -137,6 +142,8 @@ export async function main(argv: string[]): Promise<number | null> {
       "settle-seconds": { type: "string" },
       interval: { type: "string" },
       "stuck-hours": { type: "string" },
+      actor: { type: "string" },
+      role: { type: "string" },
     },
   });
   const [cmd, ...args] = positionals;
@@ -148,6 +155,24 @@ export async function main(argv: string[]): Promise<number | null> {
     const { serve } = await import("./mcp");
     await serve();
     return null;
+  }
+  if (cmd === "policy") {
+    // Needs no database: the guard hook asks this on every tool call of an agent session.
+    const { resolvePolicy, loadRoles, rulesForRole, ROLES } = await import("./roles");
+    const root = repoRoot();
+    let policy;
+    if (o.role !== undefined) {
+      if (o.role !== "agent" && !(ROLES as readonly string[]).includes(o.role)) {
+        throw new ForemanError("invalid", `--role must be agent, ${ROLES.join(", ")}; got "${o.role}"`);
+      }
+      const role = o.role === "agent" ? null : (o.role as (typeof ROLES)[number]);
+      policy = { actor: null, role, rules: rulesForRole(loadRoles(root), role) };
+    } else {
+      policy = resolvePolicy(root, o.actor ?? process.env.FOREMAN_ACTOR ?? null);
+    }
+    const text = policy.rules.length ? policy.rules.map((r) => `${r.role.padEnd(9)} ${r.rule}`).join("\n") : "no role rules";
+    console.log(o.json ? JSON.stringify(policy, null, 2) : text);
+    return 0;
   }
 
   const f = Foreman.open();
