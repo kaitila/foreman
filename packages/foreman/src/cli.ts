@@ -57,11 +57,14 @@ Signing off
   merged <id> [--pr url]
 
 Running agents
-  dispatch [--max 3] [--once] [--model m] [--budget usd]
+  dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]
                                 claim ready tasks into worktrees, run a worker for each and a fresh
                                 verifier once it is submitted; at most --max sessions at once, never two
                                 tasks with overlapping paths; --once: see only what fits now through
-                                verification, then stop; --budget: each session's limit in USD
+                                verification, then stop; --budget: each session's limit in USD.
+                                Sessions run as Claude Code background sessions: watch them with
+                                "claude agents", "claude attach <name>"; --print (or
+                                FOREMAN_LAUNCH=print) runs headless "claude -p" instead
 Running the loop
   merge-queue [--once] [--dry-run] [--settle-seconds 30] [--interval 60]
                                 merge approved PRs one at a time: settled green checks at the
@@ -78,7 +81,7 @@ Housekeeping
                                 actor $FOREMAN_ACTOR; none for a person
   export <id> [--out dir]       write the task as markdown (default docs/tasks/<id>.md)
   mcp                           run the MCP server on stdio
-  serve [--port 4499]           local web board on 127.0.0.1; approving there needs the token it prints
+  serve [--port 4499]           local web board on 127.0.0.1; approve and merge from the link it prints
 
 Who you are: FOREMAN_ACTOR names you; CLAUDE_CODE_CHILD_SESSION=1 (a command Claude Code runs) or
 FOREMAN_AGENT=1 marks you as an agent.
@@ -136,6 +139,7 @@ export async function main(argv: string[]): Promise<number | null> {
       port: { type: "string" },
       max: { type: "string" },
       once: { type: "boolean" },
+      print: { type: "boolean" },
       model: { type: "string" },
       budget: { type: "string" },
       "dry-run": { type: "boolean" },
@@ -185,9 +189,14 @@ export async function main(argv: string[]): Promise<number | null> {
     // then. Like `approve`, a person means an interactive terminal too (not a pipe or a log).
     const person = me.kind === "human" && process.stdin.isTTY === true && process.stdout.isTTY === true;
     const board = startBoard({ foreman: f, port, approver: person ? me : null });
-    console.log(`foreman board: ${board.url}`);
-    if (board.token) console.log(`approve token (paste it on the page; it is shown only here): ${board.token}`);
-    else console.log("read-only: not a person at an interactive terminal, so approving from the page is off");
+    if (board.token) {
+      // The token rides in the fragment, which the browser keeps to itself (D0021).
+      console.log(`foreman board: ${board.openUrl}`);
+      console.log("open this link to approve and merge from the page; it is shown only here");
+    } else {
+      console.log(`foreman board: ${board.url}`);
+      console.log("read-only: not a person at an interactive terminal, so approving and merging from the page are off");
+    }
     return null;
   }
   const lease = o.lease ? Number(o.lease) : undefined;
@@ -313,6 +322,7 @@ export async function main(argv: string[]): Promise<number | null> {
         once: o.once,
         model: o.model,
         budgetUsd: num(o.budget, "budget"),
+        mode: o.print ? "print" : undefined,
         actor: me,
         log: o.json ? () => {} : undefined,
       });

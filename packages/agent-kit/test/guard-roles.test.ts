@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, type RoleRule, bashPatternMatches, checkCommand, decide, pathPatternMatches } from "../templates/.claude/hooks/guard";
+import { type Context, type RoleRule, bashPatternMatches, checkCommand, decide, pathPatternMatches } from "../templates/claude/hooks/guard";
 
 const rules = (...xs: [string, string][]): RoleRule[] => xs.map(([role, rule]) => ({ role, rule }));
 const ctx = (roleRules: RoleRule[] | null, over: Partial<Context> = {}): Context => ({
@@ -165,7 +165,7 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "guard-roles-")));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
   const repoRoot = join(import.meta.dir, "..", "..", "..");
-  const hook = join(import.meta.dir, "..", "templates/.claude/hooks/guard.ts");
+  const hook = join(import.meta.dir, "..", "templates/claude/hooks/guard.ts");
   const project = join(tmp, "project");
   mkdirSync(project);
   Bun.spawnSync(["git", "init", "-q", project]);

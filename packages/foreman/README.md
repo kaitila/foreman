@@ -23,6 +23,7 @@ Status: MVP (step M3), plus M6: the launch adapter, the dispatcher, intake, the 
       "migration": { "glob": "db/*.sql", "pattern": "^(\\d+)_" } } }
   ```
   With `file`, the pattern runs over the file's text (multiline). With `glob`, it runs over each matched file's name. An entry replaces the default for its kind. A glob that matches nothing counts as empty (an empty folder is real), but a `file` that doesn't exist or can't be read is refused with its path, so `reserve` never hands out a number that file may already use. A malformed entry (neither or both of `file` and `glob`, or a pattern without a capture group) is refused.
+- **Where `foreman.json` is read:** from `origin/main` (else `origin/master`) via `git show`, so a checkout on an old or detached commit still uses the default branch's protected paths, number sources and role rules. Without such a branch (or file there) the working tree's copy is used. The files a number source scans are still read from disk.
 - **Exporting:** `export` writes a task as markdown (spec, checks, verdict, history) for the PR that delivers it.
 
 ```
@@ -61,7 +62,7 @@ foreman merge-queue                # the same, every 60 s until stopped (--inter
 foreman janitor --dry-run          # reclaim, clean up finished tasks, list stuck ones (--stuck-hours 24)
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
-fm serve                           # web board on http://127.0.0.1:4499 (--port 0 picks a free one)
+fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
 ```
 
 Every command takes `--json`.
@@ -79,6 +80,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **One merge per pass.** Main has moved, so the other PRs are read again on the next pass.
 - **A PR that conflicts with main** (`CONFLICTING`) goes back to `ready`, to merge main and be verified again. Foreman asks GitHub itself first, so anyone may trigger this, but only a real conflict counts.
 - **Anything else** is skipped with the reason and tried again next pass. Without `--once` it loops.
+- **From the board:** Merge on an approved card runs one pass limited to that task, and Run queue runs one pass (see Board).
 - **Janitor** (`janitor`):
   - reclaims expired claims;
   - for done and cancelled tasks, removes the recorded worktree if it is a clean git worktree inside this repo. One with uncommitted changes is kept and reported;
@@ -88,21 +90,27 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 
 ## Board
 
-`fm serve [--port 4499]` runs a web board for the repo's tasks. It listens on 127.0.0.1 only and prints its URL and a one-time approve token to its own terminal. `--port 0` picks a free port.
+`fm serve [--port 4499]` runs a web board for the repo's tasks, where a person approves and merges in one click ([D0021](../../docs/decisions/D0021-board-one-click-sign-off.md)). It listens on 127.0.0.1 only and prints one link to its own terminal, `http://127.0.0.1:4499/#t=<token>`. Open that link to approve and merge from the page. `--port 0` picks a free port.
 
-- **The page:** one lane per status, `draft` to `cancelled`. A card shows the id, title, risk and assignee. Click it for the spec, the acceptance checks with each one's latest verdict, the PR link and the history. `/#T-0001` opens that task. It polls for changes every 2 seconds.
-- **Offline:** CSS and JS are inline, with no external assets. It follows the system's dark or light mode and works at phone width.
+- **The page:** one lane per status, `draft` to `cancelled`, scrolling sideways with snapping (on a phone, one lane per screen, the two that wait for you first). A card shows the id, title, risk, assignee, PR link and how long ago it changed, and its next action: **Approve** (needs approval), **Merge #n** with the PR's checks and mergeability (approved), or what it waits for (`waiting for verifier`, `with worker-1`). Click a card for the spec, the acceptance checks with each one's latest verdict, and the history. `/#T-0001` opens that task. It polls for changes every 2 seconds.
+- **One click, then Undo:** Approve, **Approve all** (the needs-approval lane), Merge and **Run queue** (the approved lane) wait 5 seconds with an Undo button before anything is sent. There is no confirm dialog. The result shows on the card: approved, merged, sent back, or skipped with the merge queue's reason.
+- **Merging** is the merge queue (see above), not a second implementation. Merge runs one pass for that task only, with the same rules: the verified commit, settled green checks, `MERGEABLE`, and a conflict sends it back. Run queue runs one pass over all approved tasks, so it merges at most one. The checks settle for `--settle-seconds` (30), so a merge answers after about half a minute. One pass runs at a time, and a second request gets 409 `busy`. The merge runs as the person who started the board.
+- **Keys:** `j`/`k` move between cards, `Enter` opens, `a` approves, `m` merges, `u` undoes, `/` filters, `Esc` closes or clears the filter, `?` lists them. The filter matches id, title, person, status, risk and PR number.
+- **Look:** CSS and JS are inline, with no external assets or fonts, so it works offline. It follows the system's light or dark mode, with thin themed scroll bars (hidden on the lanes until you hover). It works at phone width.
 - **API** (read-only JSON):
   - `GET /api/tasks`: all tasks.
   - `GET /api/tasks/:id`: the task, its checks with the latest verdict, and its events.
+  - `GET /api/tasks/:id/pr`: the PR's state as the merge queue reads it (checks green, pending or red, mergeable, still at the verified commit), cached for 15 seconds.
   - `GET /api/events?since=<id>`: events after that id.
-- **Approving:** `POST /api/tasks/:id/approve` is the one write. It needs the header `x-foreman-token: <token>`, and if the browser sends an `Origin` it must be the board's own; otherwise 403. The approver is `FOREMAN_ACTOR` or `USER`, as a person.
-- **From an agent:** started from an agent session (`CLAUDE_CODE_CHILD_SESSION=1` or `FOREMAN_AGENT=1`), or without an interactive terminal (stdin and stdout), the board prints no token and approving is off, because the agent would read the token from its own output. Like `approve`, this is a guardrail, not a boundary.
+- **Writes:** `POST /api/tasks/:id/approve`, `POST /api/tasks/:id/merge` and `POST /api/queue/run`. Each needs the header `x-foreman-token: <token>`, and if the browser sends an `Origin` it must be the board's own; otherwise 403. The page sends the header itself. The approver is `FOREMAN_ACTOR` or `USER`, as a person.
+- **The token on the page:** browsers never send the part of a URL after `#`, so the server never sees the token in a request line. The page moves it into `sessionStorage` (this tab only), removes it from the address bar, and sends it as the header. Without it, the buttons are disabled with a hint to open the printed link. A new `fm serve` makes a new token, and the page forgets a token the board refuses.
+- **From an agent:** started from an agent session (`CLAUDE_CODE_CHILD_SESSION=1` or `FOREMAN_AGENT=1`), or without an interactive terminal (stdin and stdout), the board prints a link without a token, and approving and merging are off, because the agent would read the token from its own output. Like `approve`, this is a guardrail, not a boundary.
 - **Safety:**
   - The token is 32 random bytes in hex. It never appears in a page or an API response.
   - A request whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` gets 421, which blocks DNS rebinding.
   - Headers: a CSP of `default-src 'self'` with a per-response nonce for the inline script and style, `x-frame-options: DENY`, `referrer-policy: no-referrer`, `nosniff` and `no-store`.
   - Task text reaches the page only through `textContent`. The initial state is JSON with `<`, `>` and `&` escaped.
+  - Trade-off: a script running in the board's own page could read the token from `sessionStorage`. The CSP allows only the page's own nonce'd script, and task text is never parsed as HTML, so there is no way to get one in.
 
 ## Agents
 
@@ -141,7 +149,9 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 
 ## Launch adapter
 
-`src/launch.ts` starts a headless Claude Code session (`claude -p`) for one role: `worker`, `verifier` or `intake`. It keeps the person's own setup out of the session.
+`src/launch.ts` starts a Claude Code session for one role: `worker`, `verifier` or `intake`. It keeps the person's own setup out of the session. It has two modes:
+- **Print mode** (`claude -p`, the default for `launch()`, and always for intake) runs under a config dir of foreman's own. It is described first below.
+- **Background mode** (`mode: "bg"`, what the dispatcher uses) starts a `claude --bg` session that the person can see in `claude agents` ([Background sessions](#background-sessions)).
 
 - **Own config dir:** `CLAUDE_CONFIG_DIR` is `<main checkout>/.foreman/claude-config` by default. It holds only `.credentials.json`, a symlink to `~/.claude/.credentials.json`, never a copy. The person's settings, hooks and memory don't load.
 - **Nothing from above the repo:** `--settings` sets `claudeMdExcludes` to every `CLAUDE.md` (also inside a `.claude` folder), `CLAUDE.local.md` and `.claude` rules folder in the directories above the repo root. A repo under the home directory otherwise loads `~/.claude/CLAUDE.md`, `~/CLAUDE.md` and those rules even with its own config dir. `--bare` would lose the login, and `--setting-sources` alone doesn't stop these files.
@@ -150,10 +160,10 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   - `verifier`: read tools, `Bash`, `Skill`, and foreman's show, list, verify, verdict and heartbeat tools. Edit tools are disallowed.
   - `intake`: read tools and foreman's list, show and create tools. Edit tools, `Bash` and every other foreman tool are disallowed. The adapter can't restrict `Bash` to read-only commands, so intake gets none.
   - **Plus the role rules:** `foreman.json`'s `agent` and role deny rules ([Role rules](#role-rules)) are added to `--disallowedTools`. They are read from the main checkout (the `policyRoot` option changes where). A malformed `roles` block stops the launch.
-- **MCP servers:** with the `mcpConfig` option the session gets exactly those servers (`--mcp-config` plus `--strict-mcp-config`), and the project's `.mcp.json` is not loaded. Without it, `.mcp.json` applies.
+- **MCP servers:** always `--strict-mcp-config`, so user servers and claude.ai connectors stay out (R5.3b found print mode got the connectors without it). The session gets the servers in the `mcpConfig` option. Without it, it gets the servers in the main checkout's `.mcp.json`, or foreman's own server if there is none.
 - **Limits per role:** `--max-turns`, `--max-budget-usd` and a wall-clock timeout.
 - **Cleanup:** when a session ends, its process group gets SIGTERM, so leftover shells and servers go too. On timeout it gets SIGTERM, then SIGKILL after a grace period. Sessions still running are killed if foreman exits or gets SIGINT or SIGTERM.
-- **Environment:** `FOREMAN_ACTOR=<role>-<taskId>`. `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` are removed, so the child doesn't think it is nested.
+- **Environment:** `FOREMAN_ACTOR=<role>-<taskId>`. `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION` and a background session's own variables (`CLAUDE_JOB_DIR`, `CLAUDE_CODE_MESSAGING_*`, `CLAUDE_PID`, `CLAUDE_CODE_SESSION_ATTENDED`) are removed, so the child doesn't think it is nested.
 - **Login:** `launch()` refuses to start without `~/.claude/.credentials.json` (the `credentials` option changes the path) unless `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set. A login kept only in an OS keychain can't be shared this way. If the symlink was replaced by a file after a run, the result's `warnings` says so.
 
 ```ts
@@ -171,11 +181,53 @@ const r = await launch({
 
 `buildLaunch()` returns the command and environment without starting anything.
 
-**Live test:** `bun run live-launch` runs real Claude Code against a fake home with markers in `~/.claude/CLAUDE.md`, `~/CLAUDE.md`, rules above the repo and a user hook. A plain session must see them. A verifier started by `launch()` must see only the repo's own CLAUDE.md, the user hook must not run, the project's own PreToolUse hook must run, and the login must still be a symlink afterwards. It is opt-in and not run in CI; it costs about a cent with Haiku.
+**Live test, print mode:** `bun run live-launch` runs real Claude Code against a fake home with markers in `~/.claude/CLAUDE.md`, `~/CLAUDE.md`, rules above the repo and a user hook. A plain session must see them. A verifier started by `launch()` must see only the repo's own CLAUDE.md, the user hook must not run, the project's own PreToolUse hook must run, and the login must still be a symlink afterwards. It is opt-in and not run in CI; it costs about a cent with Haiku.
+
+### Background sessions
+
+With `mode: "bg"` ([D0022](../../docs/decisions/D0022-background-sessions.md), research in [R5.3b](../../docs/research/R5.3b-background-sessions.md)), the session is `claude --bg --name "<repo> <task> <role>"` on the person's own config dir. That is why it shows in their `claude agents`. Isolation comes from flags instead of a separate dir:
+- **`--setting-sources project,local`:** no user CLAUDE.md, rules, hooks, skills, agents or commands, and no account-synced skills.
+- **`--strict-mcp-config --mcp-config`** with the servers above: no user or local MCP servers, no claude.ai connectors.
+- **`--settings`** with three entries:
+  - `claudeMdExcludes` as in print mode;
+  - `autoMemoryEnabled: false`, without which the person's auto memory for the project loads;
+  - `env` holding every `FOREMAN_*` variable. A `--bg` session runs under Claude Code's background service and doesn't inherit the launching process's environment, so without this `FOREMAN_ACTOR` wouldn't reach the guard hook.
+- **`--permission-mode dontAsk`:** a tool outside the allowed list is refused, not left waiting for a person. Tools and deny rules are the same as in print mode.
+
+`--bg` ignores `--max-turns` and `--max-budget-usd`, and its session doesn't exit when its turn ends. So `launch()` watches the session itself:
+- **Every 2 s** (`pollMs`), it reads `claude agents --json --all` and the session's transcript (`<config>/projects/<cwd>/<session>.jsonl`).
+- **The first PID** it sees goes to `onSpawn`, with the session's id and name.
+- **Turns** are the transcript's API responses, counted once each. **Cost** is estimated from their token usage and a price table (`PRICES`); `--bg` reports none.
+- **The turn is over** once the session shows `idle` on two looks in a row after at least one response. `launch()` then runs `claude stop`. The session stays in `claude agents --all`, where it can be attached to or resumed.
+- **Stopped early:** past the turn or budget limit (`subtype` `error_max_turns` or `error_max_budget_usd`), past the timeout (`timedOut`), or after `waitingLimitMs` (10 min) at a permission prompt. The result is an error.
+- **Stopped outside foreman:** if someone else stops or removes the session, that's an error too, and foreman doesn't stop it again.
+- **The result** is the transcript's last reply. The job timeline's copy can be cut short or redacted.
+- **Stopped on exit:** sessions still running are stopped if foreman exits or is interrupted.
+- **If `claude --bg` refuses,** for instance in a workspace the person never trusted, `launch()` runs the session in print mode and says why in `warnings`. Pass `fallbackToPrint: false` to get an error instead. A worktree inside a trusted repo is trusted.
+
+**Live test, background mode:** `bun packages/foreman/scripts/live-launch-bg.ts`, from the repo root. `--bg` refuses an untrusted workspace, so the test builds a stand-in config dir laid out like `~/.claude`:
+- **A marker in every user-level place:** CLAUDE.md, rules, auto memory, a skill, an agent, a command, three hooks, and a user and a local MCP server;
+- **the scratch repo's trust**, and a link to the real login, so the claude.ai connectors come from the real account.
+- **The repo:** a CLAUDE.md marker, a skill, and a hook that records `$FOREMAN_ACTOR`, with a CLAUDE.md and rules above it.
+
+What must hold:
+- **The control:** a plain `--bg` session must see all of it.
+- **A verifier from `launch()`** must see only the project's CLAUDE.md and skill, and only foreman's MCP server, with no connectors. Only the project's hook may run, and it must see `FOREMAN_ACTOR`.
+- **The verifier's session** must appear in that config dir's `claude agents` and be stopped at the end.
+
+`LIVE_CONFIG_DIR=~/.claude` runs the verifier half against a real config dir, once its owner has trusted the printed scratch path. Opt-in, not in CI, about a cent with Haiku.
 
 ## Dispatcher
 
-`fm dispatch [--max 3] [--once] [--model m] [--budget usd]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
+`fm dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
+
+**Watching the sessions.** Workers and verifiers run as Claude Code background sessions ([D0022](../../docs/decisions/D0022-background-sessions.md)), so the person watches them with Claude Code's own commands:
+- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `meta-repo T-0042 worker`);
+- `claude attach <name or id>` opens one in the terminal, to watch it or answer it;
+- `claude logs <id>` prints its recent output; `claude stop <id>` stops it;
+- `claude --resume <session id>` continues one after foreman has stopped it.
+
+`fm dispatch` prints each session's `claude attach <id>` as it starts it. `fm show <task>` and the board's history show it too, on the `lease_pinned` event. The janitor runs `claude rm` on a task's sessions when it removes the worktree of a done or cancelled task. `--print`, or `FOREMAN_LAUNCH=print`, runs headless `claude -p` sessions instead, under foreman's own config dir (D0011).
 
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
@@ -188,7 +240,7 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
 - **`--once`:** start what fits now, see those tasks through verification, then stop. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
-Tests use a fake launcher (`Dispatcher`'s `launcher` option). `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
+Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
 
 ## Intake
 

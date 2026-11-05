@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v bun >/dev/null 2>&1 || { echo \"guard: bun is not installed, so commands and edits cannot be checked (install it from https://bun.sh)\" >&2; exit 2; }; bun \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.ts\"",
+            "command": "command -v bun >/dev/null 2>&1 || { echo \"guard: bun is not installed, so commands and edits cannot be checked (install it from https://bun.sh)\" >&2; exit 2; }; bun \"$CLAUDE_PROJECT_DIR/packages/agent-kit/templates/claude/hooks/guard.ts\"",
             "timeout": 10
           }
         ]
@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v bun >/dev/null 2>&1 || exit 0; bun \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.ts\"",
+            "command": "command -v bun >/dev/null 2>&1 || exit 0; bun \"$CLAUDE_PROJECT_DIR/packages/agent-kit/templates/claude/hooks/session-start.ts\"",
             "timeout": 15
           }
         ]

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const HOOK = join(import.meta.dir, "..", "templates/.claude/hooks/session-start.ts");
+const HOOK = join(import.meta.dir, "..", "templates/claude/hooks/session-start.ts");
 const FM = join(import.meta.dir, "..", "..", "foreman/src/cli.ts");
 
 function run(env: Record<string, string>, dir: string) {
@@ -84,7 +84,7 @@ test("finds the installed @meta-repo/foreman, also from a worktree with no node_
 });
 
 test("registered in the template settings and this repo's", () => {
-  for (const f of ["templates/.claude/settings.json", "../../../.claude/settings.json".slice(3)]) {
+  for (const f of ["templates/claude/settings.json", "../../../.claude/settings.json".slice(3)]) {
     const s = JSON.parse(readFileSync(join(import.meta.dir, "..", f), "utf8"));
     expect(s.hooks.SessionStart[0].hooks[0].command).toContain("session-start.ts");
   }

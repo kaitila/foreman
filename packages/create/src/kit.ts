@@ -1,6 +1,6 @@
 // What create, init and sync share: the kit's files, the record of what was installed
 // (.meta-repo/installed.json, D0018), and the meta-repo packages a preset app vendors.
-import { TEMPLATES } from "@meta-repo/agent-kit";
+import { TEMPLATES, templateFiles, templateSettings } from "@meta-repo/agent-kit";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,6 +24,8 @@ export interface Installed {
   preset?: string;
   /** sha256 of each kit file as it was written, by path. */
   files: Record<string, string>;
+  /** sha256 of each kit hook group's matcher as installed, by `<event>: <command>`. Absent in older records. */
+  hooks?: Record<string, string>;
 }
 
 export interface Change {
@@ -61,6 +63,7 @@ export function writeInstalled(dir: string, rec: Installed) {
     source: rec.source,
     ...(rec.preset ? { preset: rec.preset } : {}),
     files,
+    ...(rec.hooks && Object.keys(rec.hooks).length ? { hooks: Object.fromEntries(Object.entries(rec.hooks).sort(([a], [b]) => a.localeCompare(b))) } : {}),
   };
   write(dir, RECORD, JSON.stringify(out, null, 2) + "\n");
 }
@@ -86,8 +89,8 @@ export const ownTemplate = (name: string) => readFileSync(join(OWN_TEMPLATES, na
 /** agent-kit's template files by path, except settings.json, which is merged, never copied (D0014). */
 export function kitFiles(templates = TEMPLATES): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
-  for (const rel of [...new Bun.Glob("**/*").scanSync({ cwd: templates, dot: true, onlyFiles: true })].sort()) {
-    if (rel !== SETTINGS) out.set(rel, readFileSync(join(templates, rel)));
+  for (const { src, rel } of templateFiles(templates)) {
+    if (rel !== SETTINGS) out.set(rel, readFileSync(src));
   }
   return out;
 }
@@ -143,3 +146,25 @@ export function pointDep(packageJson: string, pkg: string, tarball: string): str
 
 /** Vendored package name from a tarball path under VENDOR. */
 export const vendoredName = (path: string) => /^\.meta-repo\/packages\/([a-z0-9-]+)-[0-9a-f]+\.tgz$/.exec(path)?.[1];
+
+export type HookGroup = { matcher?: string; hooks: { command: string }[] };
+const hookGroups = (settings: { hooks?: unknown }) => Object.entries((settings.hooks ?? {}) as Record<string, HookGroup[]>);
+/** Key of a hook group in the record: its event and first command. */
+export const hookKey = (event: string, g: HookGroup) => `${event}: ${g.hooks[0]?.command ?? ""}`;
+export const matcherHash = (g: HookGroup) => sha256(g.matcher ?? "");
+
+/** Matcher hashes of the kit's hook groups the project has with the matcher the kit ships. */
+export function matchingKitHooks(dir: string, templates = TEMPLATES): Record<string, string> {
+  const out: Record<string, string> = {};
+  const file = join(dir, SETTINGS);
+  if (!existsSync(file)) return out;
+  const mine = JSON.parse(readFileSync(file, "utf8"));
+  const kit = JSON.parse(readFileSync(templateSettings(templates), "utf8"));
+  for (const [event, groups] of hookGroups(kit)) {
+    for (const g of groups) {
+      const same = hookGroups(mine).find(([e]) => e === event)?.[1].find((m) => m.hooks.some((h) => h.command === g.hooks[0]?.command));
+      if (same && matcherHash(same) === matcherHash(g)) out[hookKey(event, g)] = matcherHash(g);
+    }
+  }
+  return out;
+}

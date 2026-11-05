@@ -1,11 +1,14 @@
 // sync: bring a project's kit files up to the meta-repo version this runs from (D0018).
 // Three-way per file: the hash recorded at install, the file now, and the kit's file now.
 // A file the project changed or deleted is never overwritten or restored.
-import { mergeSettings, OMIT_FILE, readOmit, TEMPLATES } from "@meta-repo/agent-kit";
+import { mergeSettings, OMIT_FILE, readOmit, TEMPLATES, templateSettings } from "@meta-repo/agent-kit";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type Change,
+  type HookGroup,
+  hookKey,
+  matcherHash,
   kitFiles,
   pack,
   pointDep,
@@ -41,6 +44,7 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   const rec = readInstalled(target);
   if (!rec) throw new Error(`no ${RECORD} here: add the kit with init (or create) first`);
   const files = { ...rec.files };
+  const hooks = { ...rec.hooks };
   const changes: Change[] = [];
   const put = (path: string, data: Uint8Array | string) => opts.dryRun || write(target, path, data);
   const hashOf = (path: string) => (existsSync(join(target, path)) ? sha256(readFileSync(join(target, path))) : null);
@@ -49,14 +53,30 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   const omit = readOmit(target);
   if (!existsSync(join(target, SETTINGS))) changes.push({ action: "deleted", path: SETTINGS, note: "not there; not restored (agent-kit init adds it)" });
   else {
-    const { settings, added, omitted } = mergeSettings(
-      JSON.parse(readFileSync(join(target, SETTINGS), "utf8")),
-      JSON.parse(readFileSync(join(templates, SETTINGS), "utf8")),
-      omit,
-    );
-    if (added) {
+    const project = JSON.parse(readFileSync(join(target, SETTINGS), "utf8"));
+    const baseline = JSON.parse(readFileSync(templateSettings(templates), "utf8"));
+    // A kit hook group the project runs (same command) gets the kit's matcher, unless the project changed it.
+    let rematched = 0;
+    for (const [event, groups] of Object.entries((baseline.hooks ?? {}) as Record<string, HookGroup[]>)) {
+      for (const g of groups) {
+        const mine = ((project.hooks?.[event] ?? []) as HookGroup[]).find((m) => m.hooks.some((h) => h.command === g.hooks[0]?.command));
+        if (!mine) continue;
+        const key = hookKey(event, g);
+        if (matcherHash(mine) === matcherHash(g)) hooks[key] = matcherHash(g);
+        else if (hooks[key] === undefined || hooks[key] === matcherHash(mine)) {
+          const was = mine.matcher;
+          if (g.matcher === undefined) delete mine.matcher;
+          else mine.matcher = g.matcher;
+          hooks[key] = matcherHash(g);
+          rematched++;
+          changes.push({ action: "updated", path: `${SETTINGS} ${event} matcher`, note: `${was ?? "(none)"} -> ${g.matcher ?? "(none)"}${rec.hooks?.[key] === undefined ? " (not recorded at install: assumed unchanged)" : ""}` });
+        } else changes.push({ action: "kept", path: `${SETTINGS} ${event} matcher`, note: `changed here (${mine.matcher ?? "(none)"}); the kit's is ${g.matcher ?? "(none)"}` });
+      }
+    }
+    const { settings, added, omitted } = mergeSettings(project, baseline, omit);
+    if (added || rematched) {
       put(SETTINGS, JSON.stringify(settings, null, 2) + "\n");
-      changes.push({ action: "merged", path: SETTINGS, note: `${added} baseline rule${added === 1 ? "" : "s"} or hook${added === 1 ? "" : "s"} added` });
+      if (added) changes.push({ action: "merged", path: SETTINGS, note: `${added} baseline rule${added === 1 ? "" : "s"} or hook${added === 1 ? "" : "s"} added` });
     }
     for (const rule of omitted) changes.push({ action: "skipped", path: rule, note: `listed in ${OMIT_FILE}` });
   }
@@ -114,6 +134,6 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   }
 
   const to = source();
-  if (!opts.dryRun) writeInstalled(target, { ...rec, source: to, files });
+  if (!opts.dryRun) writeInstalled(target, { ...rec, source: to, files, hooks });
   return { from: rec.source, to, changes, reinstall };
 }

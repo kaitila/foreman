@@ -33,27 +33,27 @@ export function render(tasks: Task[]): string {
 }
 
 /**
- * foreman from $FOREMAN_BIN, the PATH, this repo's own copy, or the project's installed
- * package (node_modules/.bin isn't on a session's PATH). The package's own file, not its
- * .bin link: any dependency can ship a bin named foreman. Each is looked for in this checkout,
- * then in the main checkout, since a fresh worktree has no node_modules yet.
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
+ * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
+ * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * main checkout, since a fresh worktree has no node_modules yet.
  */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  if (Bun.which("foreman")) return ["foreman"];
   const roots = [root];
   const common = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore", timeout: 5000 });
   if (common.exitCode === 0) {
     const main = dirname(common.stdout.toString().trim());
     if (main !== root) roots.push(main);
   }
-  for (const dir of roots) {
-    for (const rel of ["packages/foreman/src/cli.ts", "node_modules/@meta-repo/foreman/src/cli.ts"]) {
-      const local = resolve(dir, rel);
-      if (Bun.file(local).size) return ["bun", local];
+  const find = (rel: string) => {
+    for (const dir of roots) {
+      const f = resolve(dir, rel);
+      if (Bun.file(f).size) return ["bun", f];
     }
-  }
-  return null;
+    return null;
+  };
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
 }
 
 /** The additionalContext to inject, or null for "say nothing". */

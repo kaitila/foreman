@@ -70,6 +70,8 @@ export interface QueueOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Report what would happen; merge nothing, send nothing back. */
   dryRun?: boolean;
+  /** Only this task (the board's Merge button): the same rules, for one approved task. */
+  only?: string;
 }
 
 export type QueueAction = "merged" | "would_merge" | "sent_back" | "would_send_back" | "skipped" | "error";
@@ -111,7 +113,8 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
   const settleMs = (opts.settleSeconds ?? 30) * 1000;
   const sleep = opts.sleep ?? defaultSleep;
   const report: QueueEntry[] = [];
-  for (const t of approvedOldestFirst(f)) {
+  const queue = approvedOldestFirst(f).filter((t) => opts.only === undefined || t.id === opts.only);
+  for (const t of queue) {
     const entry = (action: QueueAction, reason: string) => {
       report.push({ id: t.id, pr: t.pr, action, reason });
     };
