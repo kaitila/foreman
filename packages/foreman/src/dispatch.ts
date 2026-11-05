@@ -300,7 +300,7 @@ export class Dispatcher {
       rec.pid = pid;
       if (session) rec.session = session;
       try {
-        this.f.pinLease(t.id, actor, pid, session && { session: session.id, name: session.name });
+        this.f.pinLease(t.id, actor, pid, session && { session: session.id, name: session.name, sessionId: session.sessionId });
       } catch (e) {
         // Already submitted or verified (a very quick session): nothing left to pin.
         this.log(`${t.id} lease not pinned: ${(e as Error).message}`);

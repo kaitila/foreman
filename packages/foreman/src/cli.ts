@@ -11,6 +11,7 @@ import {
   type Status,
   type Task,
 } from "./core";
+import { hasLiveSession, printLogs } from "./activity";
 import { toMarkdown } from "./export";
 import { janitor } from "./janitor";
 import { mergeQueue, type QueueEntry } from "./queue";
@@ -31,9 +32,12 @@ Tasks
   add <title> [--spec md] [--check "cmd: bun test"]... [--path glob]... [--risk auto|review|human]
               [--parent T-1] [--blocked-by T-2]... [--from T-3] [--ready]
   ready-up <id>                 draft -> ready (needs at least one check)
-  list [--status s]... [--mine]
+  list [--status s]... [--mine]  (* marks a task with a live session)
   next                          ready tasks whose blockers are done
   show <id>                     task, checks and history
+  logs <id> [--role worker|verifier] [-f]
+                                what the task's dispatched sessions did: tool calls, text, results, cost;
+                                -f keeps printing new lines while a session runs
   edit <id> [--title t] [--spec md] [--check "cmd: ..."]... [--remove-check c2]... [--path g]... [--add-path g]... [--risk r]
                                 before work: anything; while claimed: the holder may only --add-path
   rework <id> --reason text     send a submitted, verified or approved task back to work (verify again after)
@@ -148,6 +152,7 @@ export async function main(argv: string[]): Promise<number | null> {
       "stuck-hours": { type: "string" },
       actor: { type: "string" },
       role: { type: "string" },
+      follow: { type: "boolean", short: "f" },
     },
   });
   const [cmd, ...args] = positionals;
@@ -233,7 +238,8 @@ export async function main(argv: string[]): Promise<number | null> {
       return one(f.markReady(need(0, "task id"), me)), 0;
     case "list": {
       const ts = f.list({ status: o.status as Status[] | undefined, assignee: o.mine ? me.name : undefined });
-      return out(ts, ts.map(line).join("\n") || "no tasks"), 0;
+      const live = new Set(ts.filter((t) => hasLiveSession(f, t.id)).map((t) => t.id));
+      return out(ts.map((t) => ({ ...t, live: live.has(t.id) })), ts.map((t) => `${live.has(t.id) ? "*" : " "} ${line(t)}`).join("\n") || "no tasks"), 0;
     }
     case "next": {
       const ts = f.ready(me.kind);
@@ -243,6 +249,14 @@ export async function main(argv: string[]): Promise<number | null> {
       const t = f.get(need(0, "task id"));
       const ev = f.events(t.id);
       return out({ ...t, events: ev }, toMarkdown(t, ev)), 0;
+    }
+    case "logs": {
+      const role = o.role as string | undefined;
+      if (role && !["worker", "verifier"].includes(role)) throw new ForemanError("invalid", `bad role ${role}`);
+      const lines: string[] = [];
+      const code = await printLogs(f, need(0, "task id"), { role, follow: o.follow as boolean | undefined, write: (l) => (o.json ? lines.push(l) : console.log(l)) });
+      if (o.json) console.log(JSON.stringify({ lines }));
+      return code;
     }
     case "edit": {
       const risk = o.risk as Task["risk"] | undefined;

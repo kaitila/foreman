@@ -227,6 +227,8 @@ What must hold:
 
 `fm dispatch` prints each session's `claude attach <id>` as it starts it. `fm show <task>` and the board's history show it too, on the `lease_pinned` event. The janitor runs `claude rm` on a task's sessions when it removes the worktree of a done or cancelled task. `--print`, or `FOREMAN_LAUNCH=print`, runs headless `claude -p` sessions instead, under foreman's own config dir (D0011).
 
+**Watching a session.** `fm logs <task> [--role worker|verifier] [-f]` reads the task's session transcripts (found from the session id on the `lease_pinned` event) and prints readable lines: `> Bash bun test` for a tool call with its main argument, `# text` for what the session said, `  -> first line` of a result, and turns and cost so far. `-f` keeps printing lines appended later until no session of the task is alive. `fm list` marks a task with a live session with `*`. The board's task view shows each session's last 10 lines and its cost, refreshed every few seconds while a session runs (`sessions` in `/api/tasks/<id>`, `live` on the task list). Nothing is stored: it all comes from the transcripts Claude Code already writes.
+
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.

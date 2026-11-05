@@ -74,7 +74,7 @@ describe("listing", () => {
     expect(byId[draft].status).toBe("draft");
     expect(byId[waiting].status).toBe("needs_approval");
     expect(byId[evil].status).toBe("ready");
-    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "pr", "risk", "status", "title", "updatedAt"]);
+    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "live", "pr", "risk", "status", "title", "updatedAt"]);
     expect(body.lastEvent).toBe(f.events().at(-1)!.id);
   });
 

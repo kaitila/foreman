@@ -370,7 +370,7 @@ export class Foreman {
    * doesn't time out; once it's gone, the claim is released at the next reclaim.
    * The dispatcher calls this right after it starts a worker or verifier.
    */
-  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string }): Task {
+  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string; sessionId?: string }): Task {
     if (!Number.isInteger(pid) || pid <= 0) throw new ForemanError("invalid", `bad pid ${pid}`);
     return this.tx(() => {
       const t = this.get(id);
