@@ -118,7 +118,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   ```
 - **MCP tools:** `list_tasks`, `next_tasks`, `show_task`, `create_task`, `claim_task`, `heartbeat`, `report_progress`, `submit_task`, `start_verify`, `record_verdict`, `mark_merged`, `reserve_number`, `edit_task`, `rework_task`. There is no approve tool.
 - **The PR** ([D0009](../../docs/decisions/D0009-edit-rework-verified-head.md)):
-  - **On submit:** a GitHub PR must be on this repo, and its branch must be the task's.
+  - **On submit:** a GitHub PR must be on this repo, and its branch must be the task's. A PR GitHub reports as CONFLICTING is refused (merge main, resolve, push). The dispatcher tells a worker on a task that came back from review why: the latest rework reason, each failed check with its evidence, and for a conflict send-back how to merge main.
   - **At the verdict:** foreman records the PR's head commit.
   - **On merge:** `merged` is refused if the PR has changed since. Rework and verify again.
 - **Identity:** `FOREMAN_ACTOR` names the caller. A command Claude Code runs for the model (`CLAUDE_CODE_CHILD_SESSION=1`) counts as an agent. IDE terminals don't, even though Claude Code sets `CLAUDECODE=1` there. This is a guardrail, not a security boundary: branch protection and the verifier are the hard limits.

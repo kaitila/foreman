@@ -7,7 +7,7 @@
 //   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type Actor, Foreman, ForemanError, type Status, type Task } from "./core";
+import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { pathsOverlap } from "./policy";
 
@@ -106,7 +106,43 @@ function common(actor: string): string {
   ].join("\n");
 }
 
-export function workerPrompt(t: Task, wt: Worktree): string {
+/**
+ * Why a task that was in review came back (T-0064): the latest rework reason, a failed
+ * verdict's failed checks with their evidence, and for a conflict send-back what to do.
+ * Empty for a task never submitted. `events` is the task's history, oldest first.
+ */
+export function returnNotes(t: Task, events: Event[]): string {
+  if (!events.some((e) => e.type === "submitted")) return "";
+  const last = (type: string) => [...events].reverse().find((e) => e.type === type);
+  const rework = last("rework");
+  const failed = last("verify_failed");
+  const verified = last("verified");
+  const lines: string[] = [];
+  if (rework) {
+    const reason = String(rework.data.reason ?? "");
+    lines.push(`- Latest rework reason: ${reason}`);
+    if (rework.data.conflict) {
+      lines.push(
+        `- Its PR conflicts with main. Merge origin/main into your branch (\`git fetch origin && git merge origin/main\`), resolve the conflicts, and if a decision or migration number now clashes, take a fresh one with reserve_number. Run the gate (\`bun run check\`) and push.`,
+      );
+    }
+  }
+  if (failed && (!verified || verified.id < failed.id)) {
+    const results = (failed.data.results as { check: string; pass: boolean; evidence: string }[] | undefined) ?? [];
+    for (const r of results.filter((x) => !x.pass)) {
+      const text = t.acceptance.find((c) => c.id === r.check)?.text;
+      lines.push(`- Failed check ${r.check}${text ? ` (${text})` : ""}: ${r.evidence}`);
+    }
+  }
+  if (!lines.length) return "";
+  return `
+This task came back from review. Fix this before anything else; resubmitting unchanged work fails again:
+${lines.join("\n")}
+- Before submit_task, confirm \`gh pr checks\` is green and \`gh pr view --json mergeable\` says MERGEABLE (not CONFLICTING or UNKNOWN). submit_task refuses a PR GitHub reports as CONFLICTING.
+`;
+}
+
+export function workerPrompt(t: Task, wt: Worktree, events: Event[] = []): string {
   const actor = actorFor("worker", t.id);
   return `You are ${actor}, started by foreman's dispatcher to do ${t.id}: "${t.title}".
 
@@ -118,7 +154,7 @@ Follow the ship skill, with these differences:
 - Step 1 is done: don't claim the task again and don't make another worktree. Start with show_task ${t.id}.
 - This worktree is fresh: install its dependencies first (\`bun install\`, or the install command in AGENTS.md).
 - Skip the fan-out in step 3: write the tests and docs yourself, then review your own diff.
-${common(actor)}
+${returnNotes(t, events)}${common(actor)}
 - Push only your branch (${wt.branch}). Never merge, push to main or force-push.
 - Finish with submit_task ${t.id} and the PR. If you can't finish, report_progress with what blocks you, then stop.`;
 }
@@ -266,7 +302,7 @@ export class Dispatcher {
     }
     const task = this.f.progress(t.id, actor, { branch: wt.branch, worktree: wt.path, note: "dispatched" });
     this.mine.add(t.id);
-    this.start("worker", task, actor, wt.path, workerPrompt(task, wt));
+    this.start("worker", task, actor, wt.path, workerPrompt(task, wt, this.f.events(task.id)));
     return task;
   }
 
