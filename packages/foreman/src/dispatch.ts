@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Actor, Foreman, ForemanError, type Status, type Task } from "./core";
 import { actorFor, defaultSpawner, launch, type LaunchOptions, type Role } from "./launch";
-import { pathsOverlap } from "./policy";
+import { loadConfig, pathsOverlap } from "./policy";
 
 /** What the dispatcher needs back from a session. */
 export interface SessionResult {
@@ -34,7 +34,21 @@ export const defaultLauncher: Launcher = (opts, onSpawn) =>
 export interface Worktree {
   branch: string;
   path: string;
+  /** Set when the maker just created the worktree (so it needs setting up). */
+  fresh?: boolean;
 }
+
+/** Outcome of the project's setup command. */
+export type SetupResult = { ok: true } | { ok: false; error: string };
+/** Runs `command` in `cwd` through the shell. */
+export type SetupRunner = (command: string, cwd: string) => SetupResult;
+
+export const shellSetup: SetupRunner = (command, cwd) => {
+  const p = Bun.spawnSync(["sh", "-c", command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (p.exitCode === 0) return { ok: true };
+  const out = `${p.stdout.toString()}${p.stderr.toString()}`.trim().split("\n").slice(-10).join("\n");
+  return { ok: false, error: `exit ${p.exitCode}${out ? `: ${out}` : ""}` };
+};
 
 /** Makes (or finds again) the worktree a task's worker runs in. */
 export type WorktreeMaker = (t: Task, root: string) => Worktree;
@@ -81,7 +95,7 @@ export function gitWorktree(base = "origin/main"): WorktreeMaker {
         : ["worktree", "add", "-q", "-b", branch, path, base];
     const r = git(args, root);
     if (!r.ok) throw new ForemanError("worktree", `git ${args.join(" ")} failed: ${r.err}`);
-    return { branch, path };
+    return { branch, path, fresh: true };
   };
 }
 
@@ -103,7 +117,14 @@ function common(actor: string): string {
   ].join("\n");
 }
 
-export function workerPrompt(t: Task, wt: Worktree): string {
+/** What the worker is told about preparing the worktree. */
+function setupLine(setup?: { command: string; result: SetupResult }): string {
+  if (!setup) return `- This worktree is fresh: install its dependencies first (\`bun install\`, or the install command in AGENTS.md).`;
+  if (setup.result.ok) return `- Foreman already ran the project's setup command in this worktree (\`${setup.command}\`): don't install dependencies again.`;
+  return `- Foreman ran the project's setup command in this worktree (\`${setup.command}\`) and it failed (${setup.result.error}). Fix what's needed to get the dependencies installed, or report what blocks you.`;
+}
+
+export function workerPrompt(t: Task, wt: Worktree, setup?: { command: string; result: SetupResult }): string {
   const actor = actorFor("worker", t.id);
   return `You are ${actor}, started by foreman's dispatcher to do ${t.id}: "${t.title}".
 
@@ -113,7 +134,7 @@ Foreman has already claimed ${t.id} for you and recorded its worktree and branch
 
 Follow the ship skill, with these differences:
 - Step 1 is done: don't claim the task again and don't make another worktree. Start with show_task ${t.id}.
-- This worktree is fresh: install its dependencies first (\`bun install\`, or the install command in AGENTS.md).
+${setupLine(setup)}
 - Skip the fan-out in step 3: write the tests and docs yourself, then review your own diff.
 ${common(actor)}
 - Push only your branch (${wt.branch}). Never merge, push to main or force-push.
@@ -144,6 +165,9 @@ export interface DispatchOptions {
   pollMs?: number;
   launcher?: Launcher;
   worktrees?: WorktreeMaker;
+  /** Command run in each new worktree. Default: foreman.json's "setup"; none means the prompt tells the session to install. */
+  setup?: string;
+  setupRunner?: SetupRunner;
   /** Who reclaims dead leases. Default: "dispatcher" (agent). */
   actor?: Actor;
   log?: (line: string) => void;
@@ -255,9 +279,22 @@ export class Dispatcher {
       this.log(`${t.id} released: no worktree: ${(e as Error).message}`);
       return null;
     }
+    let setup: { command: string; result: SetupResult } | undefined;
+    if (wt.fresh) {
+      let command: string | undefined;
+      try {
+        command = this.opts.setup ?? loadConfig(this.root()).setup;
+      } catch (e) {
+        this.log(`${t.id}: can't read foreman.json setup: ${(e as Error).message}`);
+      }
+      if (typeof command === "string" && command.trim()) {
+        setup = { command, result: (this.opts.setupRunner ?? shellSetup)(command, wt.path) };
+        this.log(`${t.id} setup ${setup.result.ok ? "done" : `failed: ${setup.result.error}`}`);
+      }
+    }
     const task = this.f.progress(t.id, actor, { branch: wt.branch, worktree: wt.path, note: "dispatched" });
     this.mine.add(t.id);
-    this.start("worker", task, actor, wt.path, workerPrompt(task, wt));
+    this.start("worker", task, actor, wt.path, workerPrompt(task, wt, setup));
     return task;
   }
 

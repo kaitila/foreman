@@ -65,6 +65,8 @@ export const DEFAULT_NUMBERS: Record<string, NumberSource> = {
 export interface Config {
   protectedPaths?: string[];
   numbers?: Record<string, NumberSource>;
+  /** Shell command that prepares a fresh worktree (e.g. "bun install && bun install --cwd web"); the dispatcher runs it once per new worktree. */
+  setup?: string;
   /** Deny rules per agent role; validated by roles.ts (D0019). */
   roles?: unknown;
 }
