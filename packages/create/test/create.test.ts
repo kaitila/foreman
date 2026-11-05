@@ -138,6 +138,23 @@ describe("init", () => {
   });
 });
 
+describe("init with a single decision log", () => {
+  test("adds no D0001 when decisions live in one file", () => {
+    const dir = repo({ "docs/decisions/decisions.md": "# Decisions\n\n## D12. Pick bun (2026-01-01)\n" });
+    init(dir);
+    expect(existsSync(join(dir, "docs/decisions/D0001-agent-kit.md"))).toBe(false);
+  });
+
+  test("follows foreman.json's numbers source", () => {
+    const dir = repo({
+      "foreman.json": JSON.stringify({ numbers: { decision: { file: "log/adr.md", pattern: "^ADR-(\\d+)" } } }),
+      "log/adr.md": "ADR-3 something\n",
+    });
+    init(dir);
+    expect(existsSync(join(dir, "docs/decisions/D0001-agent-kit.md"))).toBe(false);
+  });
+});
+
 describe("sync", () => {
   /** A project made by init, and a copy of agent-kit's templates to play the kit's next version. */
   function setup() {
@@ -184,6 +201,46 @@ describe("sync", () => {
     // Once the project's file matches the kit again, it's tracked again.
     put(dir, ".claude/agents/test-writer.md", "test-writer v2\n");
     expect(sync(dir, { templates: kit }).changes.map((c) => c.path)).toEqual([".claude/agents/docs-writer.md"]);
+  });
+
+  test("updates an installed hook group's matcher to the kit's, unless the project changed it", () => {
+    const { dir, kit } = setup();
+    const matcher = (d: string) => JSON.parse(read(d, ".claude/settings.json")).hooks.PreToolUse[0].matcher;
+    const setMatcher = (d: string, m: string) => {
+      const st = JSON.parse(read(d, ".claude/settings.json"));
+      st.hooks.PreToolUse[0].matcher = m;
+      put(d, ".claude/settings.json", JSON.stringify(st, null, 2) + "\n");
+    };
+    const kitMatcher = matcher(kit);
+    const old = "Bash|Edit|Write";
+    setMatcher(kit, "Bash|Edit|Write|Glob"); // the kit's next version
+    const next = matcher(kit);
+
+    // Installed with the kit's matcher at the time: it follows the kit.
+    const r = sync(dir, { templates: kit });
+    expect(matcher(dir)).toBe(next);
+    expect(r.changes).toContainEqual(expect.objectContaining({ action: "updated", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(sync(dir, { templates: kit }).changes).toEqual([]);
+
+    // An install from before matchers were recorded (older record): updated, and said so.
+    const legacy = repo({});
+    init(legacy);
+    setMatcher(legacy, old);
+    const rec = JSON.parse(read(legacy, ".meta-repo/installed.json"));
+    delete rec.hooks;
+    put(legacy, ".meta-repo/installed.json", JSON.stringify(rec));
+    const lr = sync(legacy, { templates: kit });
+    expect(matcher(legacy)).toBe(next);
+    expect(lr.changes.find((c) => c.path.endsWith("matcher"))?.note).toContain("not recorded");
+
+    // The project edited it: left alone, with a note.
+    const edited = repo({});
+    init(edited);
+    setMatcher(edited, "Bash|Read");
+    const er = sync(edited, { templates: kit });
+    expect(matcher(edited)).toBe("Bash|Read");
+    expect(er.changes).toContainEqual(expect.objectContaining({ action: "kept", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(kitMatcher).not.toBe(next);
   });
 
   test("merges new baseline rules into settings.json, honouring the omit list", () => {

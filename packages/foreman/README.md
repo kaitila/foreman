@@ -23,6 +23,7 @@ Status: MVP (step M3), plus M6: the launch adapter, the dispatcher, intake, the 
       "migration": { "glob": "db/*.sql", "pattern": "^(\\d+)_" } } }
   ```
   With `file`, the pattern runs over the file's text (multiline). With `glob`, it runs over each matched file's name. An entry replaces the default for its kind. A glob that matches nothing counts as empty (an empty folder is real), but a `file` that doesn't exist or can't be read is refused with its path, so `reserve` never hands out a number that file may already use. A malformed entry (neither or both of `file` and `glob`, or a pattern without a capture group) is refused.
+- **Where `foreman.json` is read:** from `origin/main` (else `origin/master`) via `git show`, so a checkout on an old or detached commit still uses the default branch's protected paths, number sources and role rules. Without such a branch (or file there) the working tree's copy is used. The files a number source scans are still read from disk.
 - **Exporting:** `export` writes a task as markdown (spec, checks, verdict, history) for the PR that delivers it.
 
 ```

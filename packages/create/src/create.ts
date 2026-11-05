@@ -8,6 +8,7 @@ import { generate, NAME } from "../../../presets/generate";
 import {
   type Change,
   matchingKitFiles,
+  matchingKitHooks,
   ownTemplate,
   pack,
   pointDep,
@@ -91,7 +92,7 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
   writeOnce(target, "foreman.json", ownTemplate("foreman.json"), changes);
   const db = name.replace(/\W/g, "_");
   writeOnce(target, CI_PATH, ownTemplate(PRESET_CI[preset] ?? "ci-bun.yml").replaceAll("{{db}}", db), changes);
-  writeInstalled(target, { source: source(), preset, files: { ...matchingKitFiles(target), ...vendored } });
+  writeInstalled(target, { source: source(), preset, files: { ...matchingKitFiles(target), ...vendored }, hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: RECORD });
 
   if (opts.install !== false) {
@@ -113,6 +114,36 @@ export interface InitOptions {
   today?: Date;
 }
 
+/** Does the repo already record decisions: per foreman.json's `numbers.decision` source when it has one, else as D*.md files or a log whose headings are `## Dnn.`? */
+function hasDecisions(target: string): boolean {
+  try {
+    const cfg = JSON.parse(readFileSync(join(target, "foreman.json"), "utf8")) as { numbers?: { decision?: { file?: string; glob?: string; pattern?: string } } };
+    const src = cfg.numbers?.decision;
+    if (src?.pattern) {
+      const re = new RegExp(src.pattern, "m");
+      if (src.file) {
+        const f = join(target, src.file);
+        if (existsSync(f) && re.test(readFileSync(f, "utf8"))) return true;
+      } else if (src.glob) {
+        if ([...new Bun.Glob(src.glob).scanSync({ cwd: target })].some((p) => re.test(p.split("/").pop()!))) return true;
+      }
+    }
+  } catch {
+    // no foreman.json, or one we can't read: fall through to looking at the folder
+  }
+  const decisions = join(target, "docs", "decisions");
+  if (!existsSync(decisions)) return false;
+  return readdirSync(decisions).some((f) => {
+    if (/^D\d+-.*\.md$/.test(f)) return true;
+    if (!f.endsWith(".md") || f === "README.md") return false;
+    try {
+      return /^#{1,6}\s+D\d+\b/m.test(readFileSync(join(decisions, f), "utf8"));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function init(dir: string, opts: InitOptions = {}): Change[] {
   const target = resolve(dir);
   if (!existsSync(join(target, ".git"))) throw new Error(`${dir} is not a git repository (use create for a new project)`);
@@ -129,8 +160,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
     }
   }
 
-  const decisions = join(target, "docs", "decisions");
-  const hasDecision = existsSync(decisions) && readdirSync(decisions).some((f) => /^D\d+-.*\.md$/.test(f));
+  const hasDecision = hasDecisions(target);
   if (hasDecision) changes.push({ action: "kept", path: "docs/decisions/", note: "already has decisions" });
   else {
     const date = (opts.today ?? new Date()).toISOString().slice(0, 10);
@@ -150,7 +180,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
     changes.push({ action: "skipped", path: CI_PATH, note: "package.json has no check script for CI to run" });
   } else writeOnce(target, CI_PATH, ownTemplate("ci-bun.yml"), changes);
 
-  writeInstalled(target, { source: source(), files: matchingKitFiles(target) });
+  writeInstalled(target, { source: source(), files: matchingKitFiles(target), hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: RECORD });
   return changes;
 }
