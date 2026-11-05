@@ -220,3 +220,21 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
     expect(run("ls", undefined, { FOREMAN_BIN: "false" }).code).toBe(0);
   });
 });
+
+describe("Bash deny rules match their words in order past options (T-0057)", () => {
+  const r = ctx(rules(["agent", "Bash(gh pr merge *)"], ["agent", "Bash(git push *)"]));
+  test.each([
+    "gh -R a/b pr merge 1",
+    "gh --repo a/b pr merge 1",
+    "gh --repo=a/b pr merge 1",
+    "git -C . push origin x",
+    "git -c core.x=1 --no-pager push",
+    "/usr/bin/git -C . push origin x",
+    "env FOO=1 git -C . push origin x",
+  ])("blocks %s", (cmd) => {
+    expect(checkCommand(cmd, r)).toContain("is denied to agent sessions");
+  });
+  test.each(["gh pr list", "gh -R a/b pr list", "git -C . status", "git -C push status", "gh pr view merge"])("allows %s", (cmd) => {
+    expect(checkCommand(cmd, r)).toBeNull();
+  });
+});

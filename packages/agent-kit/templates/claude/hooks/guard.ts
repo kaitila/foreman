@@ -322,6 +322,31 @@ export function bashPatternMatches(pattern: string, command: string): boolean {
   return re(p).test(c) || (p.endsWith(" *") && re(p.slice(0, -2)).test(c));
 }
 
+/** Options that take their value as the next word (`gh -R a/b`, `git -C dir`); other options are flags. */
+const RULE_VALUE_OPTIONS = new Set(["-C", "-c", "-R", "--repo", "--git-dir", "--work-tree", "--namespace", "--exec-path", "-H", "--hostname"]);
+
+/**
+ * Deny rules only: does `Bash(gh pr merge *)` match `gh -R a/b pr merge 1`? True when the rule's
+ * literal words appear in the command in order, with only options (and the values of known
+ * value-taking options) between them. Rules with a `*` before the end, or none at the end, don't qualify.
+ */
+export function bashWordsInOrder(pattern: string, words: string[]): boolean {
+  let p = pattern.trim().replace(/\s+/g, " ");
+  if (p.endsWith(":*")) p = `${p.slice(0, -2)} *`;
+  if (!p.endsWith(" *")) return false;
+  const lit = p.slice(0, -2).split(" ");
+  if (!lit.length || lit.some((w) => w.includes("*"))) return false;
+  let i = 0;
+  for (const [k, want] of lit.entries()) {
+    while (k > 0 && i < words.length && words[i]!.startsWith("-") && words[i] !== want) {
+      i += RULE_VALUE_OPTIONS.has(words[i]!) ? 2 : 1;
+    }
+    if (words[i] !== want) return false;
+    i++;
+  }
+  return true;
+}
+
 /** Claude Code's path rules: `//abs`, `~/home`, `/root-relative`, `relative`; a pattern without `/` matches at any depth. */
 export function pathPatternMatches(pattern: string, path: string, ctx: Pick<Context, "projectRoot" | "cwd">): boolean {
   const home = process.env.HOME ?? "";
@@ -359,16 +384,19 @@ function roleBashRule(words: string[], ctx: Context): string | null {
   if (typeof rules === "string") return rules;
   const bash = rules.filter((r) => splitRule(r.rule).tool === "Bash");
   if (!bash.length) return null;
-  const forms = new Set<string>();
+  const forms = new Map<string, string[]>();
   for (const layer of unwrapLayers(words)) {
     if (!layer.length) continue;
-    forms.add(layer.join(" "));
+    forms.set(layer.join(" "), layer);
     // `/usr/bin/ssh host` is `ssh host`.
-    forms.add([basename(layer[0]!), ...layer.slice(1)].join(" "));
+    const base = [basename(layer[0]!), ...layer.slice(1)];
+    forms.set(base.join(" "), base);
   }
   for (const r of bash) {
     const { spec } = splitRule(r.rule);
-    for (const f of forms) if (spec === null || bashPatternMatches(spec, f)) return denied(r, `\`${f}\``);
+    for (const [f, ws] of forms) {
+      if (spec === null || bashPatternMatches(spec, f) || bashWordsInOrder(spec, ws)) return denied(r, `\`${f}\``);
+    }
   }
   return null;
 }
