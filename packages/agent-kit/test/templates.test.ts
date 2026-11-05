@@ -54,12 +54,12 @@ describe("project-neutral", () => {
 });
 
 describe("well-formed", () => {
-  test.each(files.filter((f) => f.startsWith(".claude/skills/")))("%s has a name matching its folder, and a description", (f) => {
+  test.each(files.filter((f) => f.startsWith("claude/skills/")))("%s has a name matching its folder, and a description", (f) => {
     const fm = frontmatter(readFileSync(join(TEMPLATES, f), "utf8"));
     expect(fm.name).toBe(basename(dirname(f)));
     expect((fm.description ?? "").length).toBeGreaterThan(40);
   });
-  test.each(files.filter((f) => f.startsWith(".claude/agents/")))("%s has a name matching its file, and a description", (f) => {
+  test.each(files.filter((f) => f.startsWith("claude/agents/")))("%s has a name matching its file, and a description", (f) => {
     const fm = frontmatter(readFileSync(join(TEMPLATES, f), "utf8"));
     expect(fm.name).toBe(basename(f, ".md"));
     expect((fm.description ?? "").length).toBeGreaterThan(40);
@@ -77,7 +77,7 @@ describe("well-formed", () => {
     expect(text).toContain("no screenshots");
   });
   test("verify fails a PR whose CI is red or pending", () => {
-    const v = readFileSync(join(TEMPLATES, ".claude/skills/verify/SKILL.md"), "utf8");
+    const v = readFileSync(join(TEMPLATES, "claude/skills/verify/SKILL.md"), "utf8");
     expect(v).toContain("gh pr checks");
     expect(v).toMatch(/failing or still pending[^\n]*\*\*fail\*\*/);
   });
