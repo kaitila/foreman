@@ -773,12 +773,13 @@ function sh(cmd: string[], cwd: string): string | null {
   }
 }
 
-/** foreman from $FOREMAN_BIN, the PATH, or this repo's own copy. */
+/** foreman from $FOREMAN_BIN, this repo's own copy, or the PATH. The repo's own comes before the
+ * PATH so a worktree is judged by its own foreman, not an older linked one. */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  if (Bun.which("foreman")) return ["foreman"];
   const local = resolve(root, "packages/foreman/src/cli.ts");
-  return Bun.file(local).size ? ["bun", local] : null;
+  if (Bun.file(local).size) return ["bun", local];
+  return Bun.which("foreman") ? ["foreman"] : null;
 }
 
 export function realContext(cwd: string): Context {
