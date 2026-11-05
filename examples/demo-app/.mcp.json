@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "foreman": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "node_modules/.bin/foreman",
+        "mcp"
+      ]
+    }
+  }
+}

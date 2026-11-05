@@ -773,12 +773,18 @@ function sh(cmd: string[], cwd: string): string | null {
   }
 }
 
-/** foreman from $FOREMAN_BIN, the PATH, or this repo's own copy. */
+/**
+ * foreman from $FOREMAN_BIN, the PATH, this repo's own copy, or the project's installed
+ * package (node_modules/.bin isn't on a session's PATH).
+ */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
   if (Bun.which("foreman")) return ["foreman"];
-  const local = resolve(root, "packages/foreman/src/cli.ts");
-  return Bun.file(local).size ? ["bun", local] : null;
+  for (const rel of ["packages/foreman/src/cli.ts", "node_modules/.bin/foreman"]) {
+    const local = resolve(root, rel);
+    if (Bun.file(local).size) return ["bun", local];
+  }
+  return null;
 }
 
 export function realContext(cwd: string): Context {
