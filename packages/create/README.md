@@ -8,6 +8,8 @@ bun packages/create/src/cli.ts init [dir] [--name n]
 bun packages/create/src/cli.ts sync [dir] [--dry-run]
 ```
 
+`fm create`, `fm init` and `fm sync` run this same code from anywhere ([D0025](../../docs/decisions/D0025-one-global-fm.md)).
+
 Each prints one line per file: `created`, `updated`, `merged`, `kept`, `deleted`, `removed` or `skipped`, with the reason.
 
 ## create

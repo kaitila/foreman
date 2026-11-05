@@ -62,8 +62,10 @@
       "version": "0.1.0",
       "bin": {
         "foreman": "src/cli.ts",
+        "fm": "src/cli.ts",
       },
       "dependencies": {
+        "@meta-repo/create": "workspace:*",
         "@modelcontextprotocol/sdk": "1.32.0",
         "zod": "4.6.7",
       },

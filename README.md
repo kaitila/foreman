@@ -15,6 +15,19 @@ It also fills that codebase's gaps:
 - security scanning
 - isolation for agents working in parallel
 
+## Install
+
+For anyone, on a machine with [bun](https://bun.sh) and git:
+
+```sh
+git clone <this repo's URL> meta-repo && cd meta-repo
+bun install
+bun run link          # or: bun packages/foreman/src/cli.ts setup
+fm setup              # checks gh and claude, links fm, says how to fix what is missing
+```
+
+Then `fm` works from anywhere: `fm create ~/x` starts a project, `fm init` adds the kit to the repo you are in, `fm sync --all` takes the kit's updates in every project fm has seen, and `fm help` lists the rest. See [packages/foreman](packages/foreman/README.md).
+
 Status: research. Start with [docs/research-plan.md](docs/research-plan.md).
 
 License: [MIT](LICENSE).
