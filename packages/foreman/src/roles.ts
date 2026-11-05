@@ -79,8 +79,9 @@ export function roleOf(actor: string | null | undefined): AgentRole | null {
  */
 export function ruleWarning(rule: string): string | null {
   const m = /^(.*[^\s(]):\*\)$/s.exec(rule);
-  if (!m || !m[1].includes("(")) return null;
-  return `deny rule ${JSON.stringify(rule)} ends in ":*", the legacy form of " *", so it matches "${m[1].slice(m[1].indexOf("(") + 1)} *" and not the word with ":" after it; write ${JSON.stringify(`${m[1]} *)`)} if that is what you mean`;
+  const head = m?.[1];
+  if (!head || !head.includes("(")) return null;
+  return `deny rule ${JSON.stringify(rule)} ends in ":*", the legacy form of " *", so it matches "${head.slice(head.indexOf("(") + 1)} *" and not the word with ":" after it; write ${JSON.stringify(`${head} *)`)} if that is what you mean`;
 }
 
 /** The rules for a role ("agent" first, then the role's own), without repeats. */
