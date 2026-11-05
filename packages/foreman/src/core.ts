@@ -370,7 +370,7 @@ export class Foreman {
    * doesn't time out; once it's gone, the claim is released at the next reclaim.
    * The dispatcher calls this right after it starts a worker or verifier.
    */
-  pinLease(id: string, actor: Actor, pid: number): Task {
+  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string }): Task {
     if (!Number.isInteger(pid) || pid <= 0) throw new ForemanError("invalid", `bad pid ${pid}`);
     return this.tx(() => {
       const t = this.get(id);
@@ -379,7 +379,8 @@ export class Foreman {
       this.db
         .query(`INSERT OR REPLACE INTO lease_pids (task_id, assignee, pid) VALUES (?, ?, ?)`)
         .run(id, actor.name, pid);
-      this.event(id, actor, "lease_pinned", { pid });
+      // A background session (D0022) is named, so `fm show` and the board can say how to watch it.
+      this.event(id, actor, "lease_pinned", session ? { pid, ...session, attach: `claude attach ${session.session}` } : { pid });
       return this.get(id);
     });
   }
