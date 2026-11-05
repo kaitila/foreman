@@ -78,7 +78,7 @@ Housekeeping
                                 actor $FOREMAN_ACTOR; none for a person
   export <id> [--out dir]       write the task as markdown (default docs/tasks/<id>.md)
   mcp                           run the MCP server on stdio
-  serve [--port 4499]           local web board on 127.0.0.1; approving there needs the token it prints
+  serve [--port 4499]           local web board on 127.0.0.1; approve and merge from the link it prints
 
 Who you are: FOREMAN_ACTOR names you; CLAUDE_CODE_CHILD_SESSION=1 (a command Claude Code runs) or
 FOREMAN_AGENT=1 marks you as an agent.
@@ -185,9 +185,14 @@ export async function main(argv: string[]): Promise<number | null> {
     // then. Like `approve`, a person means an interactive terminal too (not a pipe or a log).
     const person = me.kind === "human" && process.stdin.isTTY === true && process.stdout.isTTY === true;
     const board = startBoard({ foreman: f, port, approver: person ? me : null });
-    console.log(`foreman board: ${board.url}`);
-    if (board.token) console.log(`approve token (paste it on the page; it is shown only here): ${board.token}`);
-    else console.log("read-only: not a person at an interactive terminal, so approving from the page is off");
+    if (board.token) {
+      // The token rides in the fragment, which the browser keeps to itself (D0021).
+      console.log(`foreman board: ${board.openUrl}`);
+      console.log("open this link to approve and merge from the page; it is shown only here");
+    } else {
+      console.log(`foreman board: ${board.url}`);
+      console.log("read-only: not a person at an interactive terminal, so approving and merging from the page are off");
+    }
     return null;
   }
   const lease = o.lease ? Number(o.lease) : undefined;

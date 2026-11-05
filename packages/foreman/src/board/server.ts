@@ -1,9 +1,12 @@
-// The local board (T-0035): one Bun.serve on 127.0.0.1, a read-only JSON API over the
-// same Foreman core, and one page with inline CSS/JS (no external assets, works offline).
-// The only write is approve, which needs the token `fm serve` prints to its own terminal
-// (never to a page or an API response) and, when the browser sends one, our own Origin.
+// The local board (T-0035, T-0067): one Bun.serve on 127.0.0.1, a read-only JSON API over
+// the same Foreman core, and one page with inline CSS/JS (no external assets, works offline).
+// The writes are approve, merge and run-queue. Each needs the token `fm serve` prints to its
+// own terminal, in the fragment of the URL it prints (never in a page or an API response),
+// and, when the browser sends one, our own Origin (D0021).
 import { timingSafeEqual } from "node:crypto";
 import { type Actor, type Event, type Foreman, ForemanError, type Status, type Task } from "../core";
+import { defaultRun, GITHUB_PR } from "../policy";
+import { judgeChecks, mergeQueuePass, type QueueEntry, type QueueOptions, readPr } from "../queue";
 import { pageHtml } from "./page";
 
 export const LANES: Status[] = [
@@ -23,12 +26,18 @@ export interface BoardOptions {
   foreman: Foreman;
   /** 0 picks a free port. */
   port?: number;
-  /** Who approves from the page. null: approving is off (an agent started the board). */
+  /** Who approves and merges from the page. null: both are off (an agent started the board). */
   approver: Actor | null;
+  /** The merge queue's gh runner, settle time and sleep (tests fake them). */
+  queue?: Omit<QueueOptions, "dryRun" | "only">;
+  /** How long a PR's state is cached for the cards, in ms (default 15000). */
+  prCacheMs?: number;
 }
 
 export interface Board {
   url: string;
+  /** The URL to open: `url` with the token in the fragment, which the browser never sends. */
+  openUrl: string;
   port: number;
   /** Shown once, in the terminal that started the board. null when approving is off. */
   token: string | null;
@@ -49,7 +58,7 @@ function sameToken(given: string | null, token: string): boolean {
 
 /** A task as the board lists it. */
 export function card(t: Task) {
-  return { id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, updatedAt: t.updatedAt };
+  return { id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, pr: t.pr, updatedAt: t.updatedAt };
 }
 
 /** Each acceptance check with the latest verdict recorded for it, if any. */
@@ -99,10 +108,53 @@ export function startBoard(opts: BoardOptions): Board {
     canApprove: token !== null,
   });
 
+  const run = opts.queue?.run ?? defaultRun;
+  const cwd = opts.queue?.cwd ?? f.root ?? process.cwd();
+  const prCacheMs = opts.prCacheMs ?? 15_000;
+  const prCache = new Map<string, { at: number; body: unknown }>();
+  /** A PR's state for its card: what the merge queue would read first, without merging. */
+  const prState = (t: Task) => {
+    if (!t.pr || !GITHUB_PR.test(t.pr)) return { pr: t.pr, readable: false, reason: "no GitHub PR" };
+    const hit = prCache.get(t.id);
+    if (hit && Date.now() - hit.at < prCacheMs) return hit.body;
+    const s = readPr(run, cwd, t.pr);
+    const verified = f.verifiedHead(t.id);
+    const body = s
+      ? { pr: t.pr, readable: true, mergeable: s.mergeable, checks: judgeChecks(s.checks), atVerified: verified !== null && s.headSha === verified }
+      : { pr: t.pr, readable: false, reason: `couldn't read ${t.pr} (is gh installed and logged in?)` };
+    prCache.set(t.id, { at: Date.now(), body });
+    return body;
+  };
+
+  // One merge-queue pass at a time, whoever asks: two clicks must not merge in parallel.
+  let passing = false;
+  const pass = async (only?: string): Promise<QueueEntry[]> => {
+    passing = true;
+    try {
+      return await mergeQueuePass(f, opts.approver!, { ...opts.queue, only });
+    } finally {
+      passing = false;
+      prCache.clear();
+    }
+  };
+
+  /** Every write: our own Origin if the browser sends one, then the token. null means go ahead. */
+  const refuse = (req: Request): Response | null => {
+    const origin = req.headers.get("origin");
+    if (origin !== null && !origins.has(origin)) return fail(403, "forbidden", "cross-origin request refused");
+    if (!token || !opts.approver) return fail(403, "forbidden", "approving and merging are off on this board");
+    if (!sameToken(req.headers.get("x-foreman-token"), token)) {
+      return fail(403, "forbidden", "this needs the token in the link fm serve printed");
+    }
+    return null;
+  };
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: opts.port ?? 4499,
-    fetch(req) {
+    // A merge waits for checks to settle (30 seconds by default) before it answers.
+    idleTimeout: 255,
+    async fetch(req) {
       const url = new URL(req.url);
       // DNS rebinding: a page on another name that resolves to 127.0.0.1 sends its own Host.
       if (!hosts.has(req.headers.get("host") ?? "")) return fail(421, "bad_host", "unknown host");
@@ -121,6 +173,8 @@ export function startBoard(opts: BoardOptions): Board {
             const events = f.events().filter((e) => e.id > since);
             return json({ events, lastEvent: events.at(-1)?.id ?? since });
           }
+          const pr = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/pr$/.exec(path);
+          if (pr) return json(prState(f.get(pr[1]!)));
           const m = /^\/api\/tasks\/([A-Za-z0-9_-]+)$/.exec(path);
           if (m) {
             const t = f.get(m[1]!);
@@ -129,17 +183,22 @@ export function startBoard(opts: BoardOptions): Board {
           }
           return fail(404, "not_found", "no such page");
         }
-        const a = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/approve$/.exec(path);
-        if (req.method === "POST" && a) {
-          const origin = req.headers.get("origin");
-          if (origin !== null && !origins.has(origin)) return fail(403, "forbidden", "cross-origin request refused");
-          if (!token || !opts.approver) return fail(403, "forbidden", "approving is off on this board");
-          if (!sameToken(req.headers.get("x-foreman-token"), token)) {
-            return fail(403, "forbidden", "approving needs the token printed by fm serve");
+        const w = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/(approve|merge)$/.exec(path);
+        const runQueue = path === "/api/queue/run";
+        if (req.method === "POST" && (w || runQueue)) {
+          const no = refuse(req);
+          if (no) return no;
+          if (w?.[2] === "approve") return json({ task: f.approve(w[1]!, opts.approver!) });
+          if (passing) return fail(409, "busy", "a merge-queue pass is already running: wait for its result");
+          if (w) {
+            const t = f.get(w[1]!);
+            if (t.status !== "approved") return fail(409, "not_approved", `${t.id} is ${t.status}, not approved: nothing to merge`);
+            const entries = await pass(t.id);
+            return json({ entry: entries[0] ?? null, entries, task: f.get(t.id) });
           }
-          return json({ task: f.approve(a[1]!, opts.approver) });
+          return json({ entries: await pass() });
         }
-        return fail(405, "method_not_allowed", "the board is read-only, except approve");
+        return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
       } catch (e) {
         if (e instanceof ForemanError) return fail(e.code === "not_found" ? 404 : 409, e.code, e.message);
         return fail(500, "error", "internal error");
@@ -152,6 +211,7 @@ export function startBoard(opts: BoardOptions): Board {
   origins = new Set([...hosts].map((h) => `http://${h}`));
   return {
     url: `http://127.0.0.1:${port}`,
+    openUrl: token ? `http://127.0.0.1:${port}/#t=${token}` : `http://127.0.0.1:${port}/`,
     port,
     token,
     stop: () => server.stop(true),
