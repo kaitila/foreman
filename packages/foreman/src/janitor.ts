@@ -21,7 +21,8 @@ export interface JanitorOptions {
 
 export interface JanitorReport {
   reclaimed: string[];
-  removed: { id: string; worktree: string; branchDeleted: boolean; portsReleased: boolean }[];
+  /** sessions: the task's Claude Code background sessions removed with `claude rm` (D0022). */
+  removed: { id: string; worktree: string; branchDeleted: boolean; portsReleased: boolean; sessions?: string[] }[];
   kept: { id: string; worktree: string; reason: string }[];
   stuck: { id: string; status: Status; since: number; hours: number; assignee: string | null }[];
 }
@@ -134,7 +135,10 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
       );
       if (merged) branchDeleted = run(["git", "branch", "-D", t.branch], root) !== null;
     }
-    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased });
+    // Its background sessions (D0022) leave the person's `claude agents --all` with it.
+    const ids = new Set(f.events(t.id).flatMap((e) => (e.type === "lease_pinned" && typeof e.data.session === "string" ? [e.data.session] : [])));
+    const sessions = [...ids].filter((id) => /^[0-9a-f]+$/.test(id) && run(["claude", "rm", id], root) !== null);
+    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased, ...(sessions.length ? { sessions } : {}) });
   }
 
   const limit = (opts.stuckHours ?? 24) * 3_600_000;
