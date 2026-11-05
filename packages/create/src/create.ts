@@ -8,6 +8,7 @@ import { generate, NAME } from "../../../presets/generate";
 import {
   type Change,
   matchingKitFiles,
+  matchingKitHooks,
   ownTemplate,
   pack,
   pointDep,
@@ -91,7 +92,7 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
   writeOnce(target, "foreman.json", ownTemplate("foreman.json"), changes);
   const db = name.replace(/\W/g, "_");
   writeOnce(target, CI_PATH, ownTemplate(PRESET_CI[preset] ?? "ci-bun.yml").replaceAll("{{db}}", db), changes);
-  writeInstalled(target, { source: source(), preset, files: { ...matchingKitFiles(target), ...vendored } });
+  writeInstalled(target, { source: source(), preset, files: { ...matchingKitFiles(target), ...vendored }, hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: RECORD });
 
   if (opts.install !== false) {
@@ -179,7 +180,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
     changes.push({ action: "skipped", path: CI_PATH, note: "package.json has no check script for CI to run" });
   } else writeOnce(target, CI_PATH, ownTemplate("ci-bun.yml"), changes);
 
-  writeInstalled(target, { source: source(), files: matchingKitFiles(target) });
+  writeInstalled(target, { source: source(), files: matchingKitFiles(target), hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: RECORD });
   return changes;
 }

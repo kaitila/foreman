@@ -203,6 +203,46 @@ describe("sync", () => {
     expect(sync(dir, { templates: kit }).changes.map((c) => c.path)).toEqual([".claude/agents/docs-writer.md"]);
   });
 
+  test("updates an installed hook group's matcher to the kit's, unless the project changed it", () => {
+    const { dir, kit } = setup();
+    const matcher = (d: string) => JSON.parse(read(d, ".claude/settings.json")).hooks.PreToolUse[0].matcher;
+    const setMatcher = (d: string, m: string) => {
+      const st = JSON.parse(read(d, ".claude/settings.json"));
+      st.hooks.PreToolUse[0].matcher = m;
+      put(d, ".claude/settings.json", JSON.stringify(st, null, 2) + "\n");
+    };
+    const kitMatcher = matcher(kit);
+    const old = "Bash|Edit|Write";
+    setMatcher(kit, "Bash|Edit|Write|Glob"); // the kit's next version
+    const next = matcher(kit);
+
+    // Installed with the kit's matcher at the time: it follows the kit.
+    const r = sync(dir, { templates: kit });
+    expect(matcher(dir)).toBe(next);
+    expect(r.changes).toContainEqual(expect.objectContaining({ action: "updated", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(sync(dir, { templates: kit }).changes).toEqual([]);
+
+    // An install from before matchers were recorded (older record): updated, and said so.
+    const legacy = repo({});
+    init(legacy);
+    setMatcher(legacy, old);
+    const rec = JSON.parse(read(legacy, ".meta-repo/installed.json"));
+    delete rec.hooks;
+    put(legacy, ".meta-repo/installed.json", JSON.stringify(rec));
+    const lr = sync(legacy, { templates: kit });
+    expect(matcher(legacy)).toBe(next);
+    expect(lr.changes.find((c) => c.path.endsWith("matcher"))?.note).toContain("not recorded");
+
+    // The project edited it: left alone, with a note.
+    const edited = repo({});
+    init(edited);
+    setMatcher(edited, "Bash|Read");
+    const er = sync(edited, { templates: kit });
+    expect(matcher(edited)).toBe("Bash|Read");
+    expect(er.changes).toContainEqual(expect.objectContaining({ action: "kept", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(kitMatcher).not.toBe(next);
+  });
+
   test("merges new baseline rules into settings.json, honouring the omit list", () => {
     const { dir, kit } = setup();
     const baseline = JSON.parse(read(kit, ".claude/settings.json"));
