@@ -73,6 +73,16 @@ export function roleOf(actor: string | null | undefined): AgentRole | null {
   return ROLES.find((r) => actor === r || actor.startsWith(`${r}-`)) ?? null;
 }
 
+/**
+ * A warning for a rule whose specifier ends in ":*" right after a word: that is the legacy
+ * suffix for " *", so `Bash(*gamma prod:*)` means `gamma prod *` and lets `gamma prod:pull` through.
+ */
+export function ruleWarning(rule: string): string | null {
+  const m = /^(.*[^\s(]):\*\)$/s.exec(rule);
+  if (!m || !m[1].includes("(")) return null;
+  return `deny rule ${JSON.stringify(rule)} ends in ":*", the legacy form of " *", so it matches "${m[1].slice(m[1].indexOf("(") + 1)} *" and not the word with ":" after it; write ${JSON.stringify(`${m[1]} *)`)} if that is what you mean`;
+}
+
 /** The rules for a role ("agent" first, then the role's own), without repeats. */
 export function rulesForRole(roles: Record<string, string[]>, role: AgentRole | null): RoleRule[] {
   const out: RoleRule[] = [];
