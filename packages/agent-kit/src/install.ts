@@ -7,6 +7,26 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 export const TEMPLATES = join(import.meta.dir, "..", "templates");
+
+/**
+ * The kit keeps its .claude files under templates/claude/ (no dot): Claude Code treats any path
+ * with a .claude/ segment as sensitive and won't let an unattended agent edit it (D0023).
+ * A project gets them at .claude/. A templates dir laid out with .claude/ still works.
+ */
+export function installedPath(rel: string): string {
+  return rel === "claude" || rel.startsWith("claude/") ? `.${rel}` : rel;
+}
+
+/** Where the kit's settings.json lives in a templates dir (either layout). */
+export function templateSettings(templates = TEMPLATES): string {
+  const plain = join(templates, "claude", "settings.json");
+  return existsSync(plain) ? plain : join(templates, ".claude", "settings.json");
+}
+
+/** The kit's files: where each is in the templates dir, and where it goes in a project. */
+export function templateFiles(templates = TEMPLATES): { src: string; rel: string }[] {
+  return walk(templates).map((t) => ({ src: join(templates, t), rel: installedPath(t) }));
+}
 /** The project's record of baseline rules it removed on purpose. Not a template: init never writes it. */
 export const OMIT_FILE = join(".claude", "agent-kit.json");
 
@@ -103,8 +123,7 @@ export function mergeSettings(
 export function install(target: string, templates = TEMPLATES): InstallResult {
   const result: InstallResult = { created: [], merged: [], kept: [], omitted: [], unmatchedOmit: [] };
   const omit = readOmit(target);
-  for (const rel of walk(templates)) {
-    const src = join(templates, rel);
+  for (const { src, rel } of templateFiles(templates)) {
     const dst = join(target, rel);
     const shown = relative(target, dst);
     if (rel === join(".claude", "settings.json") && (existsSync(dst) || omit.length)) {

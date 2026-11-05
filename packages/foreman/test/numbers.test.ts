@@ -152,3 +152,24 @@ test("protectedPaths still load alongside numbers", () => {
   expect(loadProtected(repo({ "foreman.json": numbers({}) }))).toEqual(DEFAULT_PROTECTED);
   expect(loadProtected(null)).toEqual(DEFAULT_PROTECTED);
 });
+
+test("foreman.json comes from origin/main, not a stale working tree", () => {
+  const root = repo({});
+  const sh = (...a: string[]) => Bun.spawnSync(["git", "-c", "user.email=a@b", "-c", "user.name=a", ...a], { cwd: root });
+  sh("init", "-q");
+  sh("commit", "-q", "--allow-empty", "-m", "empty");
+  writeFileSync(
+    join(root, "foreman.json"),
+    JSON.stringify({ protectedPaths: ["secret/**"], numbers: { adr: { glob: "adr/*", pattern: "^(\\d+)" } } }),
+  );
+  mkdirSync(join(root, "adr"));
+  writeFileSync(join(root, "adr/0009-x"), "");
+  sh("add", ".");
+  sh("commit", "-q", "-m", "cfg");
+  sh("update-ref", "refs/remotes/origin/main", "HEAD");
+  sh("reset", "-q", "--hard", "HEAD~1"); // the checkout is now on a commit without foreman.json
+  mkdirSync(join(root, "adr"));
+  writeFileSync(join(root, "adr/0009-x"), "");
+  expect(loadProtected(root)).toEqual(["secret/**", "foreman.json"]);
+  expect(highestOnDisk(root, "adr")).toBe(9);
+});

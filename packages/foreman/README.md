@@ -23,6 +23,7 @@ Status: MVP (step M3), plus M6: the launch adapter, the dispatcher, intake, the 
       "migration": { "glob": "db/*.sql", "pattern": "^(\\d+)_" } } }
   ```
   With `file`, the pattern runs over the file's text (multiline). With `glob`, it runs over each matched file's name. An entry replaces the default for its kind. A glob that matches nothing counts as empty (an empty folder is real), but a `file` that doesn't exist or can't be read is refused with its path, so `reserve` never hands out a number that file may already use. A malformed entry (neither or both of `file` and `glob`, or a pattern without a capture group) is refused.
+- **Where `foreman.json` is read:** from `origin/main` (else `origin/master`) via `git show`, so a checkout on an old or detached commit still uses the default branch's protected paths, number sources and role rules. Without such a branch (or file there) the working tree's copy is used. The files a number source scans are still read from disk.
 - **Exporting:** `export` writes a task as markdown (spec, checks, verdict, history) for the PR that delivers it.
 
 ```
@@ -146,7 +147,9 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 
 ## Launch adapter
 
-`src/launch.ts` starts a headless Claude Code session (`claude -p`) for one role: `worker`, `verifier` or `intake`. It keeps the person's own setup out of the session.
+`src/launch.ts` starts a Claude Code session for one role: `worker`, `verifier` or `intake`. It keeps the person's own setup out of the session. It has two modes:
+- **Print mode** (`claude -p`, the default for `launch()`, and always for intake) runs under a config dir of foreman's own. It is described first below.
+- **Background mode** (`mode: "bg"`, what the dispatcher uses) starts a `claude --bg` session that the person can see in `claude agents` ([Background sessions](#background-sessions)).
 
 - **Own config dir:** `CLAUDE_CONFIG_DIR` is `<main checkout>/.foreman/claude-config` by default. It holds only `.credentials.json`, a symlink to `~/.claude/.credentials.json`, never a copy. The person's settings, hooks and memory don't load.
 - **Nothing from above the repo:** `--settings` sets `claudeMdExcludes` to every `CLAUDE.md` (also inside a `.claude` folder), `CLAUDE.local.md` and `.claude` rules folder in the directories above the repo root. A repo under the home directory otherwise loads `~/.claude/CLAUDE.md`, `~/CLAUDE.md` and those rules even with its own config dir. `--bare` would lose the login, and `--setting-sources` alone doesn't stop these files.
@@ -155,10 +158,10 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   - `verifier`: read tools, `Bash`, `Skill`, and foreman's show, list, verify, verdict and heartbeat tools. Edit tools are disallowed.
   - `intake`: read tools and foreman's list, show and create tools. Edit tools, `Bash` and every other foreman tool are disallowed. The adapter can't restrict `Bash` to read-only commands, so intake gets none.
   - **Plus the role rules:** `foreman.json`'s `agent` and role deny rules ([Role rules](#role-rules)) are added to `--disallowedTools`. They are read from the main checkout (the `policyRoot` option changes where). A malformed `roles` block stops the launch.
-- **MCP servers:** with the `mcpConfig` option the session gets exactly those servers (`--mcp-config` plus `--strict-mcp-config`), and the project's `.mcp.json` is not loaded. Without it, `.mcp.json` applies.
+- **MCP servers:** always `--strict-mcp-config`, so user servers and claude.ai connectors stay out (R5.3b found print mode got the connectors without it). The session gets the servers in the `mcpConfig` option. Without it, it gets the servers in the main checkout's `.mcp.json`, or foreman's own server if there is none.
 - **Limits per role:** `--max-turns`, `--max-budget-usd` and a wall-clock timeout.
 - **Cleanup:** when a session ends, its process group gets SIGTERM, so leftover shells and servers go too. On timeout it gets SIGTERM, then SIGKILL after a grace period. Sessions still running are killed if foreman exits or gets SIGINT or SIGTERM.
-- **Environment:** `FOREMAN_ACTOR=<role>-<taskId>`. `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` are removed, so the child doesn't think it is nested.
+- **Environment:** `FOREMAN_ACTOR=<role>-<taskId>`. `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION` and a background session's own variables (`CLAUDE_JOB_DIR`, `CLAUDE_CODE_MESSAGING_*`, `CLAUDE_PID`, `CLAUDE_CODE_SESSION_ATTENDED`) are removed, so the child doesn't think it is nested.
 - **Login:** `launch()` refuses to start without `~/.claude/.credentials.json` (the `credentials` option changes the path) unless `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set. A login kept only in an OS keychain can't be shared this way. If the symlink was replaced by a file after a run, the result's `warnings` says so.
 
 ```ts
@@ -176,11 +179,53 @@ const r = await launch({
 
 `buildLaunch()` returns the command and environment without starting anything.
 
-**Live test:** `bun run live-launch` runs real Claude Code against a fake home with markers in `~/.claude/CLAUDE.md`, `~/CLAUDE.md`, rules above the repo and a user hook. A plain session must see them. A verifier started by `launch()` must see only the repo's own CLAUDE.md, the user hook must not run, the project's own PreToolUse hook must run, and the login must still be a symlink afterwards. It is opt-in and not run in CI; it costs about a cent with Haiku.
+**Live test, print mode:** `bun run live-launch` runs real Claude Code against a fake home with markers in `~/.claude/CLAUDE.md`, `~/CLAUDE.md`, rules above the repo and a user hook. A plain session must see them. A verifier started by `launch()` must see only the repo's own CLAUDE.md, the user hook must not run, the project's own PreToolUse hook must run, and the login must still be a symlink afterwards. It is opt-in and not run in CI; it costs about a cent with Haiku.
+
+### Background sessions
+
+With `mode: "bg"` ([D0022](../../docs/decisions/D0022-background-sessions.md), research in [R5.3b](../../docs/research/R5.3b-background-sessions.md)), the session is `claude --bg --name "<repo> <task> <role>"` on the person's own config dir. That is why it shows in their `claude agents`. Isolation comes from flags instead of a separate dir:
+- **`--setting-sources project,local`:** no user CLAUDE.md, rules, hooks, skills, agents or commands, and no account-synced skills.
+- **`--strict-mcp-config --mcp-config`** with the servers above: no user or local MCP servers, no claude.ai connectors.
+- **`--settings`** with three entries:
+  - `claudeMdExcludes` as in print mode;
+  - `autoMemoryEnabled: false`, without which the person's auto memory for the project loads;
+  - `env` holding every `FOREMAN_*` variable. A `--bg` session runs under Claude Code's background service and doesn't inherit the launching process's environment, so without this `FOREMAN_ACTOR` wouldn't reach the guard hook.
+- **`--permission-mode dontAsk`:** a tool outside the allowed list is refused, not left waiting for a person. Tools and deny rules are the same as in print mode.
+
+`--bg` ignores `--max-turns` and `--max-budget-usd`, and its session doesn't exit when its turn ends. So `launch()` watches the session itself:
+- **Every 2 s** (`pollMs`), it reads `claude agents --json --all` and the session's transcript (`<config>/projects/<cwd>/<session>.jsonl`).
+- **The first PID** it sees goes to `onSpawn`, with the session's id and name.
+- **Turns** are the transcript's API responses, counted once each. **Cost** is estimated from their token usage and a price table (`PRICES`); `--bg` reports none.
+- **The turn is over** once the session shows `idle` on two looks in a row after at least one response. `launch()` then runs `claude stop`. The session stays in `claude agents --all`, where it can be attached to or resumed.
+- **Stopped early:** past the turn or budget limit (`subtype` `error_max_turns` or `error_max_budget_usd`), past the timeout (`timedOut`), or after `waitingLimitMs` (10 min) at a permission prompt. The result is an error.
+- **Stopped outside foreman:** if someone else stops or removes the session, that's an error too, and foreman doesn't stop it again.
+- **The result** is the transcript's last reply. The job timeline's copy can be cut short or redacted.
+- **Stopped on exit:** sessions still running are stopped if foreman exits or is interrupted.
+- **If `claude --bg` refuses,** for instance in a workspace the person never trusted, `launch()` runs the session in print mode and says why in `warnings`. Pass `fallbackToPrint: false` to get an error instead. A worktree inside a trusted repo is trusted.
+
+**Live test, background mode:** `bun packages/foreman/scripts/live-launch-bg.ts`, from the repo root. `--bg` refuses an untrusted workspace, so the test builds a stand-in config dir laid out like `~/.claude`:
+- **A marker in every user-level place:** CLAUDE.md, rules, auto memory, a skill, an agent, a command, three hooks, and a user and a local MCP server;
+- **the scratch repo's trust**, and a link to the real login, so the claude.ai connectors come from the real account.
+- **The repo:** a CLAUDE.md marker, a skill, and a hook that records `$FOREMAN_ACTOR`, with a CLAUDE.md and rules above it.
+
+What must hold:
+- **The control:** a plain `--bg` session must see all of it.
+- **A verifier from `launch()`** must see only the project's CLAUDE.md and skill, and only foreman's MCP server, with no connectors. Only the project's hook may run, and it must see `FOREMAN_ACTOR`.
+- **The verifier's session** must appear in that config dir's `claude agents` and be stopped at the end.
+
+`LIVE_CONFIG_DIR=~/.claude` runs the verifier half against a real config dir, once its owner has trusted the printed scratch path. Opt-in, not in CI, about a cent with Haiku.
 
 ## Dispatcher
 
-`fm dispatch [--max 3] [--once] [--model m] [--budget usd]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
+`fm dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
+
+**Watching the sessions.** Workers and verifiers run as Claude Code background sessions ([D0022](../../docs/decisions/D0022-background-sessions.md)), so the person watches them with Claude Code's own commands:
+- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `meta-repo T-0042 worker`);
+- `claude attach <name or id>` opens one in the terminal, to watch it or answer it;
+- `claude logs <id>` prints its recent output; `claude stop <id>` stops it;
+- `claude --resume <session id>` continues one after foreman has stopped it.
+
+`fm dispatch` prints each session's `claude attach <id>` as it starts it. `fm show <task>` and the board's history show it too, on the `lease_pinned` event. The janitor runs `claude rm` on a task's sessions when it removes the worktree of a done or cancelled task. `--print`, or `FOREMAN_LAUNCH=print`, runs headless `claude -p` sessions instead, under foreman's own config dir (D0011).
 
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
@@ -193,7 +238,7 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
 - **`--once`:** start what fits now, see those tasks through verification, then stop. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
-Tests use a fake launcher (`Dispatcher`'s `launcher` option). `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
+Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
 
 ## Intake
 

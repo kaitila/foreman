@@ -167,13 +167,13 @@ describe("sync", () => {
 
   test("updates what the project left alone, keeps what it changed or deleted, adds what's new", () => {
     const { dir, kit } = setup();
-    put(kit, ".claude/agents/reviewer.md", "reviewer v2\n"); // project left it alone
-    put(kit, ".claude/agents/test-writer.md", "test-writer v2\n"); // project changed it
+    put(kit, "claude/agents/reviewer.md", "reviewer v2\n"); // project left it alone
+    put(kit, "claude/agents/test-writer.md", "test-writer v2\n"); // project changed it
     put(dir, ".claude/agents/test-writer.md", "our test-writer\n");
-    put(kit, ".claude/agents/docs-writer.md", "docs-writer v2\n"); // project deleted it
+    put(kit, "claude/agents/docs-writer.md", "docs-writer v2\n"); // project deleted it
     unlinkSync(join(dir, ".claude/agents/docs-writer.md"));
-    put(kit, ".claude/agents/new-agent.md", "new\n");
-    unlinkSync(join(kit, ".claude/skills/verify/SKILL.md")); // dropped from the kit
+    put(kit, "claude/agents/new-agent.md", "new\n");
+    unlinkSync(join(kit, "claude/skills/verify/SKILL.md")); // dropped from the kit
 
     const r = sync(dir, { templates: kit });
     const by = Object.fromEntries(r.changes.map((c) => [c.path, c.action]));
@@ -203,11 +203,53 @@ describe("sync", () => {
     expect(sync(dir, { templates: kit }).changes.map((c) => c.path)).toEqual([".claude/agents/docs-writer.md"]);
   });
 
+  test("updates an installed hook group's matcher to the kit's, unless the project changed it", () => {
+    const { dir, kit } = setup();
+    // The kit keeps its settings at claude/ (D0023); a project has them at .claude/.
+    const at = (d: string) => (d === kit ? "claude/settings.json" : ".claude/settings.json");
+    const matcher = (d: string) => JSON.parse(read(d, at(d))).hooks.PreToolUse[0].matcher;
+    const setMatcher = (d: string, m: string) => {
+      const st = JSON.parse(read(d, at(d)));
+      st.hooks.PreToolUse[0].matcher = m;
+      put(d, at(d), JSON.stringify(st, null, 2) + "\n");
+    };
+    const kitMatcher = matcher(kit);
+    const old = "Bash|Edit|Write";
+    setMatcher(kit, "Bash|Edit|Write|Glob"); // the kit's next version
+    const next = matcher(kit);
+
+    // Installed with the kit's matcher at the time: it follows the kit.
+    const r = sync(dir, { templates: kit });
+    expect(matcher(dir)).toBe(next);
+    expect(r.changes).toContainEqual(expect.objectContaining({ action: "updated", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(sync(dir, { templates: kit }).changes).toEqual([]);
+
+    // An install from before matchers were recorded (older record): updated, and said so.
+    const legacy = repo({});
+    init(legacy);
+    setMatcher(legacy, old);
+    const rec = JSON.parse(read(legacy, ".meta-repo/installed.json"));
+    delete rec.hooks;
+    put(legacy, ".meta-repo/installed.json", JSON.stringify(rec));
+    const lr = sync(legacy, { templates: kit });
+    expect(matcher(legacy)).toBe(next);
+    expect(lr.changes.find((c) => c.path.endsWith("matcher"))?.note).toContain("not recorded");
+
+    // The project edited it: left alone, with a note.
+    const edited = repo({});
+    init(edited);
+    setMatcher(edited, "Bash|Read");
+    const er = sync(edited, { templates: kit });
+    expect(matcher(edited)).toBe("Bash|Read");
+    expect(er.changes).toContainEqual(expect.objectContaining({ action: "kept", path: ".claude/settings.json PreToolUse matcher" }));
+    expect(kitMatcher).not.toBe(next);
+  });
+
   test("merges new baseline rules into settings.json, honouring the omit list", () => {
     const { dir, kit } = setup();
-    const baseline = JSON.parse(read(kit, ".claude/settings.json"));
+    const baseline = JSON.parse(read(kit, "claude/settings.json"));
     baseline.permissions.deny.push("Bash(new-danger *)", "Bash(unwanted *)");
-    put(kit, ".claude/settings.json", JSON.stringify(baseline));
+    put(kit, "claude/settings.json", JSON.stringify(baseline));
     put(dir, ".claude/agent-kit.json", JSON.stringify({ omit: ["Bash(unwanted *)"] }));
     const r = sync(dir, { templates: kit });
     expect(r.changes).toContainEqual(expect.objectContaining({ action: "merged", path: ".claude/settings.json" }));
@@ -219,7 +261,7 @@ describe("sync", () => {
 
   test("a dry run reports the same changes and writes nothing", () => {
     const { dir, kit } = setup();
-    put(kit, ".claude/agents/reviewer.md", "reviewer v2\n");
+    put(kit, "claude/agents/reviewer.md", "reviewer v2\n");
     const before = read(dir, RECORD);
     const r = sync(dir, { templates: kit, dryRun: true });
     expect(r.changes).toEqual([{ action: "updated", path: ".claude/agents/reviewer.md" }]);

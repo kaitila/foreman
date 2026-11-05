@@ -69,10 +69,20 @@ export interface Config {
   roles?: unknown;
 }
 
-/** The repo's foreman.json, or {} without one. Throws if it isn't JSON. */
-export function loadConfig(root: string | null): Config {
-  const file = root && join(root, "foreman.json");
-  return file && existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Config) : {};
+/**
+ * The repo's foreman.json, or {} without one. Read from the default branch
+ * (origin/main, else origin/master) so a main checkout left on an old or detached
+ * commit can't hand out wrong numbers or fall back to default protected paths; the
+ * working tree's copy is used only when no such branch has the file. Throws if it isn't JSON.
+ */
+export function loadConfig(root: string | null, run: Run = defaultRun): Config {
+  if (!root) return {};
+  for (const ref of ["origin/main", "origin/master"]) {
+    const text = run(["git", "show", `${ref}:foreman.json`], root);
+    if (text) return JSON.parse(text) as Config;
+  }
+  const file = join(root, "foreman.json");
+  return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Config) : {};
 }
 
 export function loadProtected(root: string | null): string[] {

@@ -1,7 +1,7 @@
 // T-0029: option values that look like paths, attached -ofile, find -exec arguments,
 // and `cd DIR && ...` judged from DIR.
 import { describe, expect, test } from "bun:test";
-import { type Context, checkCommand } from "../templates/.claude/hooks/guard";
+import { type Context, checkCommand } from "../templates/claude/hooks/guard";
 
 const ctx = (over: Partial<Context> = {}): Context => ({
   projectRoot: "/repo",

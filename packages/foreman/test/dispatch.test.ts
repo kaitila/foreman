@@ -193,7 +193,7 @@ describe("dispatch", () => {
       const v = env.sessions[1]!;
       expect(v.opts).toMatchObject({ role: "verifier", taskId: t.id, cwd: task.worktree });
       expect(v.actor.name).toBe(`verifier-${t.id}`);
-      for (const lesson of ["start_verify", "show_task", "record_verdict", "list_tasks", "subagents", "< /dev/null", "FOREMAN_ACTOR=verifier-"]) {
+      for (const lesson of ["start_verify", "show_task", "record_verdict", "list_tasks", "subagents", "< /dev/null", "FOREMAN_ACTOR=verifier-", "gh pr checks", "failing or pending"]) {
         expect(v.opts.prompt).toContain(lesson);
       }
       // The verifier's tool list really has foreman's verify tools.
