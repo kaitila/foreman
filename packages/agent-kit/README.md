@@ -35,7 +35,7 @@ Deny rules always beat allow rules, in any settings file. `settings.local.json` 
 
 These rules are the first layer, not a security boundary: Claude Code's docs say so, and the [live test](../../docs/research/R4-guardrails-tested.md) confirmed it.
 
-**`templates/.claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, or the repo's `packages/foreman`). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
+**`templates/.claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, the repo's `packages/foreman`, or `node_modules/.bin/foreman`). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
 
 **`templates/.claude/hooks/guard.ts`** is the PreToolUse guard, wired in by the settings file. It needs Bun.
 - **It parses each command**, so it catches what text rules miss:
@@ -48,7 +48,7 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 - **Task paths:** when the agent has `FOREMAN_ACTOR` set and holds a claimed foreman task with `paths`, writes outside those paths are refused.
   - This covers the edit tools and shell writes: `>`/`>>` redirects, `tee`, `cp`, `mv`, `install`, `ln`, `touch` and `sed -i`.
   - `docs/tasks/**`, where tasks are exported, is always allowed, and so are files outside the repo.
-  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo.
+  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo, then the installed package at `node_modules/.bin/foreman` (a Claude Code session's PATH doesn't include `node_modules/.bin`).
   - **With `FOREMAN_ACTOR` set but foreman unreachable**, writes in the repo are blocked with a reason, instead of quietly going unchecked.
   - **Known limits:** writes made by scripts and interpreters (`bun -e`, `python -c`, a build tool) aren't traced, and neither is `cd x && ...`. The verifier's changed-paths check is the backstop.
 - **Role rules:** with `FOREMAN_ACTOR` set, it asks foreman (`foreman policy --json`) for the deny rules `foreman.json` gives the session's role ([D0019](../../docs/decisions/D0019-role-deny-rules.md), [format](../foreman/README.md#role-rules)). A person's session (no `FOREMAN_ACTOR`) is never affected.

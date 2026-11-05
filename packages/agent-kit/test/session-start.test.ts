@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,32 @@ test("injects the claimed task; silent without an actor, without a task, or with
     expect(run(base, dir)).toEqual({ code: 0, out: "" });
     // foreman unreachable
     expect(run({ ...base, FOREMAN_ACTOR: "w1", FOREMAN_BIN: "/nonexistent/fm" }, dir)).toEqual({ code: 0, out: "" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finds the project's node_modules/.bin/foreman when FOREMAN_BIN is unset and the PATH has none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ss-"));
+  try {
+    expect(Bun.spawnSync(["git", "init", "-q", dir]).exitCode).toBe(0);
+    const db = { FOREMAN_DB: join(dir, "f.db"), FOREMAN_AGENT: "1" };
+    const added = fm({ ...db, FOREMAN_ACTOR: "boss" }, "add", "Installed foreman", "--spec", "Found it", "--check", "cmd: bun test", "--ready");
+    const id = /T-\d+/.exec(added.stdout.toString())![0];
+    expect(fm({ ...db, FOREMAN_ACTOR: "w1" }, "claim", id).exitCode).toBe(0);
+
+    // bun alone on the PATH: this machine's PATH may have a linked foreman next to it.
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    symlinkSync(process.execPath, join(bin, "bun"));
+    const env = { ...db, FOREMAN_ACTOR: "w1", PATH: `${bin}:/usr/bin:/bin` };
+    expect(run(env, dir)).toEqual({ code: 0, out: "" }); // nothing installed: silent
+
+    mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
+    symlinkSync(FM, join(dir, "node_modules/.bin/foreman"));
+    const r = run(env, dir);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).hookSpecificOutput.additionalContext).toContain(id);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

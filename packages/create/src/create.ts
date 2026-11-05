@@ -124,6 +124,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   const pkg = pkgText === null ? null : parseJson<PackageJson>(pkgText, "package.json");
   const mcpText = readIfThere(target, MCP);
   const mcp = mcpText === null ? null : parseJson<McpJson>(mcpText, MCP);
+  if (mcp?.mcpServers !== undefined && !isObject(mcp.mcpServers)) throw new Error(`${MCP}: "mcpServers" is not a JSON object`);
   const changes = fromInstall(install(target));
 
   writeOnce(target, "AGENTS.md", ownTemplate("AGENTS.md").replaceAll("{{name}}", opts.name ?? basename(target)), changes);
@@ -174,12 +175,44 @@ function readIfThere(dir: string, path: string): string | null {
 function parseJson<T>(text: string, path: string): T {
   let v: unknown;
   try {
-    v = JSON.parse(text);
+    v = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw new Error(`${path} is not valid JSON: ${(e as Error).message}`);
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error(`${path} is not a JSON object`);
   return v as T;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * package.json with one devDependency added as text, so the rest of the file (order, line
+ * endings, inline arrays) is untouched. Falls back to a JSON rewrite if the edit doesn't parse.
+ */
+export function addDevDependency(text: string, name: string, spec: string): string {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const ind = indentOf(text);
+  const entry = `${JSON.stringify(name)}: ${JSON.stringify(spec)}`;
+  const dev = /("devDependencies"\s*:\s*)\{(\s*)(\}?)/.exec(text);
+  let out: string;
+  if (dev) {
+    const at = dev.index + dev[1]!.length + 1;
+    out = dev[3]
+      ? `${text.slice(0, at)}${eol}${ind}${ind}${entry}${eol}${ind}${text.slice(at + dev[2]!.length)}`
+      : `${text.slice(0, at)}${eol}${ind}${ind}${entry},${text.slice(at)}`;
+  } else {
+    const end = text.lastIndexOf("}");
+    const before = text.slice(0, end).replace(/\s*$/, "");
+    const block = `${ind}"devDependencies": {${eol}${ind}${ind}${entry}${eol}${ind}}${eol}`;
+    out = `${before}${before.endsWith("{") ? "" : ","}${eol}${block}${text.slice(end)}`;
+  }
+  try {
+    const parsed = JSON.parse(out.replace(/^\uFEFF/, "")) as PackageJson;
+    if (parsed.devDependencies?.[name] === spec) return out;
+  } catch {}
+  const pkg = JSON.parse(text.replace(/^\uFEFF/, "")) as PackageJson;
+  pkg.devDependencies = { ...pkg.devDependencies, [name]: spec };
+  return JSON.stringify(pkg, null, ind) + eol;
 }
 
 /** The indent of a JSON file's first nested line, so a rewrite keeps its style (default two spaces). */
@@ -198,8 +231,7 @@ function addForeman(target: string, pkgText: string, pkg: PackageJson, mcp: McpJ
     const { path, data } = pack("foreman");
     write(target, path, data);
     vendored[path] = sha256(data);
-    pkg.devDependencies = { ...pkg.devDependencies, [FOREMAN]: `file:${path}` };
-    write(target, "package.json", JSON.stringify(pkg, null, indentOf(pkgText)) + "\n");
+    write(target, "package.json", addDevDependency(pkgText, FOREMAN, `file:${path}`));
     changes.push({ action: "created", path, note: `${FOREMAN}, vendored` });
     changes.push({ action: "merged", path: "package.json", note: `${FOREMAN} added as a devDependency: run bun install` });
   }
@@ -207,8 +239,9 @@ function addForeman(target: string, pkgText: string, pkg: PackageJson, mcp: McpJ
   if (!mcp || mcpText === null) writeOnce(target, MCP, JSON.stringify({ mcpServers: { foreman: FOREMAN_SERVER } }, null, 2) + "\n", changes);
   else if (mcp.mcpServers?.foreman !== undefined) changes.push({ action: "kept", path: MCP, note: "already has a foreman server" });
   else {
+    // A small config file Claude Code reads: rewritten whole, keeping its indent.
     mcp.mcpServers = { ...mcp.mcpServers, foreman: FOREMAN_SERVER };
-    write(target, MCP, JSON.stringify(mcp, null, indentOf(mcpText)) + "\n");
+    write(target, MCP, JSON.stringify(mcp, null, indentOf(mcpText)) + (mcpText.includes("\r\n") ? "\r\n" : "\n"));
     changes.push({ action: "merged", path: MCP, note: "foreman server added" });
   }
 

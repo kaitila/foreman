@@ -15,7 +15,7 @@ export const VENDOR = ".meta-repo/packages";
 export const SETTINGS = ".claude/settings.json";
 export const MCP = ".mcp.json";
 /** The foreman MCP server a project gets: the installed package, never a registry fetch. */
-export const FOREMAN_SERVER = { type: "stdio", command: "bun", args: ["node_modules/.bin/foreman", "mcp"] };
+export const FOREMAN_SERVER = { type: "stdio", command: "bun", args: ["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"] };
 
 export interface Installed {
   /** The meta-repo version the files were last installed or synced from. */
