@@ -765,11 +765,18 @@ export function decide(payload: { tool_name?: string; tool_input?: Record<string
 // ---------- wiring for a real run ----------
 
 function sh(cmd: string[], cwd: string): string | null {
+  return run(cmd, cwd).out;
+}
+
+/** Runs a command; on failure `err` says why (its stderr, its exit code, or the spawn error). */
+function run(cmd: string[], cwd: string): { out: string | null; err: string } {
   try {
     const p = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", timeout: 5000 });
-    return p.exitCode === 0 ? p.stdout.toString().trim() : null;
-  } catch {
-    return null;
+    if (p.exitCode === 0) return { out: p.stdout.toString().trim(), err: "" };
+    const e = p.stderr.toString().trim().split("\n").slice(-3).join(" | ").slice(0, 400);
+    return { out: null, err: `exit ${p.exitCode}${e ? `: ${e}` : ""}` };
+  } catch (e) {
+    return { out: null, err: (e as Error).message };
   }
 }
 
@@ -796,8 +803,9 @@ export function realContext(cwd: string): Context {
       // With an identity set, not knowing the task's paths is an error, not a free pass.
       const fm = foremanCmd(projectRoot);
       if (!fm) throw new Error("FOREMAN_ACTOR is set but foreman isn't installed (set FOREMAN_BIN)");
-      const out = sh([...fm, "list", "--mine", "--status", "claimed", "--status", "in_progress", "--json"], projectRoot);
-      if (out === null) throw new Error(`FOREMAN_ACTOR is set but \`${fm.join(" ")} list\` failed`);
+      const r = run([...fm, "list", "--mine", "--status", "claimed", "--status", "in_progress", "--json"], projectRoot);
+      const out = r.out;
+      if (out === null) throw new Error(`FOREMAN_ACTOR is set but foreman can't be run: \`${fm.join(" ")} list\` failed (${r.err})`);
       let tasks: { paths: string[] }[];
       try {
         tasks = JSON.parse(out);
@@ -813,8 +821,9 @@ export function realContext(cwd: string): Context {
       // foreman resolves the rules (one source for this hook and the launch flags).
       const fm = foremanCmd(projectRoot);
       if (!fm) throw new Error("FOREMAN_ACTOR is set but foreman isn't installed (set FOREMAN_BIN)");
-      const out = sh([...fm, "policy", "--json"], projectRoot);
-      if (out === null) throw new Error(`FOREMAN_ACTOR is set but \`${fm.join(" ")} policy\` failed (a foreman older than this hook, or a bad foreman.json)`);
+      const r = run([...fm, "policy", "--json"], projectRoot);
+      const out = r.out;
+      if (out === null) throw new Error(`FOREMAN_ACTOR is set but foreman can't be run: \`${fm.join(" ")} policy\` failed (${r.err}; or a foreman older than this hook, or a bad foreman.json)`);
       try {
         const r = (JSON.parse(out) as { rules?: unknown }).rules;
         if (!Array.isArray(r) || !r.every((x) => typeof x?.rule === "string" && typeof x?.role === "string")) throw new Error();

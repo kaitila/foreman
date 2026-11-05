@@ -49,10 +49,24 @@ describe("buildLaunch in background mode", () => {
     const settings = JSON.parse(flag(cmd, "--settings")!);
     expect(settings.autoMemoryEnabled).toBe(false);
     // A --bg session doesn't inherit the environment: foreman's variables ride in settings.
-    expect(settings.env).toEqual({ FOREMAN_AGENT: "1", FOREMAN_ACTOR: "worker-T-7" });
+    expect(settings.env).toEqual({ FOREMAN_AGENT: "1", FOREMAN_ACTOR: "worker-T-7", FOREMAN_BIN: env.FOREMAN_BIN });
     // The person's own config dir, so the session shows in their `claude agents`.
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(env.CLAUDECODE).toBeUndefined();
+  });
+
+  test("FOREMAN_BIN is the main checkout's foreman, for worker and verifier, in bg and print mode", () => {
+    const main = fresh("main");
+    mkdirSync(join(main, "packages/foreman/src"), { recursive: true });
+    writeFileSync(join(main, "packages/foreman/src/cli.ts"), "");
+    const want = `bun ${join(main, "packages/foreman/src/cli.ts")}`;
+    for (const role of ["worker", "verifier"] as const) {
+      const bg = buildLaunch({ ...base, role, policyRoot: main, baseEnv: { FOREMAN_BIN: "stale" } });
+      expect(bg.env.FOREMAN_BIN).toBe(want);
+      expect(JSON.parse(flag(bg.cmd, "--settings")!).env.FOREMAN_BIN).toBe(want);
+      const pr = buildLaunch({ ...base, role, policyRoot: main, mode: "print", configDir: repo });
+      expect(pr.env.FOREMAN_BIN).toBe(want);
+    }
   });
 
   test("keeps the role's tools and deny rules", () => {

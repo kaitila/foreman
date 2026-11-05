@@ -201,6 +201,10 @@ export function buildLaunch(opts: LaunchOptions): LaunchSpec {
     if (v !== undefined && !STRIPPED_ENV.includes(k)) env[k] = v;
   }
   env.FOREMAN_ACTOR = actor;
+  // The session's hooks use the main checkout's foreman, not the copy in a task's worktree,
+  // which the task may be editing (and breaking). Without a main checkout's copy, this one.
+  const mainCli = join(policyRoot, "packages/foreman/src/cli.ts");
+  env.FOREMAN_BIN = `bun ${existsSync(mainCli) ? mainCli : CLI}`;
 
   const tail: string[] = ["--allowedTools", allowed.join(",")];
   if (disallowed.length) tail.push("--disallowedTools", disallowed.join(","));

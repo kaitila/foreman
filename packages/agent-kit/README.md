@@ -48,7 +48,7 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 - **Task paths:** when the agent has `FOREMAN_ACTOR` set and holds a claimed foreman task with `paths`, writes outside those paths are refused.
   - This covers the edit tools and shell writes: `>`/`>>` redirects, `tee`, `cp`, `mv`, `install`, `ln`, `touch` and `sed -i`.
   - `docs/tasks/**`, where tasks are exported, is always allowed, and so are files outside the repo.
-  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo.
+  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo. The dispatcher sets `FOREMAN_BIN` to the main checkout's foreman in every session it launches, so a task editing its own worktree's foreman can't lock itself out. When foreman can't run, the refusal names the command and its error.
   - **With `FOREMAN_ACTOR` set but foreman unreachable**, writes in the repo are blocked with a reason, instead of quietly going unchecked.
   - **Known limits:** writes made by scripts and interpreters (`bun -e`, `python -c`, a build tool) aren't traced, and neither is `cd x && ...`. The verifier's changed-paths check is the backstop.
 - **Role rules:** with `FOREMAN_ACTOR` set, it asks foreman (`foreman policy --json`) for the deny rules `foreman.json` gives the session's role ([D0019](../../docs/decisions/D0019-role-deny-rules.md), [format](../foreman/README.md#role-rules)). A person's session (no `FOREMAN_ACTOR`) is never affected.
