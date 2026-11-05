@@ -138,6 +138,23 @@ describe("init", () => {
   });
 });
 
+describe("init with a single decision log", () => {
+  test("adds no D0001 when decisions live in one file", () => {
+    const dir = repo({ "docs/decisions/decisions.md": "# Decisions\n\n## D12. Pick bun (2026-01-01)\n" });
+    init(dir);
+    expect(existsSync(join(dir, "docs/decisions/D0001-agent-kit.md"))).toBe(false);
+  });
+
+  test("follows foreman.json's numbers source", () => {
+    const dir = repo({
+      "foreman.json": JSON.stringify({ numbers: { decision: { file: "log/adr.md", pattern: "^ADR-(\\d+)" } } }),
+      "log/adr.md": "ADR-3 something\n",
+    });
+    init(dir);
+    expect(existsSync(join(dir, "docs/decisions/D0001-agent-kit.md"))).toBe(false);
+  });
+});
+
 describe("sync", () => {
   /** A project made by init, and a copy of agent-kit's templates to play the kit's next version. */
   function setup() {
