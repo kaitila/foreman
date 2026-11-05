@@ -89,7 +89,12 @@ export function approvedOldestFirst(f: Foreman): Task[] {
 }
 
 export function readPr(run: Run, cwd: string, pr: string): PrState | null {
-  const out = run(["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,statusCheckRollup"], cwd);
+  return parsePr(run(["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,statusCheckRollup"], cwd));
+}
+
+export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,statusCheckRollup"];
+
+export function parsePr(out: string | null): PrState | null {
   if (out === null) return null;
   try {
     const j = JSON.parse(out) as { headRefOid?: string; mergeable?: string; statusCheckRollup?: RollupItem[] | null };

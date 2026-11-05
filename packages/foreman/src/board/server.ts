@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { type Actor, type Event, type Foreman, ForemanError, type Status, type Task } from "../core";
 import { defaultRun, GITHUB_PR } from "../policy";
-import { judgeChecks, mergeQueuePass, type QueueEntry, type QueueOptions, readPr } from "../queue";
+import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
 import { pageHtml } from "./page";
 
 export const LANES: Status[] = [
@@ -32,6 +32,21 @@ export interface BoardOptions {
   queue?: Omit<QueueOptions, "dryRun" | "only">;
   /** How long a PR's state is cached for the cards, in ms (default 15000). */
   prCacheMs?: number;
+  /** Reads a PR without blocking the server (tests fake it). Default: gh, run asynchronously. */
+  readRun?: (cmd: string[], cwd: string) => Promise<string | null>;
+  /** How long a PR read may take before the card says GitHub can't be reached (default 15000). */
+  prTimeoutMs?: number;
+}
+
+/** gh run off the event loop; null on failure or when the process is killed at the timeout. */
+async function asyncRun(cmd: string[], cwd: string): Promise<string | null> {
+  try {
+    const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 30_000 });
+    const out = await new Response(p.stdout).text();
+    return (await p.exited) === 0 ? out.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface Board {
@@ -113,17 +128,41 @@ export function startBoard(opts: BoardOptions): Board {
   const prCacheMs = opts.prCacheMs ?? 15_000;
   const prCache = new Map<string, { at: number; body: unknown }>();
   /** A PR's state for its card: what the merge queue would read first, without merging. */
-  const prState = (t: Task) => {
+  const prTimeoutMs = opts.prTimeoutMs ?? 15_000;
+  const readRun = opts.readRun ?? (opts.queue?.run ? async (c: string[], d: string) => run(c, d) : asyncRun);
+  const inflight = new Map<string, Promise<unknown>>();
+  const prState = async (t: Task): Promise<unknown> => {
     if (!t.pr || !GITHUB_PR.test(t.pr)) return { pr: t.pr, readable: false, reason: "no GitHub PR" };
     const hit = prCache.get(t.id);
     if (hit && Date.now() - hit.at < prCacheMs) return hit.body;
-    const s = readPr(run, cwd, t.pr);
-    const verified = f.verifiedHead(t.id);
-    const body = s
-      ? { pr: t.pr, readable: true, mergeable: s.mergeable, checks: judgeChecks(s.checks), atVerified: verified !== null && s.headSha === verified }
-      : { pr: t.pr, readable: false, reason: `couldn't read ${t.pr} (is gh installed and logged in?)` };
-    prCache.set(t.id, { at: Date.now(), body });
-    return body;
+    const pr = t.pr;
+    const key = `${t.id} ${pr}`;
+    const going = inflight.get(key);
+    if (going) return going;
+    const p = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"timeout">((r) => {
+        timer = setTimeout(() => r("timeout"), prTimeoutMs);
+      });
+      try {
+        const out = await Promise.race([readRun(PR_VIEW(pr), cwd).catch(() => null), timeout]);
+        if (out === "timeout") {
+          return { pr, readable: false, timedOut: true, reason: `couldn't reach GitHub (no answer in ${Math.round(prTimeoutMs / 1000)} s)` };
+        }
+        const s = parsePr(out);
+        const verified = f.verifiedHead(t.id);
+        const body = s
+          ? { pr, readable: true, mergeable: s.mergeable, checks: judgeChecks(s.checks), atVerified: verified !== null && s.headSha === verified }
+          : { pr, readable: false, reason: `couldn't read ${pr} (is gh installed and logged in?)` };
+        prCache.set(t.id, { at: Date.now(), body });
+        return body;
+      } finally {
+        clearTimeout(timer);
+        inflight.delete(key);
+      }
+    })();
+    inflight.set(key, p);
+    return p;
   };
 
   // One merge-queue pass at a time, whoever asks: two clicks must not merge in parallel.
@@ -174,7 +213,7 @@ export function startBoard(opts: BoardOptions): Board {
             return json({ events, lastEvent: events.at(-1)?.id ?? since });
           }
           const pr = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/pr$/.exec(path);
-          if (pr) return json(prState(f.get(pr[1]!)));
+          if (pr) return json(await prState(f.get(pr[1]!)));
           const m = /^\/api\/tasks\/([A-Za-z0-9_-]+)$/.exec(path);
           if (m) {
             const t = f.get(m[1]!);
@@ -189,7 +228,7 @@ export function startBoard(opts: BoardOptions): Board {
           const no = refuse(req);
           if (no) return no;
           if (w?.[2] === "approve") return json({ task: f.approve(w[1]!, opts.approver!) });
-          if (passing) return fail(409, "busy", "a merge-queue pass is already running: wait for its result");
+          if (passing) return fail(409, "busy", "merge in progress: a merge-queue pass is already running, try again when it finishes");
           if (w) {
             const t = f.get(w[1]!);
             if (t.status !== "approved") return fail(409, "not_approved", `${t.id} is ${t.status}, not approved: nothing to merge`);
