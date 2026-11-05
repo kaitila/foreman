@@ -41,6 +41,8 @@ For each kit file it compares three versions: the hash recorded at install, the 
 
 `settings.json` is merged as `init` merges it, so the baseline's new rules are added and the ones in `.claude/agent-kit.json` stay out. <!-- docs-check: elsewhere -->
 
+A kit hook group the project runs (same command) gets the kit's `matcher` when the kit's changes, so a widened matcher (say `mcp__.*`) reaches installed projects. The matcher's hash is recorded in `installed.json` at install: if the project edited it, sync keeps it and says so. A record from before this has no hash, so the matcher is assumed unchanged and the output shows the old value.
+
 A rebuilt package gets a new tarball: sync replaces the old one, points `package.json` at it, and asks you to run `bun install`.
 
 Sync commits nothing (review with `git diff`), and `--dry-run` writes nothing.
