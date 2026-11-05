@@ -3,10 +3,12 @@
 // - At most `max` sessions at once (workers and verifiers both count).
 // - Never two tasks with overlapping declared paths in flight at once.
 // - Each session's lease is pinned to its PID: alive keeps the claim, dead releases it.
+// - Workers and verifiers run as `claude --bg` sessions the person sees in `claude agents`
+//   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Actor, Foreman, ForemanError, type Status, type Task } from "./core";
-import { actorFor, defaultSpawner, launch, type LaunchOptions, type Role } from "./launch";
+import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { pathsOverlap } from "./policy";
 
 /** What the dispatcher needs back from a session. */
@@ -18,18 +20,19 @@ export interface SessionResult {
   result: string;
 }
 
-/** Starts a session and calls onSpawn with its PID as soon as it has one. Tests pass a fake. */
-export type Launcher = (opts: LaunchOptions, onSpawn: (pid: number) => void) => Promise<SessionResult>;
+/**
+ * Starts a session and calls onSpawn with its PID as soon as it has one, and with the
+ * background session's id and name in background mode. Tests pass a fake.
+ */
+export type Launcher = (opts: LaunchOptions, onSpawn: (pid: number, session?: BgSession) => void) => Promise<SessionResult>;
 
-export const defaultLauncher: Launcher = (opts, onSpawn) =>
-  launch({
-    ...opts,
-    spawner: (cmd, o) => {
-      const child = defaultSpawner(cmd, o);
-      if (child.pid > 0) onSpawn(child.pid);
-      return child;
-    },
-  });
+export const defaultLauncher: Launcher = (opts, onSpawn) => launch({ ...opts, onSpawn });
+
+/** The launch mode: --print or FOREMAN_LAUNCH=print for print mode, else background (D0022). */
+export function launchModeFrom(flag: LaunchMode | undefined, env: Record<string, string | undefined> = process.env): LaunchMode {
+  if (flag) return flag;
+  return env.FOREMAN_LAUNCH === "print" ? "print" : "bg";
+}
 
 export interface Worktree {
   branch: string;
@@ -146,6 +149,8 @@ export interface DispatchOptions {
   pollMs?: number;
   launcher?: Launcher;
   worktrees?: WorktreeMaker;
+  /** "bg" (default, D0022): `claude --bg`, visible in `claude agents`. "print": `claude -p` (D0011). */
+  mode?: LaunchMode;
   /** Who reclaims dead leases. Default: "dispatcher" (agent). */
   actor?: Actor;
   log?: (line: string) => void;
@@ -155,6 +160,8 @@ export interface SessionRecord {
   task: string;
   role: Role;
   pid: number | null;
+  /** Background mode: the session's id and name (`claude attach <id>`). */
+  session?: BgSession;
   exitCode: number | null;
   costUsd: number;
   /** The task's status when the session ended. */
@@ -285,18 +292,21 @@ export class Dispatcher {
       prompt,
       model: this.opts.model,
       maxBudgetUsd: this.opts.budgetUsd,
+      mode: launchModeFrom(this.opts.mode),
       // Commands the session runs count as an agent's, even where Claude Code doesn't say so.
       baseEnv: { ...process.env, FOREMAN_AGENT: "1" },
     };
-    const onSpawn = (pid: number) => {
+    const onSpawn = (pid: number, session?: BgSession) => {
       rec.pid = pid;
+      if (session) rec.session = session;
       try {
-        this.f.pinLease(t.id, actor, pid);
+        this.f.pinLease(t.id, actor, pid, session && { session: session.id, name: session.name });
       } catch (e) {
         // Already submitted or verified (a very quick session): nothing left to pin.
         this.log(`${t.id} lease not pinned: ${(e as Error).message}`);
       }
-      this.log(`${t.id} ${role} started (pid ${pid}) in ${cwd}`);
+      const watch = session ? `, "${session.name}": claude attach ${session.id}` : "";
+      this.log(`${t.id} ${role} started (pid ${pid}${watch}) in ${cwd}`);
     };
     const done = (async () => {
       try {

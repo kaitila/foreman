@@ -44,7 +44,11 @@ export function toMarkdown(t: Task, events: Event[]): string {
   if (summary) lines.push("## Final summary", "<!-- SECTION:SUMMARY:BEGIN -->", summary.trim(), "<!-- SECTION:SUMMARY:END -->", "");
   lines.push(
     "## History",
-    ...events.map((e) => `- ${new Date(e.at).toISOString()} ${e.type} by ${e.actor} (${e.actorKind})`),
+    ...events.map((e) => {
+      // A background session (D0022) says how to watch it.
+      const watch = typeof e.data.attach === "string" ? `: session "${String(e.data.name)}", \`${e.data.attach}\`` : "";
+      return `- ${new Date(e.at).toISOString()} ${e.type} by ${e.actor} (${e.actorKind})${watch}`;
+    }),
     "",
   );
   return lines.join("\n");

@@ -234,7 +234,10 @@ describe("intake's session", () => {
     expect(JSON.parse(flag(cmd, "--mcp-config")!)).toEqual(mcpConfig);
     expect(cmd).toContain("--strict-mcp-config");
     expect(cmd.indexOf("--strict-mcp-config")).toBeLessThan(cmd.indexOf("--"));
-    expect(buildLaunch(base).cmd).not.toContain("--mcp-config");
+    // Without one, still --strict-mcp-config: no user servers or claude.ai connectors (D0022).
+    const plain = buildLaunch(base).cmd;
+    expect(plain).toContain("--strict-mcp-config");
+    expect(Object.keys(JSON.parse(flag(plain, "--mcp-config")!).mcpServers)).toEqual(["foreman"]);
   });
 
   test("may read and file, but not claim, verify, edit or run commands", () => {
