@@ -34,9 +34,9 @@ export function render(tasks: Task[]): string {
 
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  if (Bun.which("foreman")) return ["foreman"];
   const local = resolve(root, "packages/foreman/src/cli.ts");
-  return Bun.file(local).size ? ["bun", local] : null;
+  if (Bun.file(local).size) return ["bun", local]; // the repo's own, before any on the PATH
+  return Bun.which("foreman") ? ["foreman"] : null;
 }
 
 /** The additionalContext to inject, or null for "say nothing". */
