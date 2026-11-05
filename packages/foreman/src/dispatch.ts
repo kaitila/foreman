@@ -129,6 +129,8 @@ Foreman has already started the verification for you: ${t.id} is "verifying", he
 - Your foreman tools are show_task, list_tasks, start_verify, record_verdict and heartbeat.
 ${common(actor)}
 
+Run "gh pr checks" on the PR: a failing or pending required check fails the verdict, naming the job and test, even if your local run is green.
+
 Follow the verify skill, and end with record_verdict ${t.id}: one result per acceptance check.`;
 }
 

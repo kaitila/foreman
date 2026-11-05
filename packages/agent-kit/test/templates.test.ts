@@ -76,6 +76,11 @@ describe("well-formed", () => {
     expect(text).toMatch(/390 and 1280/);
     expect(text).toContain("no screenshots");
   });
+  test("verify fails a PR whose CI is red or pending", () => {
+    const v = readFileSync(join(TEMPLATES, ".claude/skills/verify/SKILL.md"), "utf8");
+    expect(v).toContain("gh pr checks");
+    expect(v).toMatch(/failing or still pending[^\n]*\*\*fail\*\*/);
+  });
   test("ship never has the worker verify or approve its own task", () => {
     const ship = readFileSync(join(TEMPLATES, ".claude/skills/ship/SKILL.md"), "utf8");
     expect(ship).toContain("never verify or approve your own task");
