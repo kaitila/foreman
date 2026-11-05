@@ -7,7 +7,7 @@
 **Chosen:**
 - **Workers and verifiers start with `claude --bg --name <actor>`** on the person's own config dir: no `CLAUDE_CONFIG_DIR` override, no login symlink. `<actor>` is `worker-T-0042` or `verifier-T-0042`. The isolation comes from flags instead of a separate dir:
   - `--setting-sources project,local`: no user CLAUDE.md, rules, hooks, skills, agents, commands or account-synced skills (plugins, enabled by user settings, are expected out too; the live test checks);
-  - `--strict-mcp-config --mcp-config <foreman's server only>`: no user or local MCP servers, no claude.ai connectors;
+  - `--strict-mcp-config --mcp-config <the servers in the main checkout's .mcp.json>` (foreman's own when the project has none): the project's MCP servers, foreman's among them, but no user or local ones and no claude.ai connectors;
   - `--settings` with three entries:
     - `claudeMdExcludes` for every CLAUDE.md and rules dir above the repo, as now;
     - `autoMemoryEnabled: false`, without which the person's auto memory for the project loads;
@@ -22,12 +22,12 @@
   - a session gone from the list, or `status: null`, has ended.
   - **The result** is the job timeline's last `text`. Turns and cost come from the transcript.
   - **A stopped session stays** in the person's list, attachable and resumable, until the janitor runs `claude rm` once the task is done or cancelled.
-- **Sessions outlive foreman.** They run under Claude Code's background service, so foreman exiting no longer kills them. A dispatcher that restarts finds its sessions by name, and leaves them running.
+- **Foreman stops what it started.** The sessions run under Claude Code's background service, so they would outlive foreman. When foreman exits or is interrupted, it runs `claude stop` on the ones still running, as it killed them before. They stay in the person's list, where they can be attached to or resumed.
 - **Print mode stays:**
   - for intake, which needs `--json-schema` (print only);
   - behind a dispatcher option for the other roles;
   - as the fallback when `claude --bg` refuses, e.g. the workspace isn't trusted. Trust carries over to worktrees inside a trusted repo, so this matters only for a repo never opened in Claude Code.
-- **Print mode gains `--strict-mcp-config`** with foreman's server. Today it gives every session the claude.ai connectors and account skills.
+- **Print mode gains `--strict-mcp-config`** with the same servers. Today it gives every session the claude.ai connectors and account skills.
 
 **Why:**
 - The person can watch, attach to, answer and stop any worker with the tools they already use.

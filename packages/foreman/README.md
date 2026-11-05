@@ -59,7 +59,7 @@ foreman merge-queue                # the same, every 60 s until stopped (--inter
 foreman janitor --dry-run          # reclaim, clean up finished tasks, list stuck ones (--stuck-hours 24)
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
-fm serve                           # web board on http://127.0.0.1:4499 (--port 0 picks a free one)
+fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
 ```
 
 Every command takes `--json`.
@@ -77,6 +77,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **One merge per pass.** Main has moved, so the other PRs are read again on the next pass.
 - **A PR that conflicts with main** (`CONFLICTING`) goes back to `ready`, to merge main and be verified again. Foreman asks GitHub itself first, so anyone may trigger this, but only a real conflict counts.
 - **Anything else** is skipped with the reason and tried again next pass. Without `--once` it loops.
+- **From the board:** Merge on an approved card runs one pass limited to that task, and Run queue runs one pass (see Board).
 - **Janitor** (`janitor`):
   - reclaims expired claims;
   - for done and cancelled tasks, removes the recorded worktree if it is a clean git worktree inside this repo. One with uncommitted changes is kept and reported;
@@ -86,21 +87,27 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 
 ## Board
 
-`fm serve [--port 4499]` runs a web board for the repo's tasks. It listens on 127.0.0.1 only and prints its URL and a one-time approve token to its own terminal. `--port 0` picks a free port.
+`fm serve [--port 4499]` runs a web board for the repo's tasks, where a person approves and merges in one click ([D0021](../../docs/decisions/D0021-board-one-click-sign-off.md)). It listens on 127.0.0.1 only and prints one link to its own terminal, `http://127.0.0.1:4499/#t=<token>`. Open that link to approve and merge from the page. `--port 0` picks a free port.
 
-- **The page:** one lane per status, `draft` to `cancelled`. A card shows the id, title, risk and assignee. Click it for the spec, the acceptance checks with each one's latest verdict, the PR link and the history. `/#T-0001` opens that task. It polls for changes every 2 seconds.
-- **Offline:** CSS and JS are inline, with no external assets. It follows the system's dark or light mode and works at phone width.
+- **The page:** one lane per status, `draft` to `cancelled`, scrolling sideways with snapping (on a phone, one lane per screen, the two that wait for you first). A card shows the id, title, risk, assignee, PR link and how long ago it changed, and its next action: **Approve** (needs approval), **Merge #n** with the PR's checks and mergeability (approved), or what it waits for (`waiting for verifier`, `with worker-1`). Click a card for the spec, the acceptance checks with each one's latest verdict, and the history. `/#T-0001` opens that task. It polls for changes every 2 seconds.
+- **One click, then Undo:** Approve, **Approve all** (the needs-approval lane), Merge and **Run queue** (the approved lane) wait 5 seconds with an Undo button before anything is sent. There is no confirm dialog. The result shows on the card: approved, merged, sent back, or skipped with the merge queue's reason.
+- **Merging** is the merge queue (see above), not a second implementation. Merge runs one pass for that task only, with the same rules: the verified commit, settled green checks, `MERGEABLE`, and a conflict sends it back. Run queue runs one pass over all approved tasks, so it merges at most one. The checks settle for `--settle-seconds` (30), so a merge answers after about half a minute. One pass runs at a time, and a second request gets 409 `busy`. The merge runs as the person who started the board.
+- **Keys:** `j`/`k` move between cards, `Enter` opens, `a` approves, `m` merges, `u` undoes, `/` filters, `Esc` closes or clears the filter, `?` lists them. The filter matches id, title, person, status, risk and PR number.
+- **Look:** CSS and JS are inline, with no external assets or fonts, so it works offline. It follows the system's light or dark mode, with thin themed scroll bars (hidden on the lanes until you hover). It works at phone width.
 - **API** (read-only JSON):
   - `GET /api/tasks`: all tasks.
   - `GET /api/tasks/:id`: the task, its checks with the latest verdict, and its events.
+  - `GET /api/tasks/:id/pr`: the PR's state as the merge queue reads it (checks green, pending or red, mergeable, still at the verified commit), cached for 15 seconds.
   - `GET /api/events?since=<id>`: events after that id.
-- **Approving:** `POST /api/tasks/:id/approve` is the one write. It needs the header `x-foreman-token: <token>`, and if the browser sends an `Origin` it must be the board's own; otherwise 403. The approver is `FOREMAN_ACTOR` or `USER`, as a person.
-- **From an agent:** started from an agent session (`CLAUDE_CODE_CHILD_SESSION=1` or `FOREMAN_AGENT=1`), or without an interactive terminal (stdin and stdout), the board prints no token and approving is off, because the agent would read the token from its own output. Like `approve`, this is a guardrail, not a boundary.
+- **Writes:** `POST /api/tasks/:id/approve`, `POST /api/tasks/:id/merge` and `POST /api/queue/run`. Each needs the header `x-foreman-token: <token>`, and if the browser sends an `Origin` it must be the board's own; otherwise 403. The page sends the header itself. The approver is `FOREMAN_ACTOR` or `USER`, as a person.
+- **The token on the page:** browsers never send the part of a URL after `#`, so the server never sees the token in a request line. The page moves it into `sessionStorage` (this tab only), removes it from the address bar, and sends it as the header. Without it, the buttons are disabled with a hint to open the printed link. A new `fm serve` makes a new token, and the page forgets a token the board refuses.
+- **From an agent:** started from an agent session (`CLAUDE_CODE_CHILD_SESSION=1` or `FOREMAN_AGENT=1`), or without an interactive terminal (stdin and stdout), the board prints a link without a token, and approving and merging are off, because the agent would read the token from its own output. Like `approve`, this is a guardrail, not a boundary.
 - **Safety:**
   - The token is 32 random bytes in hex. It never appears in a page or an API response.
   - A request whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` gets 421, which blocks DNS rebinding.
   - Headers: a CSP of `default-src 'self'` with a per-response nonce for the inline script and style, `x-frame-options: DENY`, `referrer-policy: no-referrer`, `nosniff` and `no-store`.
   - Task text reaches the page only through `textContent`. The initial state is JSON with `<`, `>` and `&` escaped.
+  - Trade-off: a script running in the board's own page could read the token from `sessionStorage`. The CSP allows only the page's own nonce'd script, and task text is never parsed as HTML, so there is no way to get one in.
 
 ## Agents
 
