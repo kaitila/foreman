@@ -241,15 +241,17 @@ function addForeman(target: string, pkgText: string, pkg: PackageJson, mcp: McpJ
   else {
     // A small config file Claude Code reads: rewritten whole, keeping its indent.
     mcp.mcpServers = { ...mcp.mcpServers, foreman: FOREMAN_SERVER };
-    write(target, MCP, JSON.stringify(mcp, null, indentOf(mcpText)) + (mcpText.includes("\r\n") ? "\r\n" : "\n"));
+    const eol = mcpText.includes("\r\n") ? "\r\n" : "\n";
+    write(target, MCP, (JSON.stringify(mcp, null, indentOf(mcpText)) + "\n").replaceAll("\n", eol));
     changes.push({ action: "merged", path: MCP, note: "foreman server added" });
   }
 
   const ignore = readIfThere(target, ".gitignore");
   if (ignore === null) writeOnce(target, ".gitignore", ".foreman/\n", changes);
-  else if (/^\/?\.foreman\/?[ \t]*$/m.test(ignore)) changes.push({ action: "kept", path: ".gitignore", note: "already ignores .foreman/" });
+  else if (/^\/?\.foreman\/?[ \t\r]*$/m.test(ignore)) changes.push({ action: "kept", path: ".gitignore", note: "already ignores .foreman/" });
   else {
-    write(target, ".gitignore", `${withNewline(ignore)}.foreman/\n`);
+    const eol = ignore.includes("\r\n") ? "\r\n" : "\n";
+    write(target, ".gitignore", `${ignore}${ignore === "" || ignore.endsWith("\n") ? "" : eol}.foreman/${eol}`);
     changes.push({ action: "merged", path: ".gitignore", note: "`.foreman/` added" });
   }
 

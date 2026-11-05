@@ -220,26 +220,29 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
     expect(run("ls", undefined, { FOREMAN_BIN: "false" }).code).toBe(0);
   });
   // A project made by create or init has foreman only as its installed package, and a
-  // session's PATH has no node_modules/.bin: the hook must find it there.
-  test("finds the project's node_modules/.bin/foreman when FOREMAN_BIN is unset and the PATH has none", () => {
+  // session's PATH has no node_modules/.bin: the hook must find the package there.
+  test("finds the project's installed @meta-repo/foreman when FOREMAN_BIN is unset and the PATH has none", () => {
     const bin = join(tmp, "bin"); // bun alone: this machine's PATH may have a linked foreman next to it
     mkdirSync(bin, { recursive: true });
     symlinkSync(process.execPath, join(bin, "bun"));
     const env = { FOREMAN_BIN: "", PATH: `${bin}:/usr/bin:/bin` };
     expect(Bun.spawnSync(["sh", "-c", "command -v foreman"], { env }).exitCode).not.toBe(0);
-
-    // Not installed yet: the hook can't find foreman.
-    expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
-
-    mkdirSync(join(project, "node_modules/.bin"), { recursive: true });
-    symlinkSync(join(repoRoot, "packages/foreman/src/cli.ts"), join(project, "node_modules/.bin/foreman"));
+    const modules = join(project, "node_modules");
     try {
+      // Not installed: the hook can't find foreman. Another package's bin named foreman doesn't count.
+      expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
+      mkdirSync(join(modules, ".bin"), { recursive: true });
+      writeFileSync(join(modules, ".bin/foreman"), "console.log('[]');\n");
+      expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
+
+      mkdirSync(join(modules, "@meta-repo"));
+      symlinkSync(join(repoRoot, "packages/foreman"), join(modules, "@meta-repo/foreman"));
       expect(run("ls", "worker-T-1", env)).toEqual({ code: 0, stderr: "" });
       const r = run("ssh host true", "worker-T-1", env);
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("is denied to worker sessions by Bash(ssh *)");
     } finally {
-      rmSync(join(project, "node_modules"), { recursive: true, force: true });
+      rmSync(modules, { recursive: true, force: true });
     }
   });
 });

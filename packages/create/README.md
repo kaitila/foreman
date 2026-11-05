@@ -14,8 +14,8 @@ Each prints one line per file: `created`, `updated`, `merged`, `kept`, `deleted`
 Makes a new project in an empty or missing folder:
 - **The preset's files** come from `presets/generate.ts`, with the name filled in (default: the folder's name).
 - **The meta-repo packages the preset uses** are packed into `.meta-repo/packages/<pkg>-<hash>.tgz`, and `package.json` points at them. The project needs nothing from this repo after that.
-- **foreman** is one of them (a devDependency). The preset also has `.mcp.json` with a `foreman` server (`bun node_modules/.bin/foreman mcp`, the installed package, never `bunx`: npm has an unrelated `foreman`), `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` ([`templates/tasks-section.md`](templates/tasks-section.md)).
-- **The kit:** agent-kit's templates (`.claude/`), `foreman.json` (the paths that need a person's approval) and a CI workflow that runs `bun run check` against Postgres.
+- **foreman** is one of them (a devDependency). The preset also has `.mcp.json` with a `foreman` server (`bun node_modules/@meta-repo/foreman/src/cli.ts mcp`: the package's own file, never `bunx`, since npm has an unrelated `foreman`), `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` ([`templates/tasks-section.md`](templates/tasks-section.md)).
+- **The kit:** agent-kit's templates (`.claude/`), `foreman.json` (the paths that need a person's approval, `.mcp.json` among them) and a CI workflow that runs `bun run check` against Postgres.
 - **The record:** `.meta-repo/installed.json`.
 - **Then** it runs `bun install`, so the lockfile is in the first commit, and makes that commit on `main`. git needs a user name and email; it checks that before writing anything.
 
@@ -26,12 +26,12 @@ Adds the kit to a git repository and **never overwrites a file it has**:
 - **`docs/decisions/D0001-agent-kit.md`**, if the repo has no decision files yet. <!-- docs-check: elsewhere -->
 - **`foreman.json`**, if missing.
 - **foreman, if the repo has a `package.json`:**
-  - The package is vendored into `.meta-repo/packages/` and added as a devDependency. A repo that already depends on `@meta-repo/foreman` keeps its own. `package.json` keeps its indent.
-  - `.mcp.json` is created with the `foreman` server, or the server is merged into the one there. Other servers, and a `foreman` server already there, are kept.
+  - The package is vendored into `.meta-repo/packages/` and added as a devDependency. A repo that already depends on `@meta-repo/foreman` keeps its own. The entry is added as a text edit, so the rest of `package.json` (key order, line endings, inline arrays, a BOM) stays as it was; only if that edit doesn't parse is the file rewritten as JSON.
+  - `.mcp.json` is created with the `foreman` server, or the server is merged into the one there and the file rewritten with its indent kept. Other servers, and a `foreman` server already there, are kept.
   - `.foreman/` is added to `.gitignore`.
   - The Tasks section is appended to `AGENTS.md` if it has no `## Tasks` heading.
   - Then run `bun install`.
-  - Without `package.json` all of this is skipped (`skipped  foreman`). A `package.json` or `.mcp.json` that isn't valid JSON stops init before it writes anything.
+  - Without `package.json` all of this is skipped (`skipped  foreman`). A `package.json` or `.mcp.json` that isn't valid JSON, or a `.mcp.json` whose `mcpServers` isn't an object, stops init before it writes anything.
 - **A CI workflow** (`.github/workflows/ci.yml`, runs `bun run check`), only if the repo has no workflow and `package.json` has a `check` script, so it can pass.
 - **The record:** `.meta-repo/installed.json`.
 

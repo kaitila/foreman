@@ -3,6 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { addDevDependency } from "../src/create";
 import { create, init, sync } from "../src/index";
 import { FOREMAN_SERVER, kitFiles, ownTemplate, pointDep, RECORD, readInstalled, sha256, workspaceDeps } from "../src/kit";
 
@@ -88,8 +89,9 @@ describe("create", () => {
     expect(agents.indexOf("## Tasks")).toBeLessThan(agents.indexOf("## Rules"));
 
     // The installed package answers, from its CLI and as the MCP server .mcp.json starts.
-    expect(existsSync(join(dir, "node_modules/.bin/foreman"))).toBe(true);
-    const next = Bun.spawnSync(["bun", "node_modules/.bin/foreman", "next", "--json"], { cwd: dir, env: plainEnv(), stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+    const cli = FOREMAN_SERVER.args[0]!;
+    expect(existsSync(join(dir, cli))).toBe(true);
+    const next = Bun.spawnSync(["bun", cli, "next", "--json"], { cwd: dir, env: plainEnv(), stdout: "pipe", stderr: "pipe", timeout: 30_000 });
     expect({ code: next.exitCode, err: next.stderr.toString() }).toEqual({ code: 0, err: "" });
     expect(JSON.parse(next.stdout.toString())).toEqual([]);
 
@@ -201,10 +203,8 @@ describe("init", () => {
     const tarball = FOREMAN_TGZ.exec(pkg.devDependencies["@meta-repo/foreman"])?.[1];
     expect(tarball).toBeDefined();
     expect(existsSync(join(dir, tarball!))).toBe(true);
-    expect(pkg.dependencies).toEqual({ zod: "4.6.7" });
-    expect(pkg.devDependencies.typescript).toBe("5.9.3");
-    expect(out).toStartWith('{\n    "name"'); // its indent kept
-    expect(out).toEndWith("}\n");
+    // One line added, in the file's own indent; the rest of the text untouched.
+    expect(out).toBe(pkgText.replace('"devDependencies": {', `"devDependencies": {\n        "@meta-repo/foreman": "file:${tarball}",`));
     expect(readInstalled(dir)!.files[tarball!]).toBe(sha256(readFileSync(join(dir, tarball!))));
 
     expect(JSON.parse(read(dir, ".mcp.json")).mcpServers).toEqual({ other: { type: "stdio", command: "other-server" }, foreman: FOREMAN_SERVER });
@@ -215,12 +215,44 @@ describe("init", () => {
     expect(by).toEqual({ [tarball!]: "created", "package.json": "merged", ".mcp.json": "merged", ".gitignore": "merged", "AGENTS.md": "merged" });
   });
 
+  test("keeps CRLF line endings in the files it adds to", () => {
+    const pkgText = '{\r\n  "name": "ours",\r\n  "devDependencies": {}\r\n}\r\n';
+    const dir = repo({ "package.json": pkgText, ".mcp.json": '{\r\n  "mcpServers": {}\r\n}\r\n', ".gitignore": "dist/\r\nnode_modules/\r\n" });
+    init(dir);
+    for (const f of ["package.json", ".mcp.json", ".gitignore"]) expect(read(dir, f).replaceAll("\r\n", ""), f).not.toContain("\n");
+    expect(read(dir, ".gitignore")).toBe("dist/\r\nnode_modules/\r\n.foreman/\r\n");
+    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/foreman"])![1];
+    expect(read(dir, "package.json")).toBe(`{\r\n  "name": "ours",\r\n  "devDependencies": {\r\n    "@meta-repo/foreman": "file:${tarball}"\r\n  }\r\n}\r\n`);
+    expect(JSON.parse(read(dir, ".mcp.json")).mcpServers.foreman).toEqual(FOREMAN_SERVER);
+    // A CRLF .gitignore that already ignores it is kept.
+    const ignored = repo({ "package.json": '{ "dependencies": { "@meta-repo/foreman": "1.0.0" } }', ".gitignore": ".foreman/\r\n" });
+    init(ignored);
+    expect(read(ignored, ".gitignore")).toBe(".foreman/\r\n");
+  });
+
+  test("reads a package.json with a BOM and keeps the BOM", () => {
+    const dir = repo({ "package.json": '﻿{\n  "name": "ours",\n  "scripts": { "check": "bun test" }\n}\n' });
+    init(dir);
+    const out = read(dir, "package.json");
+    expect(out).toStartWith('﻿{\n  "name": "ours"');
+    expect(JSON.parse(out.slice(1)).devDependencies["@meta-repo/foreman"]).toMatch(FOREMAN_TGZ);
+    expect(existsSync(join(dir, ".github/workflows/ci.yml"))).toBe(true); // its scripts were read too
+  });
+
+  test("the foreman.json it writes protects .mcp.json", () => {
+    const dir = fresh();
+    create(dir, { install: false, git: false });
+    expect(JSON.parse(read(dir, "foreman.json")).protectedPaths).toContain(".mcp.json");
+  });
+
   test("creates .mcp.json and .gitignore when the repo has neither", () => {
     const dir = repo({ "package.json": '{ "name": "ours" }' });
     const changes = init(dir);
     expect(JSON.parse(read(dir, ".mcp.json"))).toEqual({ mcpServers: { foreman: FOREMAN_SERVER } });
     expect(read(dir, ".gitignore")).toBe(".foreman/\n");
-    expect(read(dir, "package.json")).toStartWith('{\n  "name"'); // no nested line to copy: two spaces
+    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/foreman"])![1];
+    // No devDependencies and no nested line to copy the indent from: a block in two spaces.
+    expect(read(dir, "package.json")).toBe(`{ "name": "ours",\n  "devDependencies": {\n    "@meta-repo/foreman": "file:${tarball}"\n  }\n}`);
     for (const path of [".mcp.json", ".gitignore"]) expect(changes).toContainEqual(expect.objectContaining({ action: "created", path }));
   });
 
@@ -265,10 +297,12 @@ describe("init", () => {
     [".mcp.json", "[]", "is not a JSON object"],
     ["package.json", "{,}", "is not valid JSON"],
     ["package.json", "null", "is not a JSON object"],
+    [".mcp.json", '{ "mcpServers": [] }', ': "mcpServers" is not a JSON object'],
+    [".mcp.json", '{ "mcpServers": "foreman" }', ': "mcpServers" is not a JSON object'],
   ])("a malformed %s (%s) stops init before anything is written", (file, text, message) => {
     const dir = repo({ "package.json": "{}", [file]: text });
     const before = listing(dir);
-    expect(() => init(dir)).toThrow(`${file} ${message}`);
+    expect(() => init(dir)).toThrow(`${file}${message.startsWith(":") ? "" : " "}${message}`);
     expect(listing(dir)).toEqual(before);
     expect(read(dir, file)).toBe(text);
   });
@@ -399,6 +433,38 @@ describe("sync", () => {
 });
 
 describe("helpers", () => {
+  test("addDevDependency adds one line as text, keeping order, indent and inline arrays", () => {
+    const dep = '"@meta-repo/foreman": "file:x.tgz"';
+    const add = (text: string) => addDevDependency(text, "@meta-repo/foreman", "file:x.tgz");
+    // Into an existing block, first, in the file's indent.
+    expect(add('{\n\t"files": ["a", "b"],\n\t"devDependencies": {\n\t\t"zod": "1"\n\t}\n}\n')).toBe(`{\n\t"files": ["a", "b"],\n\t"devDependencies": {\n\t\t${dep},\n\t\t"zod": "1"\n\t}\n}\n`);
+    // Into an empty block.
+    expect(add('{\n  "devDependencies": {}\n}\n')).toBe(`{\n  "devDependencies": {\n    ${dep}\n  }\n}\n`);
+    expect(add('{\n  "devDependencies": { }\n}\n')).toBe(`{\n  "devDependencies": {\n    ${dep}\n  }\n}\n`);
+    // A new block at the end, after the last key.
+    expect(add('{\n  "name": "a",\n  "scripts": { "t": "x" }\n}\n')).toBe(`{\n  "name": "a",\n  "scripts": { "t": "x" },\n  "devDependencies": {\n    ${dep}\n  }\n}\n`);
+    // An empty object.
+    expect(add("{}\n")).toBe(`{\n  "devDependencies": {\n    ${dep}\n  }\n}\n`);
+    // CRLF with tabs: the new line uses both.
+    expect(add('{\r\n\t"name": "a",\r\n\t"devDependencies": {\r\n\t\t"zod": "1"\r\n\t}\r\n}\r\n')).toBe(`{\r\n\t"name": "a",\r\n\t"devDependencies": {\r\n\t\t${dep},\r\n\t\t"zod": "1"\r\n\t}\r\n}\r\n`);
+    // A BOM stays at the start.
+    expect(add('﻿{\n  "devDependencies": {\n    "zod": "1"\n  }\n}\n')).toBe(`﻿{\n  "devDependencies": {\n    ${dep},\n    "zod": "1"\n  }\n}\n`);
+    // Every result parses and has the dependency.
+    for (const t of ['{"devDependencies":{"a":"1"}}', '{ "a": 1 }', '﻿{\n  "a": 1\n}\n']) {
+      expect(JSON.parse(add(t).replace(/^﻿/, "")).devDependencies["@meta-repo/foreman"], t).toBe("file:x.tgz");
+    }
+  });
+
+  test("addDevDependency falls back to a JSON rewrite when the text edit wouldn't parse", () => {
+    // A "devDependencies" key inside a string value fools the text edit.
+    const text = '{\n  "description": "see \\"devDependencies\\": {} below",\n  "name": "a"\n}\n';
+    const out = addDevDependency(text, "@meta-repo/foreman", "file:x.tgz");
+    const pkg = JSON.parse(out);
+    expect(pkg.devDependencies).toEqual({ "@meta-repo/foreman": "file:x.tgz" });
+    expect(pkg.description).toBe('see "devDependencies": {} below');
+    expect(pkg.name).toBe("a");
+  });
+
   test("workspace deps are found and only our dep values are rewritten", () => {
     const text = '{\n  "devDependencies": {\n    "@meta-repo/docs-check": "workspace:*",\n    "@meta-repo/other": "1.0.0",\n    "zod": "workspace:*"\n  }\n}\n';
     expect(workspaceDeps(text)).toEqual(["docs-check"]);

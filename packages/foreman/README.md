@@ -33,7 +33,7 @@ draft → ready → claimed → in_progress → in_review → verifying → appr
 
 ## Use
 
-A project made with `create` or `init` already has it: `bun node_modules/.bin/fm help`, and the `foreman` MCP server in `.mcp.json`.
+A project made with `create` or `init` already has it: `bun node_modules/@meta-repo/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
 
 In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
