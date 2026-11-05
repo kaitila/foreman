@@ -116,6 +116,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   ```json
   { "mcpServers": { "foreman": { "type": "stdio", "command": "bun", "args": ["packages/foreman/src/cli.ts", "mcp"] } } }
   ```
+- **MCP actor:** `FOREMAN_ACTOR` if set, else `mcp-<session id>` when the client passes `CLAUDE_CODE_SESSION_ID`/`CLAUDE_SESSION_ID`, else `mcp-p<parent pid>`, else `mcp-<user>`. A restarted server keeps the session's claims. `not_holder` errors name the holder and how to continue.
 - **MCP tools:** `list_tasks`, `next_tasks`, `show_task`, `create_task`, `claim_task`, `heartbeat`, `report_progress`, `submit_task`, `start_verify`, `record_verdict`, `mark_merged`, `reserve_number`, `edit_task`, `rework_task`. There is no approve tool.
 - **The PR** ([D0009](../../docs/decisions/D0009-edit-rework-verified-head.md)):
   - **On submit:** a GitHub PR must be on this repo, and its branch must be the task's.
