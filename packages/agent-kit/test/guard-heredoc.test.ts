@@ -1,6 +1,6 @@
 // Here-documents (T-0022): the body is data, not commands, unless a shell runs it.
 import { describe, expect, test } from "bun:test";
-import { type Context, checkCommand, parseCommands } from "../templates/.claude/hooks/guard";
+import { type Context, checkCommand, parseCommands } from "../templates/claude/hooks/guard";
 
 const ctx = (over: Partial<Context> = {}): Context => ({
   projectRoot: "/repo",

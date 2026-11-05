@@ -21,15 +21,15 @@ function frontmatter(text: string): Record<string, string> {
 
 test("the expected templates exist", () => {
   for (const f of [
-    ".claude/settings.json",
-    ".claude/hooks/guard.ts",
-    ".claude/hooks/session-start.ts",
-    ".claude/skills/ship/SKILL.md",
-    ".claude/skills/verify/SKILL.md",
-    ".claude/agents/test-writer.md",
-    ".claude/agents/docs-writer.md",
-    ".claude/agents/reviewer.md",
-    ".claude/agents/design-critic.md",
+    "claude/settings.json",
+    "claude/hooks/guard.ts",
+    "claude/hooks/session-start.ts",
+    "claude/skills/ship/SKILL.md",
+    "claude/skills/verify/SKILL.md",
+    "claude/agents/test-writer.md",
+    "claude/agents/docs-writer.md",
+    "claude/agents/reviewer.md",
+    "claude/agents/design-critic.md",
   ]) {
     expect(files).toContain(f);
   }
@@ -54,35 +54,35 @@ describe("project-neutral", () => {
 });
 
 describe("well-formed", () => {
-  test.each(files.filter((f) => f.startsWith(".claude/skills/")))("%s has a name matching its folder, and a description", (f) => {
+  test.each(files.filter((f) => f.startsWith("claude/skills/")))("%s has a name matching its folder, and a description", (f) => {
     const fm = frontmatter(readFileSync(join(TEMPLATES, f), "utf8"));
     expect(fm.name).toBe(basename(dirname(f)));
     expect((fm.description ?? "").length).toBeGreaterThan(40);
   });
-  test.each(files.filter((f) => f.startsWith(".claude/agents/")))("%s has a name matching its file, and a description", (f) => {
+  test.each(files.filter((f) => f.startsWith("claude/agents/")))("%s has a name matching its file, and a description", (f) => {
     const fm = frontmatter(readFileSync(join(TEMPLATES, f), "utf8"));
     expect(fm.name).toBe(basename(f, ".md"));
     expect((fm.description ?? "").length).toBeGreaterThan(40);
   });
   test.each(["reviewer", "design-critic"])("the %s can't edit", (name) => {
-    const fm = frontmatter(readFileSync(join(TEMPLATES, `.claude/agents/${name}.md`), "utf8"));
+    const fm = frontmatter(readFileSync(join(TEMPLATES, `claude/agents/${name}.md`), "utf8"));
     expect(fm.tools).toBeDefined();
     expect(fm.tools).not.toMatch(/Edit|Write/);
   });
   test("the design-critic judges by the project's design rules and screenshots when it can", () => {
-    const text = readFileSync(join(TEMPLATES, ".claude/agents/design-critic.md"), "utf8");
+    const text = readFileSync(join(TEMPLATES, "claude/agents/design-critic.md"), "utf8");
     expect(text).toContain("docs/design.md");
     expect(text).toContain("playwright-core");
     expect(text).toMatch(/390 and 1280/);
     expect(text).toContain("no screenshots");
   });
   test("verify fails a PR whose CI is red or pending", () => {
-    const v = readFileSync(join(TEMPLATES, ".claude/skills/verify/SKILL.md"), "utf8");
+    const v = readFileSync(join(TEMPLATES, "claude/skills/verify/SKILL.md"), "utf8");
     expect(v).toContain("gh pr checks");
     expect(v).toMatch(/failing or still pending[^\n]*\*\*fail\*\*/);
   });
   test("ship never has the worker verify or approve its own task", () => {
-    const ship = readFileSync(join(TEMPLATES, ".claude/skills/ship/SKILL.md"), "utf8");
+    const ship = readFileSync(join(TEMPLATES, "claude/skills/ship/SKILL.md"), "utf8");
     expect(ship).toContain("never verify or approve your own task");
     expect(ship).not.toMatch(/record_verdict|start_verify|foreman approve/);
   });

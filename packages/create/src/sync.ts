@@ -1,7 +1,7 @@
 // sync: bring a project's kit files up to the meta-repo version this runs from (D0018).
 // Three-way per file: the hash recorded at install, the file now, and the kit's file now.
 // A file the project changed or deleted is never overwritten or restored.
-import { mergeSettings, OMIT_FILE, readOmit, TEMPLATES } from "@meta-repo/agent-kit";
+import { mergeSettings, OMIT_FILE, readOmit, TEMPLATES, templateSettings } from "@meta-repo/agent-kit";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -54,7 +54,7 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   if (!existsSync(join(target, SETTINGS))) changes.push({ action: "deleted", path: SETTINGS, note: "not there; not restored (agent-kit init adds it)" });
   else {
     const project = JSON.parse(readFileSync(join(target, SETTINGS), "utf8"));
-    const baseline = JSON.parse(readFileSync(join(templates, SETTINGS), "utf8"));
+    const baseline = JSON.parse(readFileSync(templateSettings(templates), "utf8"));
     // A kit hook group the project runs (same command) gets the kit's matcher, unless the project changed it.
     let rematched = 0;
     for (const [event, groups] of Object.entries((baseline.hooks ?? {}) as Record<string, HookGroup[]>)) {

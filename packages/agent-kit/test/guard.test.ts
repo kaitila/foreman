@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { type Context, checkCommand, decide, parseShell } from "../templates/.claude/hooks/guard";
+import { type Context, checkCommand, decide, parseShell } from "../templates/claude/hooks/guard";
 
 const ctx = (over: Partial<Context> = {}): Context => ({
   projectRoot: "/repo",
@@ -130,14 +130,22 @@ describe("task paths", () => {
   });
 });
 
-test("the copies this repo runs are the templates (all but settings.json, which merges)", () => {
+test("this repo runs the templates in place: no .claude/ copies to keep equal (D0023)", () => {
   const root = join(import.meta.dir, "..", "..", "..");
   const templates = join(import.meta.dir, "..", "templates");
-  const files = [...new Bun.Glob(".claude/**/*").scanSync({ cwd: templates, dot: true, onlyFiles: true })];
-  expect(files.length).toBeGreaterThan(5);
-  for (const f of files.filter((x) => !x.endsWith("settings.json"))) {
-    expect(readFileSync(join(root, f), "utf8")).toBe(readFileSync(join(templates, f), "utf8"));
+  // No kit source sits under a .claude/ segment, which unattended agents may not edit.
+  expect([...new Bun.Glob("**/.claude/**").scanSync({ cwd: templates, dot: true })]).toEqual([]);
+  // Skills and agents are links into the templates; the hooks run from the templates (settings.json).
+  for (const dir of ["skills", "agents"]) {
+    const entries = readdirSync(join(templates, "claude", dir));
+    expect(entries.length).toBeGreaterThan(1);
+    for (const e of entries) {
+      const link = join(root, ".claude", dir, e);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(realpathSync(link)).toBe(realpathSync(join(templates, "claude", dir, e)));
+    }
   }
+  expect(existsSync(join(root, ".claude", "hooks"))).toBe(false);
 });
 
 describe("shell writes and task paths (T-0013)", () => {
@@ -193,7 +201,7 @@ describe("fail closed when task paths can't be known (T-0012)", () => {
     expect(decide({ tool_name: "Write", tool_input: { file_path: "/tmp/x" } }, broken)).toBeNull();
   });
   test("realContext: actor set + foreman failing throws; no actor means no restriction", async () => {
-    const { realContext } = await import("../templates/.claude/hooks/guard");
+    const { realContext } = await import("../templates/claude/hooks/guard");
     const saved = { a: process.env.FOREMAN_ACTOR, b: process.env.FOREMAN_BIN };
     try {
       process.env.FOREMAN_ACTOR = "w1";

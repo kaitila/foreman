@@ -2,7 +2,7 @@
 // command, which let the real command through unchecked.
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { type Context, checkCommand, parseShell } from "../templates/.claude/hooks/guard";
+import { type Context, checkCommand, parseShell } from "../templates/claude/hooks/guard";
 
 const ctx = (over: Partial<Context> = {}): Context => ({
   projectRoot: "/repo",
@@ -72,7 +72,7 @@ describe("env and other wrappers with option values (T-0044)", () => {
         FOREMAN_BIN: `bun ${join(root, "packages/foreman/src/cli.ts")}`,
       };
       if (!actor) delete env.FOREMAN_ACTOR;
-      const p = Bun.spawnSync(["bun", join(import.meta.dir, "..", "templates/.claude/hooks/guard.ts")], {
+      const p = Bun.spawnSync(["bun", join(import.meta.dir, "..", "templates/claude/hooks/guard.ts")], {
         cwd: root,
         env,
         stdin: new TextEncoder().encode(JSON.stringify({ tool_name: "Bash", tool_input: { command: REPORTED }, cwd: root })),
