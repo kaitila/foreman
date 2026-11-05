@@ -438,7 +438,7 @@ export class Foreman {
     // a worker could point foreman at some other, harmless PR. Looked up outside the
     // transaction because it calls GitHub.
     const before = this.get(id);
-    let info: { head: string; headSha: string } | null = null;
+    let info: { head: string; headSha: string; mergeable?: string } | null = null;
     const urlRepo = prRepo(pr);
     if (urlRepo) {
       // A GitHub PR is checked or refused, never waved through: if gh can't confirm it,
@@ -456,6 +456,9 @@ export class Foreman {
       }
       if (before.branch && info.head !== before.branch) {
         throw new ForemanError("pr_mismatch", `${pr} is from branch ${info.head}, but ${id}'s branch is ${before.branch}`);
+      }
+      if (info.mergeable === "CONFLICTING") {
+        throw new ForemanError("pr_conflicting", `${pr} conflicts with main: merge origin/main, resolve the conflicts, run the gate, push, and submit again`);
       }
     }
     return this.tx(() => {
