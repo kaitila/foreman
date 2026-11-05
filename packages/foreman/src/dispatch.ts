@@ -3,10 +3,12 @@
 // - At most `max` sessions at once (workers and verifiers both count).
 // - Never two tasks with overlapping declared paths in flight at once.
 // - Each session's lease is pinned to its PID: alive keeps the claim, dead releases it.
+// - Workers and verifiers run as `claude --bg` sessions the person sees in `claude agents`
+//   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type Actor, Foreman, ForemanError, type Status, type Task } from "./core";
-import { actorFor, defaultSpawner, launch, type LaunchOptions, type Role } from "./launch";
+import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
+import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { pathsOverlap } from "./policy";
 
 /** What the dispatcher needs back from a session. */
@@ -18,18 +20,19 @@ export interface SessionResult {
   result: string;
 }
 
-/** Starts a session and calls onSpawn with its PID as soon as it has one. Tests pass a fake. */
-export type Launcher = (opts: LaunchOptions, onSpawn: (pid: number) => void) => Promise<SessionResult>;
+/**
+ * Starts a session and calls onSpawn with its PID as soon as it has one, and with the
+ * background session's id and name in background mode. Tests pass a fake.
+ */
+export type Launcher = (opts: LaunchOptions, onSpawn: (pid: number, session?: BgSession) => void) => Promise<SessionResult>;
 
-export const defaultLauncher: Launcher = (opts, onSpawn) =>
-  launch({
-    ...opts,
-    spawner: (cmd, o) => {
-      const child = defaultSpawner(cmd, o);
-      if (child.pid > 0) onSpawn(child.pid);
-      return child;
-    },
-  });
+export const defaultLauncher: Launcher = (opts, onSpawn) => launch({ ...opts, onSpawn });
+
+/** The launch mode: --print or FOREMAN_LAUNCH=print for print mode, else background (D0022). */
+export function launchModeFrom(flag: LaunchMode | undefined, env: Record<string, string | undefined> = process.env): LaunchMode {
+  if (flag) return flag;
+  return env.FOREMAN_LAUNCH === "print" ? "print" : "bg";
+}
 
 export interface Worktree {
   branch: string;
@@ -103,7 +106,43 @@ function common(actor: string): string {
   ].join("\n");
 }
 
-export function workerPrompt(t: Task, wt: Worktree): string {
+/**
+ * Why a task that was in review came back (T-0064): the latest rework reason, a failed
+ * verdict's failed checks with their evidence, and for a conflict send-back what to do.
+ * Empty for a task never submitted. `events` is the task's history, oldest first.
+ */
+export function returnNotes(t: Task, events: Event[]): string {
+  if (!events.some((e) => e.type === "submitted")) return "";
+  const last = (type: string) => [...events].reverse().find((e) => e.type === type);
+  const rework = last("rework");
+  const failed = last("verify_failed");
+  const verified = last("verified");
+  const lines: string[] = [];
+  if (rework) {
+    const reason = String(rework.data.reason ?? "");
+    lines.push(`- Latest rework reason: ${reason}`);
+    if (rework.data.conflict) {
+      lines.push(
+        `- Its PR conflicts with main. Merge origin/main into your branch (\`git fetch origin && git merge origin/main\`), resolve the conflicts, and if a decision or migration number now clashes, take a fresh one with reserve_number. Run the gate (\`bun run check\`) and push.`,
+      );
+    }
+  }
+  if (failed && (!verified || verified.id < failed.id)) {
+    const results = (failed.data.results as { check: string; pass: boolean; evidence: string }[] | undefined) ?? [];
+    for (const r of results.filter((x) => !x.pass)) {
+      const text = t.acceptance.find((c) => c.id === r.check)?.text;
+      lines.push(`- Failed check ${r.check}${text ? ` (${text})` : ""}: ${r.evidence}`);
+    }
+  }
+  if (!lines.length) return "";
+  return `
+This task came back from review. Fix this before anything else; resubmitting unchanged work fails again:
+${lines.join("\n")}
+- Before submit_task, confirm \`gh pr checks\` is green and \`gh pr view --json mergeable\` says MERGEABLE (not CONFLICTING or UNKNOWN). submit_task refuses a PR GitHub reports as CONFLICTING.
+`;
+}
+
+export function workerPrompt(t: Task, wt: Worktree, events: Event[] = []): string {
   const actor = actorFor("worker", t.id);
   return `You are ${actor}, started by foreman's dispatcher to do ${t.id}: "${t.title}".
 
@@ -115,7 +154,7 @@ Follow the ship skill, with these differences:
 - Step 1 is done: don't claim the task again and don't make another worktree. Start with show_task ${t.id}.
 - This worktree is fresh: install its dependencies first (\`bun install\`, or the install command in AGENTS.md).
 - Skip the fan-out in step 3: write the tests and docs yourself, then review your own diff.
-${common(actor)}
+${returnNotes(t, events)}${common(actor)}
 - Push only your branch (${wt.branch}). Never merge, push to main or force-push.
 - Finish with submit_task ${t.id} and the PR. If you can't finish, report_progress with what blocks you, then stop.`;
 }
@@ -128,6 +167,8 @@ Foreman has already started the verification for you: ${t.id} is "verifying", he
 - Your current directory is the worker's worktree, on branch ${t.branch ?? "(unknown)"}${t.pr ? `; the PR is ${t.pr}` : ""}. Don't edit any file in it.
 - Your foreman tools are show_task, list_tasks, start_verify, record_verdict and heartbeat.
 ${common(actor)}
+
+Run "gh pr checks" on the PR: a failing or pending required check fails the verdict, naming the job and test, even if your local run is green.
 
 Follow the verify skill, and end with record_verdict ${t.id}: one result per acceptance check.`;
 }
@@ -144,6 +185,8 @@ export interface DispatchOptions {
   pollMs?: number;
   launcher?: Launcher;
   worktrees?: WorktreeMaker;
+  /** "bg" (default, D0022): `claude --bg`, visible in `claude agents`. "print": `claude -p` (D0011). */
+  mode?: LaunchMode;
   /** Who reclaims dead leases. Default: "dispatcher" (agent). */
   actor?: Actor;
   log?: (line: string) => void;
@@ -153,6 +196,8 @@ export interface SessionRecord {
   task: string;
   role: Role;
   pid: number | null;
+  /** Background mode: the session's id and name (`claude attach <id>`). */
+  session?: BgSession;
   exitCode: number | null;
   costUsd: number;
   /** The task's status when the session ended. */
@@ -257,7 +302,7 @@ export class Dispatcher {
     }
     const task = this.f.progress(t.id, actor, { branch: wt.branch, worktree: wt.path, note: "dispatched" });
     this.mine.add(t.id);
-    this.start("worker", task, actor, wt.path, workerPrompt(task, wt));
+    this.start("worker", task, actor, wt.path, workerPrompt(task, wt, this.f.events(task.id)));
     return task;
   }
 
@@ -283,18 +328,21 @@ export class Dispatcher {
       prompt,
       model: this.opts.model,
       maxBudgetUsd: this.opts.budgetUsd,
+      mode: launchModeFrom(this.opts.mode),
       // Commands the session runs count as an agent's, even where Claude Code doesn't say so.
       baseEnv: { ...process.env, FOREMAN_AGENT: "1" },
     };
-    const onSpawn = (pid: number) => {
+    const onSpawn = (pid: number, session?: BgSession) => {
       rec.pid = pid;
+      if (session) rec.session = session;
       try {
-        this.f.pinLease(t.id, actor, pid);
+        this.f.pinLease(t.id, actor, pid, session && { session: session.id, name: session.name });
       } catch (e) {
         // Already submitted or verified (a very quick session): nothing left to pin.
         this.log(`${t.id} lease not pinned: ${(e as Error).message}`);
       }
-      this.log(`${t.id} ${role} started (pid ${pid}) in ${cwd}`);
+      const watch = session ? `, "${session.name}": claude attach ${session.id}` : "";
+      this.log(`${t.id} ${role} started (pid ${pid}${watch}) in ${cwd}`);
     };
     const done = (async () => {
       try {

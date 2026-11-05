@@ -6,7 +6,7 @@ import { install, mergeSettings, TEMPLATES, unmatchedOmit } from "../src/install
 
 const dir = mkdtempSync(join(tmpdir(), "agent-kit-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
-const baseline = JSON.parse(readFileSync(join(TEMPLATES, ".claude", "settings.json"), "utf8"));
+const baseline = JSON.parse(readFileSync(join(TEMPLATES, "claude", "settings.json"), "utf8"));
 
 test("the baseline denies the things D0003 says it must", () => {
   const deny: string[] = baseline.permissions.deny;

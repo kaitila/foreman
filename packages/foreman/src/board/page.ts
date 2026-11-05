@@ -497,6 +497,7 @@ function summary(e) {
   const d = e.data || {};
   const parts = [];
   for (const k of ["note", "reason", "pr", "summary", "branch"]) if (d[k]) parts.push(k + ": " + d[k]);
+  if (d.attach) parts.push("session " + (d.name || d.session) + ": " + d.attach);
   if (Array.isArray(d.results)) parts.push(d.results.map((r) => r.check + (r.pass ? " pass" : " fail")).join(", "));
   return parts.join("\\n");
 }

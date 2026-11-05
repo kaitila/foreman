@@ -370,7 +370,7 @@ export class Foreman {
    * doesn't time out; once it's gone, the claim is released at the next reclaim.
    * The dispatcher calls this right after it starts a worker or verifier.
    */
-  pinLease(id: string, actor: Actor, pid: number): Task {
+  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string }): Task {
     if (!Number.isInteger(pid) || pid <= 0) throw new ForemanError("invalid", `bad pid ${pid}`);
     return this.tx(() => {
       const t = this.get(id);
@@ -379,7 +379,8 @@ export class Foreman {
       this.db
         .query(`INSERT OR REPLACE INTO lease_pids (task_id, assignee, pid) VALUES (?, ?, ?)`)
         .run(id, actor.name, pid);
-      this.event(id, actor, "lease_pinned", { pid });
+      // A background session (D0022) is named, so `fm show` and the board can say how to watch it.
+      this.event(id, actor, "lease_pinned", session ? { pid, ...session, attach: `claude attach ${session.session}` } : { pid });
       return this.get(id);
     });
   }
@@ -437,7 +438,7 @@ export class Foreman {
     // a worker could point foreman at some other, harmless PR. Looked up outside the
     // transaction because it calls GitHub.
     const before = this.get(id);
-    let info: { head: string; headSha: string } | null = null;
+    let info: { head: string; headSha: string; mergeable?: string } | null = null;
     const urlRepo = prRepo(pr);
     if (urlRepo) {
       // A GitHub PR is checked or refused, never waved through: if gh can't confirm it,
@@ -455,6 +456,9 @@ export class Foreman {
       }
       if (before.branch && info.head !== before.branch) {
         throw new ForemanError("pr_mismatch", `${pr} is from branch ${info.head}, but ${id}'s branch is ${before.branch}`);
+      }
+      if (info.mergeable === "CONFLICTING") {
+        throw new ForemanError("pr_conflicting", `${pr} conflicts with main: merge origin/main, resolve the conflicts, run the gate, push, and submit again`);
       }
     }
     return this.tx(() => {

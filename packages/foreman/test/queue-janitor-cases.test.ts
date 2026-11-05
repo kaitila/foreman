@@ -51,6 +51,7 @@ function setupQueue() {
   const calls: string[][] = [];
   const sleeps: number[] = [];
   let prInfoDown = false;
+  let submitting = false; // submit refuses a CONFLICTING PR, so the PR reads MERGEABLE while it is handed in
   const policy: Policy = {
     protectedPaths: DEFAULT_PROTECTED,
     changedFiles: () => ["src/a.ts"],
@@ -58,7 +59,7 @@ function setupQueue() {
       const p = prs.get(pr);
       if (prInfoDown || !p) return null;
       const v = p.views[0]!;
-      return { head: p.head, headSha: v.headSha, mergeable: v.mergeable };
+      return { head: p.head, headSha: v.headSha, mergeable: submitting ? "MERGEABLE" : v.mergeable };
     },
     originRepo: () => "acme/app",
   };
@@ -94,7 +95,9 @@ function setupQueue() {
     prs.set(pr, { head: branch, views: [...views] });
     f.claim(t.id, worker);
     f.progress(t.id, worker, { branch });
+    submitting = true;
     f.submit(t.id, worker, { pr });
+    submitting = false;
     f.startVerify(t.id, verifier);
     const r = f.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]);
     expect(r.status).toBe("approved");

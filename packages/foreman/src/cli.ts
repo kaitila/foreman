@@ -57,11 +57,14 @@ Signing off
   merged <id> [--pr url]
 
 Running agents
-  dispatch [--max 3] [--once] [--model m] [--budget usd]
+  dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]
                                 claim ready tasks into worktrees, run a worker for each and a fresh
                                 verifier once it is submitted; at most --max sessions at once, never two
                                 tasks with overlapping paths; --once: see only what fits now through
-                                verification, then stop; --budget: each session's limit in USD
+                                verification, then stop; --budget: each session's limit in USD.
+                                Sessions run as Claude Code background sessions: watch them with
+                                "claude agents", "claude attach <name>"; --print (or
+                                FOREMAN_LAUNCH=print) runs headless "claude -p" instead
 Running the loop
   merge-queue [--once] [--dry-run] [--settle-seconds 30] [--interval 60]
                                 merge approved PRs one at a time: settled green checks at the
@@ -136,6 +139,7 @@ export async function main(argv: string[]): Promise<number | null> {
       port: { type: "string" },
       max: { type: "string" },
       once: { type: "boolean" },
+      print: { type: "boolean" },
       model: { type: "string" },
       budget: { type: "string" },
       "dry-run": { type: "boolean" },
@@ -322,6 +326,7 @@ export async function main(argv: string[]): Promise<number | null> {
         once: o.once,
         model: o.model,
         budgetUsd: num(o.budget, "budget"),
+        mode: o.print ? "print" : undefined,
         actor: me,
         log: o.json ? () => {} : undefined,
       });
