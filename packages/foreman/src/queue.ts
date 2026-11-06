@@ -124,7 +124,9 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     const entry = (action: QueueAction, reason: string) => {
       report.push({ id: t.id, pr: t.pr, action, reason });
     };
-    if (!t.pr || !GITHUB_PR.test(t.pr)) {
+    // A bare number recorded before submit expanded them still merges (T-0076).
+    const pr = f.fullPr(t.pr);
+    if (!pr || !GITHUB_PR.test(pr)) {
       entry("skipped", "no GitHub PR: merge it by hand, then `merged`");
       continue;
     }
@@ -133,9 +135,9 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", "its verdict recorded no commit: rework and verify again");
       continue;
     }
-    const first = readPr(run, cwd, t.pr);
+    const first = readPr(run, cwd, pr);
     if (!first) {
-      entry("skipped", `couldn't read ${t.pr} (is gh installed and logged in?)`);
+      entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
       continue;
     }
     if (first.isDraft) {
@@ -170,9 +172,9 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // Settled: a check that starts late (a slow workflow, a re-run) must show up before we merge.
     await sleep(settleMs);
-    const second = readPr(run, cwd, t.pr);
+    const second = readPr(run, cwd, pr);
     if (!second) {
-      entry("skipped", `couldn't read ${t.pr} again (is gh installed and logged in?)`);
+      entry("skipped", `couldn't read ${pr} again (is gh installed and logged in?)`);
       continue;
     }
     if (second.headSha !== verified) {
@@ -201,15 +203,15 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       return report;
     }
     // --match-head-commit: GitHub refuses if the head moved between our read and the merge.
-    const out = run(["gh", "pr", "merge", t.pr, "--merge", "--delete-branch", "--match-head-commit", verified], cwd);
+    const out = run(["gh", "pr", "merge", pr, "--merge", "--delete-branch", "--match-head-commit", verified], cwd);
     const mergeError = out === null ? run.lastError : undefined;
     if (out === null) {
       // gh can fail after the merge itself (deleting a local branch a worktree holds):
       // ask GitHub whether it merged before calling it a failure.
-      const state = run(["gh", "pr", "view", t.pr, "--json", "state", "--jq", ".state"], cwd);
+      const state = run(["gh", "pr", "view", pr, "--json", "state", "--jq", ".state"], cwd);
       if (state !== "MERGED") {
         const why = mergeError?.split("\n").map((l) => l.trim()).filter(Boolean).pop();
-        entry("error", `gh pr merge failed for ${t.pr}${why ? `: ${why}` : ""}`);
+        entry("error", `gh pr merge failed for ${pr}${why ? `: ${why}` : ""}`);
         return report;
       }
     }

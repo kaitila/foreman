@@ -19,7 +19,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { resolvePolicy } from "./roles";
 import { repoRoot } from "./store";
 
@@ -157,6 +157,17 @@ export function actorFor(role: Role, taskId?: string): string {
 const CLI = join(import.meta.dir, "cli.ts");
 
 /**
+ * A relative cli.ts in the foreman server's args runs the main checkout's copy, not the
+ * session worktree's older one (T-0076). Other servers and arguments stay as they are.
+ */
+function pinForeman(servers: Record<string, unknown>, root: string): Record<string, unknown> {
+  const f = servers.foreman as { args?: unknown } | undefined;
+  if (!f || !Array.isArray(f.args)) return servers;
+  const args = f.args.map((a) => (typeof a === "string" && /cli\.ts$/.test(a) && !isAbsolute(a) ? join(root, a) : a));
+  return { ...servers, foreman: { ...f, args } };
+}
+
+/**
  * The MCP servers a session gets: those in the project's .mcp.json (read from `root`,
  * the main checkout), or foreman's own server when the project has none. Passed with
  * --strict-mcp-config, so user servers and claude.ai connectors stay out (R5.3b).
@@ -165,7 +176,7 @@ export function projectMcpConfig(root: string): { mcpServers: Record<string, unk
   try {
     const parsed = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as { mcpServers?: Record<string, unknown> };
     if (parsed.mcpServers && typeof parsed.mcpServers === "object" && Object.keys(parsed.mcpServers).length) {
-      return { mcpServers: parsed.mcpServers };
+      return { mcpServers: pinForeman(parsed.mcpServers, root) };
     }
   } catch {
     // no .mcp.json, or not JSON: foreman's own server

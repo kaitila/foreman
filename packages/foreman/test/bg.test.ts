@@ -69,11 +69,15 @@ describe("buildLaunch in background mode", () => {
 
   test("passes the project's .mcp.json servers, or foreman's own", () => {
     const withMcp = fresh("mcp");
-    const servers = { foreman: { command: "bun", args: ["cli.ts", "mcp"] }, db: { command: "db-mcp" } };
+    const servers = { foreman: { command: "bun", args: ["/abs/cli.ts", "mcp"] }, db: { command: "db-mcp" } };
     writeFileSync(join(withMcp, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
     expect(projectMcpConfig(withMcp)).toEqual({ mcpServers: servers });
     const { cmd } = buildLaunch({ ...base, cwd: withMcp, repoRoot: withMcp, policyRoot: withMcp });
     expect(JSON.parse(flag(cmd, "--mcp-config")!)).toEqual({ mcpServers: servers });
+    // a relative cli.ts runs the main checkout's copy, not the worktree's (T-0076)
+    const rel = fresh("rel");
+    writeFileSync(join(rel, ".mcp.json"), JSON.stringify({ mcpServers: { ...servers, foreman: { command: "bun", args: ["packages/foreman/src/cli.ts", "mcp"] } } }));
+    expect(projectMcpConfig(rel).mcpServers).toEqual({ ...servers, foreman: { command: "bun", args: [join(rel, "packages/foreman/src/cli.ts"), "mcp"] } });
     expect(Object.keys(projectMcpConfig(fresh("none")).mcpServers)).toEqual(["foreman"]);
   });
 
