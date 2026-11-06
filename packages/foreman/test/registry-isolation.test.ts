@@ -20,8 +20,11 @@ describe("registry isolation", () => {
   test("under test the default registry is not the person's", () => {
     expect(process.env.NODE_ENV).toBe("test");
     const p = registryPath();
+    // even when XDG_CONFIG_HOME points at a real config dir
+    expect(registryPath({ NODE_ENV: "test", XDG_CONFIG_HOME: join(homedir(), ".config") }).startsWith(join(homedir(), ".config"))).toBe(false);
     expect(p.startsWith(join(homedir(), ".config"))).toBe(false);
-    expect(p.startsWith(tmpdir())).toBe(true);
+    expect(p).toBe(registryPath({ NODE_ENV: "test" }));
+    expect(p.startsWith(join(homedir(), ".config"))).toBe(false);
   });
 
   test("fm opening a database leaves a sentinel registry untouched", async () => {

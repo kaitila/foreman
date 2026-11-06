@@ -13,7 +13,7 @@ export function registryPath(env: Record<string, string | undefined> = process.e
   if (env.FOREMAN_PROJECTS_FILE) return env.FOREMAN_PROJECTS_FILE;
   // Under `bun test` (NODE_ENV=test, inherited by the `fm` and `create` processes tests spawn) never
   // touch the person's real registry (T-0077): use a throwaway file unless a test names its own.
-  if (env.NODE_ENV === "test" && !env.XDG_CONFIG_HOME) return join(tmpdir(), `foreman-test-registry-${process.getuid?.() ?? 0}`, "projects.json");
+  if (env.NODE_ENV === "test") return join(tmpdir(), `foreman-test-registry-${process.getuid?.() ?? 0}`, "projects.json");
   const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
   return join(base, "foreman", "projects.json");
 }
