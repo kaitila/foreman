@@ -35,7 +35,7 @@ test("an agent works a task end to end over MCP, and can't approve", async () =>
   expect(created.status).toBe("ready");
   expect(JSON.parse((await call("claim_task")).text).assignee).toBe("worker-1");
   await call("report_progress", { id: created.id, note: "halfway" });
-  expect(JSON.parse((await call("submit_task", { id: created.id, pr: "#3" })).text).status).toBe("in_review");
+  expect(JSON.parse((await call("submit_task", { id: created.id, pr: "https://example.com/pull/3" })).text).status).toBe("in_review");
 
   // same actor again: refused, with a readable error instead of a crash
   const own = await call("start_verify", { id: created.id });

@@ -75,7 +75,7 @@ describe("edit (T-0009)", () => {
     const { f } = setup();
     const t = ready(f);
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     expect(code(() => f.edit(t.id, human, { title: "z" }))).toBe("bad_status");
     f.startVerify(t.id, verifier);
     expect(code(() => f.edit(t.id, worker, { addPaths: ["x/**"] }))).toBe("bad_status");
@@ -164,7 +164,7 @@ describe("the PR (T-0017)", () => {
     const { f } = setup({ origin: null });
     const t = ready(f);
     f.claim(t.id, worker);
-    expect(f.submit(t.id, worker, { pr: "#12" }).status).toBe("in_review");
+    expect(f.submit(t.id, worker, { pr: "https://example.com/pull/12" }).status).toBe("in_review");
   });
 
   test("a GitHub PR that can't be checked is refused, not waved through", () => {
@@ -214,7 +214,7 @@ describe("the PR (T-0017)", () => {
     const { f } = setup({ origin: null });
     const t = ready(f);
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#12" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/12" });
     f.startVerify(t.id, verifier);
     expect(f.recordVerify(t.id, verifier, passAll(f, t.id)).status).toBe("approved");
     expect(f.merged(t.id, worker).status).toBe("done");
@@ -222,7 +222,7 @@ describe("the PR (T-0017)", () => {
 
   test("repo names from PR URLs and remotes", () => {
     expect(prRepo(PR)).toBe("acme/app");
-    expect(prRepo("#7")).toBeNull();
+    expect(prRepo("https://example.com/pull/7")).toBeNull();
     expect(remoteRepo("git@github.com:acme/app.git")).toBe("acme/app");
     expect(remoteRepo("https://github.com/acme/app.git")).toBe("acme/app");
     expect(remoteRepo("https://github.com/acme/app")).toBe("acme/app");
@@ -235,7 +235,7 @@ describe("merged() takes the verified PR only (T-0037)", () => {
     const { f } = setup();
     const t = ready(f);
     expect(toApproved(f, t.id).status).toBe("approved");
-    expect(code(() => f.merged(t.id, worker, "#12"))).toBe("pr_mismatch");
+    expect(code(() => f.merged(t.id, worker, "https://example.com/pull/12"))).toBe("pr_mismatch");
     expect(code(() => f.merged(t.id, worker, "https://github.com/acme/app/pull/99"))).toBe("pr_mismatch");
     expect(f.get(t.id).status).toBe("approved");
     expect(f.merged(t.id, worker, PR).status).toBe("done");

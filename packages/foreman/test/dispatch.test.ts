@@ -69,7 +69,7 @@ function setup(onLaunch?: (s: Session) => void) {
 
 /** What a worker does: submit a PR, then exit. */
 const submit = (f: Foreman, s: Session) => {
-  f.submit(s.opts.taskId!, s.actor, { pr: `#${s.pid}`, summary: "done" });
+  f.submit(s.opts.taskId!, s.actor, { pr: `https://example.com/pull/${s.pid}`, summary: "done" });
   s.end();
 };
 
@@ -244,7 +244,7 @@ describe("leases pinned to a PID", () => {
     const env = setup();
     const t = env.add("pinned", ["src/**"]);
     env.f.claim(t.id, worker);
-    env.f.submit(t.id, worker, { pr: "#1" });
+    env.f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     const v: Actor = { name: "verifier-T-0001", kind: "agent" };
     env.f.startVerify(t.id, v);
     env.f.pinLease(t.id, v, 7); // never alive
@@ -258,7 +258,7 @@ describe("leases pinned to a PID", () => {
     env.f.claim(t.id, worker, 1);
     env.alive.add(42);
     env.f.pinLease(t.id, worker, 42);
-    env.f.submit(t.id, worker, { pr: "#1" });
+    env.f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     expect(env.f.leasePid(t.id)).toBeNull();
     const v: Actor = { name: "verifier-T-0001", kind: "agent" };
     env.f.startVerify(t.id, v, 1);
