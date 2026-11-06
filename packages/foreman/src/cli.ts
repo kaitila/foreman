@@ -228,7 +228,7 @@ export async function main(argv: string[]): Promise<number | null> {
   }
   if (cmd === "create" || cmd === "init" || cmd === "sync") {
     // The same code as packages/create's own CLI; this adds only the registry and sync --all.
-    const { runKitCommand } = await import("@meta-repo/create").catch(() => {
+    const { runKitCommand } = await import("../../create/src/index").catch(() => {
       throw new ForemanError("invalid", `fm ${cmd} needs the meta-repo checkout: run it from the globally linked fm (bun run link)`);
     });
     const kit = { preset: o.preset, name: o.name, noInstall: o["no-install"], noGit: o["no-git"], dryRun: o["dry-run"] };
