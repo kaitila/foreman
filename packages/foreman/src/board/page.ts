@@ -618,7 +618,7 @@ async function openTask(id) {
   for (const s of d.sessions || []) {
     if (s.live) anyLive = true;
     p.append(el("h3", "", s.role + (s.live ? " (running)" : "") + "  " + s.turns + " turns, $" + s.costUsd.toFixed(2)));
-    p.append(el("pre", "ev", s.lines.length ? s.lines.map((l) => (l.kind === "result" ? "  -> " : l.kind === "tool" ? "> " : "# ") + l.text).join("\n") : "(no activity yet)"));
+    p.append(el("pre", "ev", s.lines.length ? s.lines.map((l) => (l.kind === "result" ? "  -> " : l.kind === "tool" ? "> " : "# ") + l.text).join("\\n") : "(no activity yet)"));
   }
   clearTimeout(liveTimer);
   if (anyLive) liveTimer = setTimeout(() => { if (openId === id) openTask(id); }, 3000);

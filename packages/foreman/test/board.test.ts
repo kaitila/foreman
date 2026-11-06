@@ -117,6 +117,20 @@ describe("listing", () => {
 });
 
 describe("page", () => {
+  test("every inline script on the served page parses (T-0078)", async () => {
+    const html = await (await get("/")).text();
+    const blocks = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
+    const code = blocks.filter((m) => !/type="application\/json"/.test(m[1]!)).map((m) => m[2]!);
+    const data = blocks.filter((m) => /type="application\/json"/.test(m[1]!)).map((m) => m[2]!);
+    expect(code.length).toBeGreaterThan(0);
+    for (const c of code) expect(() => new Function(c)).not.toThrow();
+    for (const d of data) expect(() => JSON.parse(d)).not.toThrow();
+  });
+
+  test("a string with a raw newline would fail that check", () => {
+    expect(() => new Function('const s = ["a", "b"].join("\n");')).toThrow();
+  });
+
   test("escapes a title that tries to close the script", async () => {
     const html = await (await get("/")).text();
     expect(html).not.toContain(EVIL);
