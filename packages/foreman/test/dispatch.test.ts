@@ -217,6 +217,54 @@ describe("dispatch", () => {
     expect(env.f.events(t.id).at(-1)).toMatchObject({ type: "released", actor: `worker-${t.id}` });
   });
 
+  test("runs foreman.json's setup in the new worktree before the worker starts, and the prompt drops the install line", () => {
+    const calls: string[] = [];
+    const env = setup();
+    env.add("needs web deps", ["src/w/**"]);
+    const prompts: string[] = [];
+    new Dispatcher(env.f, {
+      launcher: (o) => {
+        prompts.push(o.prompt);
+        calls.push(`launch ${o.cwd}`);
+        return new Promise(() => {});
+      },
+      worktrees: (t) => ({ ...(() => { const p = join(dir, `${t.id}-s`); mkdirSync(p, { recursive: true }); return { branch: branchFor(t), path: p }; })(), fresh: true }),
+      setup: "bun install && bun install --cwd web",
+      setupRunner: (cmd, cwd) => (calls.push(`setup ${cmd} @ ${cwd}`), { ok: true }),
+      log: () => {},
+    }).tick();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toStartWith("setup bun install && bun install --cwd web @ ");
+    expect(calls[1]).toStartWith("launch ");
+    expect(prompts[0]).toContain("already ran the project's setup command");
+    expect(prompts[0]).not.toContain("install its dependencies first");
+  });
+
+  test("a failed setup is told to the worker; a reused worktree and no setup keep the old behaviour", () => {
+    const run = (o: { setup?: string; fresh: boolean; ok: boolean }) => {
+      const env = setup();
+      env.add("x", ["src/x/**"]);
+      const prompts: string[] = [];
+      let ran = 0;
+      new Dispatcher(env.f, {
+        launcher: (l) => (prompts.push(l.prompt), new Promise(() => {})),
+        worktrees: (t) => ({ branch: branchFor(t), path: dir, fresh: o.fresh }),
+        setup: o.setup ?? "",
+        setupRunner: () => (ran++, o.ok ? { ok: true } : { ok: false, error: "exit 1: boom" }),
+        log: () => {},
+      }).tick();
+      return { prompt: prompts[0]!, ran };
+    };
+    const bad = run({ setup: "make deps", fresh: true, ok: false });
+    expect(bad.prompt).toContain("it failed (exit 1: boom)");
+    const reused = run({ setup: "make deps", fresh: false, ok: true });
+    expect(reused.ran).toBe(0);
+    expect(reused.prompt).toContain("install its dependencies first");
+    const none = run({ fresh: true, ok: true });
+    expect(none.ran).toBe(0);
+    expect(none.prompt).toContain("install its dependencies first");
+  });
+
   test("--max must be at least 1", () => {
     const env = setup();
     expect(() => new Dispatcher(env.f, { max: 0 })).toThrow("--max");
@@ -294,11 +342,11 @@ describe("gitWorktree", () => {
     const t = env.add("Add a stage filter!", ["src/**"]);
     const make = gitWorktree();
     const wt = make(t, root);
-    expect(wt).toEqual({ branch: "t-0001-add-a-stage-filter", path: join(root, ".claude", "worktrees", "T-0001") });
+    expect(wt).toEqual({ branch: "t-0001-add-a-stage-filter", path: join(root, ".claude", "worktrees", "T-0001"), fresh: true });
     expect(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], wt.path)).toBe(wt.branch);
     expect(sh(["git", "rev-parse", "HEAD"], wt.path)).toBe(sh(["git", "rev-parse", "origin/main"], root));
     // Back for rework: the recorded worktree is reused.
-    expect(make({ ...t, branch: wt.branch, worktree: wt.path }, root)).toEqual(wt);
+    expect(make({ ...t, branch: wt.branch, worktree: wt.path }, root)).toEqual({ branch: wt.branch, path: wt.path });
     // Worktree gone, branch kept: it comes back on the same branch.
     sh(["git", "worktree", "remove", wt.path], root);
     expect(existsSync(wt.path)).toBe(false);

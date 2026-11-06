@@ -274,11 +274,21 @@ async function get(path) {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.statusText);
   return r.json();
 }
-async function post(path) {
-  let r;
-  try { r = await fetch(path, { method: "POST", headers: { "x-foreman-token": token } }); }
-  catch (e) { return { ok: false, body: { message: "couldn't reach the board: " + (e && e.message ? e.message : e) } }; }
-  const body = await r.json().catch(() => ({}));
+// A merge is running (the server answers 409 busy): show "merge in progress…" and retry
+// the click every few seconds rather than failing it.
+async function post(path, key) {
+  let r, body;
+  for (let tries = 0; ; tries++) {
+    try { r = await fetch(path, { method: "POST", headers: { "x-foreman-token": token } }); }
+    catch (e) { return { ok: false, body: { message: "couldn't reach the board: " + (e && e.message ? e.message : e) } }; }
+    body = await r.json().catch(() => ({}));
+    if (r.status === 409 && body.error === "busy" && tries < 90) {
+      if (key && busy.has(key)) { busy.set(key, "Merge in progress… waiting for it to finish, then this one goes"); render(); }
+      await new Promise((res) => setTimeout(res, 2000));
+      continue;
+    }
+    break;
+  }
   if (r.status === 403 && /token/.test(body.message || "")) { forgetToken(); notice(); }
   return { ok: r.ok, body };
 }
@@ -329,13 +339,13 @@ async function fire(key) {
     for (const k of p.ids) {
       const t = byKey(k);
       if (!t) continue;
-      const r = await post(taskPath(t, "approve"));
+      const r = await post(taskPath(t, "approve"), key);
       if (!r.ok) bad.push(label(t) + ": " + (r.body.message || "refused"));
     }
     out = bad.length ? { cls: "bad", text: bad.join("; ") } : { cls: "ok", text: p.ids.length > 1 ? "Approved " + p.ids.length + " tasks." : "Approved." };
   } else if (p.kind === "merge") {
     const t = byKey(p.ids[0]);
-    const r = t ? await post(taskPath(t, "merge")) : { ok: true, body: { entry: null } };
+    const r = t ? await post(taskPath(t, "merge"), key) : { ok: true, body: { entry: null } };
     out = r.ok ? entryOut(r.body.entry) : { cls: "bad", text: r.body.message || "refused" };
   } else {
     // Each project's queue in turn, so merges in one repo never overlap and never touch another.
@@ -343,7 +353,7 @@ async function fire(key) {
     const lines = [];
     let bad = false;
     for (const n of names) {
-      const r = await post(proj(n) + "/queue/run");
+      const r = await post(proj(n) + "/queue/run", key);
       if (!r.ok) { bad = true; lines.push((multi ? n + ": " : "") + (r.body.message || "refused")); continue; }
       for (const e of r.body.entries) lines.push((multi ? n + " " : "") + e.id + " " + e.action.replace(/_/g, " ") + ": " + e.reason);
     }
