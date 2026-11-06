@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, checkCommand, gitWriteTargets, writeTargets } from "../templates/.claude/hooks/guard";
+import { type Context, checkCommand, gitWriteTargets, writeTargets } from "../templates/claude/hooks/guard";
 
 const ctx = (over: Partial<Context> = {}): Context => ({
   projectRoot: "/repo",
@@ -96,7 +96,7 @@ describe("a heredoc is code only where stdin is the script (T-0027)", () => {
 });
 
 describe("the hook fails closed when bun is missing (T-0026)", () => {
-  const settings = JSON.parse(readFileSync(join(import.meta.dir, "..", "templates/.claude/settings.json"), "utf8"));
+  const settings = JSON.parse(readFileSync(join(import.meta.dir, "..", "templates/claude/settings.json"), "utf8"));
   const command: string = settings.hooks.PreToolUse[0].hooks[0].command;
 
   test("with bun not on PATH, the hook command exits 2 and names bun", () => {
@@ -120,16 +120,19 @@ describe("the hook fails closed when bun is missing (T-0026)", () => {
     }
   });
 
-  test("this repository runs the same hook command as the template", () => {
+  test("this repository runs the template's hook command, on the template's own guard (D0023)", () => {
     const repo = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "..", ".claude/settings.json"), "utf8"));
-    expect(repo.hooks.PreToolUse).toEqual(settings.hooks.PreToolUse);
+    const inPlace = JSON.parse(
+      JSON.stringify(settings.hooks.PreToolUse).replaceAll("/.claude/hooks/", "/packages/agent-kit/templates/claude/hooks/"),
+    );
+    expect(repo.hooks.PreToolUse).toEqual(inPlace);
   });
 
   test("with bun present, it runs the guard", () => {
     const dir = mkdtempSync(join(tmpdir(), "withbun-"));
     try {
       mkdirSync(join(dir, ".claude/hooks"), { recursive: true });
-      const guard = readFileSync(join(import.meta.dir, "..", "templates/.claude/hooks/guard.ts"), "utf8");
+      const guard = readFileSync(join(import.meta.dir, "..", "templates/claude/hooks/guard.ts"), "utf8");
       Bun.write(join(dir, ".claude/hooks/guard.ts"), guard);
       const p = Bun.spawnSync(["sh", "-c", command], {
         env: { ...process.env, CLAUDE_PROJECT_DIR: dir, FOREMAN_ACTOR: "" },

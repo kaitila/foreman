@@ -22,7 +22,7 @@ bun packages/agent-kit/src/cli.ts init [dir]
 
 ## What's in it
 
-**`templates/.claude/settings.json`**, the permission baseline ([D0007](../../docs/decisions/D0007-guardrail-layers.md)):
+**`templates/claude/settings.json`**, the permission baseline ([D0007](../../docs/decisions/D0007-guardrail-layers.md)):
 - **Deny:**
   - pushing to main or master, force-push, `--no-verify`
   - `git reset --hard`, `rm -rf`
@@ -35,9 +35,9 @@ Deny rules always beat allow rules, in any settings file. `settings.local.json` 
 
 These rules are the first layer, not a security boundary: Claude Code's docs say so, and the [live test](../../docs/research/R4-guardrails-tested.md) confirmed it.
 
-**`templates/.claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, or the repo's `packages/foreman`). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
+**`templates/claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, then `packages/foreman` or the installed package, in the project and then the main checkout). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
 
-**`templates/.claude/hooks/guard.ts`** is the PreToolUse guard, wired in by the settings file. It needs Bun.
+**`templates/claude/hooks/guard.ts`** is the PreToolUse guard, wired in by the settings file. It needs Bun.
 - **It parses each command**, so it catches what text rules miss:
   - `git -C . push origin main`, a bare `git push` while on main
   - force-push in any spelling (`-fu`, `--force-with-lease`, `+branch`), deleting remote branches
@@ -48,7 +48,9 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 - **Task paths:** when the agent has `FOREMAN_ACTOR` set and holds a claimed foreman task with `paths`, writes outside those paths are refused.
   - This covers the edit tools and shell writes: `>`/`>>` redirects, `tee`, `cp`, `mv`, `install`, `ln`, `touch` and `sed -i`.
   - `docs/tasks/**`, where tasks are exported, is always allowed, and so are files outside the repo.
-  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman` in the repo.
+  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman/src/cli.ts`, then the installed package's own file, `node_modules/@meta-repo/foreman/src/cli.ts`.
+    - Those two are looked for in the project root, then in the main checkout, since a worktree the dispatcher just made has no `node_modules` yet.
+    - Not `node_modules/.bin/foreman`: any dependency can ship a bin named `foreman`, and the last one linked wins, so a fake one could drop the path limits and role rules. A session's PATH doesn't include `node_modules/.bin` either, and on pnpm or Windows its entries are shell shims.
   - **With `FOREMAN_ACTOR` set but foreman unreachable**, writes in the repo are blocked with a reason, instead of quietly going unchecked.
   - **Known limits:** writes made by scripts and interpreters (`bun -e`, `python -c`, a build tool) aren't traced, and neither is `cd x && ...`. The verifier's changed-paths check is the backstop.
 - **Role rules:** with `FOREMAN_ACTOR` set, it asks foreman (`foreman policy --json`) for the deny rules `foreman.json` gives the session's role ([D0019](../../docs/decisions/D0019-role-deny-rules.md), [format](../foreman/README.md#role-rules)). A person's session (no `FOREMAN_ACTOR`) is never affected.
@@ -64,15 +66,15 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 Live check: `bun run live-test` runs real headless Claude sessions against both layers, about $0.06 with Haiku. The other layers are CI and branch protection on the server.
 
 **The ship flow, wired to foreman:**
-- **`templates/.claude/skills/ship/`, the worker side.** It covers claim → worktree → code → three parallel agents → gate → merge main → PR → `submit_task`.
+- **`templates/claude/skills/ship/`, the worker side.** It covers claim → worktree → code → three parallel agents → gate → merge main → PR → `submit_task`.
   - The worker never verifies or approves its own task.
   - It takes numbers from `reserve_number`.
   - Work found on the way becomes a new task with `discoveredFrom`.
-- **`templates/.claude/skills/verify/`, for a fresh session that didn't do the work.**
+- **`templates/claude/skills/verify/`, for a fresh session that didn't do the work.**
   - It runs every `cmd` check itself and wants concrete evidence for each statement; a statement it can't confirm fails.
   - It checks the changed files against the task's `paths`.
   - It records one verdict per check, and lists weaknesses even when the checks pass.
-- **`templates/.claude/agents/`: `test-writer`, `docs-writer`, `reviewer` and `design-critic`.**
+- **`templates/claude/agents/`: `test-writer`, `docs-writer`, `reviewer` and `design-critic`.**
   - They split the work by path: only test-writer runs the tests, docs-writer only edits docs, and the reviewer is read-only (no edit tools).
   - design-critic is read-only too, for UI changes. It reviews the changed pages against the project's `docs/design.md`. It screenshots them at phone and desktop width, light and dark, when playwright-core is installed; otherwise it reviews the served markup and styles. <!-- docs-check: elsewhere -->
   - None of them touches foreman: the worker owns the task.

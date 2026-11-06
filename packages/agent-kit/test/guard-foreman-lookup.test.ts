@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), "guard-lookup-")));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
-const hook = join(import.meta.dir, "..", "templates/.claude/hooks/guard.ts");
+const hook = join(import.meta.dir, "..", "templates/claude/hooks/guard.ts");
 
 const project = join(tmp, "project");
 mkdirSync(join(project, "packages/foreman/src"), { recursive: true });

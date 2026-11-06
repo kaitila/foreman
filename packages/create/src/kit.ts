@@ -1,6 +1,6 @@
 // What create, init and sync share: the kit's files, the record of what was installed
 // (.meta-repo/installed.json, D0018), and the meta-repo packages a preset app vendors.
-import { TEMPLATES } from "@meta-repo/agent-kit";
+import { TEMPLATES, templateFiles, templateSettings } from "@meta-repo/agent-kit";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +13,9 @@ export const RECORD = join(".meta-repo", "installed.json");
 /** Vendored meta-repo packages, as tarballs named by content hash (D0018). */
 export const VENDOR = ".meta-repo/packages";
 export const SETTINGS = ".claude/settings.json";
+export const MCP = ".mcp.json";
+/** The foreman MCP server a project gets: the installed package, never a registry fetch. */
+export const FOREMAN_SERVER = { type: "stdio", command: "bun", args: ["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"] };
 
 export interface Installed {
   /** The meta-repo version the files were last installed or synced from. */
@@ -86,8 +89,8 @@ export const ownTemplate = (name: string) => readFileSync(join(OWN_TEMPLATES, na
 /** agent-kit's template files by path, except settings.json, which is merged, never copied (D0014). */
 export function kitFiles(templates = TEMPLATES): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
-  for (const rel of [...new Bun.Glob("**/*").scanSync({ cwd: templates, dot: true, onlyFiles: true })].sort()) {
-    if (rel !== SETTINGS) out.set(rel, readFileSync(join(templates, rel)));
+  for (const { src, rel } of templateFiles(templates)) {
+    if (rel !== SETTINGS) out.set(rel, readFileSync(src));
   }
   return out;
 }
@@ -156,7 +159,7 @@ export function matchingKitHooks(dir: string, templates = TEMPLATES): Record<str
   const file = join(dir, SETTINGS);
   if (!existsSync(file)) return out;
   const mine = JSON.parse(readFileSync(file, "utf8"));
-  const kit = JSON.parse(readFileSync(join(templates, SETTINGS), "utf8"));
+  const kit = JSON.parse(readFileSync(templateSettings(templates), "utf8"));
   for (const [event, groups] of hookGroups(kit)) {
     for (const g of groups) {
       const same = hookGroups(mine).find(([e]) => e === event)?.[1].find((m) => m.hooks.some((h) => h.command === g.hooks[0]?.command));
