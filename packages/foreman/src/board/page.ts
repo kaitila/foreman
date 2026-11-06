@@ -147,6 +147,14 @@ main:hover::-webkit-scrollbar-thumb,main:focus-within::-webkit-scrollbar-thumb{b
 .card.sel.attn,.card.sel.go{box-shadow:0 0 0 1px var(--focus)}
 .top{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--faint)}
 .top .id{color:var(--muted);font-weight:550}
+.top .proj{margin-right:auto;margin-left:8px;padding:0 6px;border-radius:4px;background:var(--sunk);color:var(--muted);font-weight:550;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.projects{display:flex;gap:6px;padding:8px 16px;overflow-x:auto;border-bottom:1px solid var(--line)}
+.projects[hidden]{display:none}
+.tab{font:inherit;font-size:13px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--muted);cursor:pointer;white-space:nowrap}
+.tab.on{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.tab:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.tab .n{margin-left:6px;padding:0 6px;border-radius:8px;background:var(--attn-soft);color:var(--attn);font-weight:600}
+.tab.on .n{background:var(--paper)}
 .title{margin:3px 0 7px;font-size:13.5px;font-weight:500;line-height:1.35;overflow-wrap:anywhere}
 .meta{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:12px;color:var(--muted)}
 .risk{padding:0 6px;border-radius:5px;background:var(--sunk);font-size:11.5px}
@@ -220,7 +228,15 @@ const KEY = "foreman-board-token";
 const NAMES = { draft: "Draft", ready: "Ready", claimed: "Claimed", in_progress: "In progress", in_review: "In review",
   verifying: "Verifying", needs_approval: "Needs approval", approved: "Approved", done: "Done", cancelled: "Cancelled" };
 const EMPTY = { needs_approval: "Nothing to sign off.", approved: "Nothing to merge." };
-let tasks = S.tasks, lastEvent = S.lastEvent, openId = null, sel = null, filter = "", live = true, token = "";
+// Tasks of every project, merged. t.k (project/id) is the key: ids repeat across projects.
+const PROJECTS = (S.projects || [{ name: "", tasks: S.tasks || [], lastEvent: S.lastEvent || 0 }]).map((p) => p.name);
+const multi = PROJECTS.length > 1;
+const lastEvents = new Map((S.projects || [{ name: "", lastEvent: S.lastEvent || 0 }]).map((p) => [p.name, p.lastEvent]));
+const tag = (name, ts) => ts.map((t) => ({ ...t, project: name, k: name + "/" + t.id }));
+let tasks = (S.projects || [{ name: "", tasks: S.tasks || [] }]).flatMap((p) => tag(p.name, p.tasks));
+let openId = null, sel = null, filter = "", live = true, token = "", view = "all";
+const byKey = (k) => tasks.find((t) => t.k === k);
+const inView = () => (view === "all" ? tasks : tasks.filter((t) => t.project === view));
 const pending = new Map(); // key -> { kind, ids, until, timer }: waiting out the undo window
 const busy = new Map();    // key -> text: request sent, waiting for the answer
 const results = new Map(); // key -> { cls, text, at }
@@ -235,11 +251,11 @@ function el(tag, cls, text) {
 
 // The token: from the fragment (#t=...) into this tab's sessionStorage, then off the address bar.
 (function takeToken() {
-  const m = /^#t=(.*)$/.exec(location.hash);
+  const m = /^#t=([^&]*)(?:&(.*))?$/.exec(location.hash);
   if (m) {
     token = /^[0-9a-f]{64}$/.test(m[1]) ? m[1] : "";
     try { if (token) sessionStorage.setItem(KEY, token); } catch {}
-    history.replaceState(null, "", location.pathname + location.search);
+    history.replaceState(null, "", location.pathname + location.search + (m[2] ? "#" + m[2] : ""));
   } else {
     try { token = sessionStorage.getItem(KEY) || ""; } catch {}
   }
@@ -276,7 +292,19 @@ async function post(path, key) {
   if (r.status === 403 && /token/.test(body.message || "")) { forgetToken(); notice(); }
   return { ok: r.ok, body };
 }
-const taskPath = (id, what) => "/api/tasks/" + encodeURIComponent(id) + "/" + what;
+const proj = (name) => "/api/p/" + encodeURIComponent(name);
+const taskPath = (t, what) => proj(t.project) + "/tasks/" + encodeURIComponent(t.id) + "/" + what;
+// #p=<project>&<task id>: either part may be missing. (The token's #t=... is taken off first.)
+function hashFor(t) { return "#" + (multi ? "p=" + encodeURIComponent(t.project) + "&" : "") + t.id; }
+function parseHash(h) {
+  let project = null, id = null;
+  for (const part of h.replace(/^#/, "").split("&")) {
+    if (part.startsWith("p=")) { try { project = decodeURIComponent(part.slice(2)); } catch {} }
+    else if (/^[A-Za-z0-9_-]+$/.test(part)) id = part;
+  }
+  return { project, id };
+}
+function setHash(h) { if (location.hash !== h) history.replaceState(null, "", location.pathname + location.search + h); }
 
 // Approve, merge and run queue all wait out the same undo window before anything is sent.
 function schedule(key, kind, ids) {
@@ -297,6 +325,7 @@ function undoLast() {
   const last = [...pending.entries()].sort((a, b) => b[1].until - a[1].until)[0];
   if (last) undo(last[0]);
 }
+const label = (t) => (multi ? t.project + " " : "") + t.id;
 const VERB = { approve: "Approving", merge: "Merging", queue: "Running the queue" };
 async function fire(key) {
   const p = pending.get(key);
@@ -307,19 +336,28 @@ async function fire(key) {
   let out;
   if (p.kind === "approve") {
     const bad = [];
-    for (const id of p.ids) {
-      const r = await post(taskPath(id, "approve"), key);
-      if (!r.ok) bad.push(id + ": " + (r.body.message || "refused"));
+    for (const k of p.ids) {
+      const t = byKey(k);
+      if (!t) continue;
+      const r = await post(taskPath(t, "approve"), key);
+      if (!r.ok) bad.push(label(t) + ": " + (r.body.message || "refused"));
     }
     out = bad.length ? { cls: "bad", text: bad.join("; ") } : { cls: "ok", text: p.ids.length > 1 ? "Approved " + p.ids.length + " tasks." : "Approved." };
   } else if (p.kind === "merge") {
-    const r = await post(taskPath(p.ids[0], "merge"), key);
+    const t = byKey(p.ids[0]);
+    const r = t ? await post(taskPath(t, "merge"), key) : { ok: true, body: { entry: null } };
     out = r.ok ? entryOut(r.body.entry) : { cls: "bad", text: r.body.message || "refused" };
   } else {
-    const r = await post("/api/queue/run", key);
-    out = r.ok
-      ? { cls: "ok", text: r.body.entries.length ? r.body.entries.map((e) => e.id + " " + e.action.replace(/_/g, " ") + ": " + e.reason).join("\\n") : "Nothing approved." }
-      : { cls: "bad", text: r.body.message || "refused" };
+    // Each project's queue in turn, so merges in one repo never overlap and never touch another.
+    const names = [...new Set(p.ids.map((k) => (byKey(k) || {}).project).filter((n) => n !== undefined))];
+    const lines = [];
+    let bad = false;
+    for (const n of names) {
+      const r = await post(proj(n) + "/queue/run", key);
+      if (!r.ok) { bad = true; lines.push((multi ? n + ": " : "") + (r.body.message || "refused")); continue; }
+      for (const e of r.body.entries) lines.push((multi ? n + " " : "") + e.id + " " + e.action.replace(/_/g, " ") + ": " + e.reason);
+    }
+    out = { cls: bad ? "bad" : "ok", text: lines.length ? lines.join("\\n") : "Nothing approved." };
   }
   busy.delete(key);
   results.set(key, { ...out, at: Date.now() });
@@ -336,11 +374,11 @@ function entryOut(e) {
 
 // The PR state shown on approved cards, read through the board (which caches it).
 function prLine(t) {
-  const p = prs.get(t.id);
+  const p = prs.get(t.k);
   if (!p || (!p.loading && Date.now() - p.at > 15000)) {
-    prs.set(t.id, { at: Date.now(), loading: true });
-    get(taskPath(t.id, "pr")).then((body) => { prs.set(t.id, { at: Date.now(), body }); render(); },
-      () => { prs.set(t.id, { at: Date.now(), body: { readable: false, reason: "couldn't read the PR" } }); render(); });
+    prs.set(t.k, { at: Date.now(), loading: true });
+    get(taskPath(t, "pr")).then((body) => { prs.set(t.k, { at: Date.now(), body }); render(); },
+      () => { prs.set(t.k, { at: Date.now(), body: { readable: false, reason: "couldn't read the PR" } }); render(); });
   }
   const b = p && p.body;
   if (!b) return el("span", "prs", "reading the PR…");
@@ -358,21 +396,21 @@ function prLine(t) {
 
 function actionArea(t) {
   const box = el("div", "act");
-  const key = t.id, laneKey = t.status === "needs_approval" ? "lane:approve" : null;
-  const p = pending.get(key) || (laneKey && pending.get(laneKey) && pending.get(laneKey).ids.includes(t.id) ? pending.get(laneKey) : null);
+  const key = t.k, laneKey = t.status === "needs_approval" ? "lane:approve" : null;
+  const p = pending.get(key) || (laneKey && pending.get(laneKey) && pending.get(laneKey).ids.includes(t.k) ? pending.get(laneKey) : null);
   const a = nextAction(t, canAct(), !S.canApprove);
   if (t.status === "approved" && prNumber(t.pr)) box.append(prLine(t));
   if (p) box.append(undoBar(pending.get(key) ? key : laneKey, p));
   else if (busy.has(key)) box.append(el("span", "busy", busy.get(key)));
   else if (a.kind === "approve" || a.kind === "merge") {
     // Merge is the strong button only when the PR looks mergeable; otherwise it reads as a try.
-    const pb = prs.get(t.id) && prs.get(t.id).body;
+    const pb = prs.get(t.k) && prs.get(t.k).body;
     const strong = a.kind === "approve" || (pb && pb.readable && pb.atVerified && pb.checks.kind === "green" && pb.mergeable === "MERGEABLE");
     const b = el("button", "btn " + (strong ? a.kind : "quiet"), a.label);
     b.type = "button";
     b.dataset.kbd = a.kind === "approve" ? "a" : "m";
     if (a.disabled) { b.disabled = true; b.title = a.disabled; }
-    b.addEventListener("click", (e) => { e.stopPropagation(); schedule(key, a.kind, [t.id]); });
+    b.addEventListener("click", (e) => { e.stopPropagation(); schedule(key, a.kind, [t.k]); });
     box.append(b);
     if (a.disabled) box.append(el("span", "why", a.disabled));
   } else if (a.kind === "wait") box.append(el("span", "wait", a.label));
@@ -387,7 +425,7 @@ function undoBar(key, p) {
   fill.style.animationDuration = UNDO_MS + "ms";
   fill.style.animationDelay = -(UNDO_MS - Math.max(0, p.until - Date.now())) + "ms";
   const what = p.kind === "approve" ? (p.ids.length > 1 ? "Approving " + p.ids.length + " tasks" : "Approving")
-    : p.kind === "merge" ? "Merging " + (prNumber((tasks.find((x) => x.id === p.ids[0]) || {}).pr) || p.ids[0]) : "Running the queue";
+    : p.kind === "merge" ? "Merging " + (prNumber((byKey(p.ids[0]) || {}).pr) || (byKey(p.ids[0]) || { id: p.ids[0] }).id) : "Running the queue";
   const b = el("button", "", "Undo");
   b.type = "button";
   b.addEventListener("click", (e) => { e.stopPropagation(); undo(key); });
@@ -403,19 +441,21 @@ function tick(s) { s.textContent = s.dataset.what + " in " + Math.max(1, Math.ce
 setInterval(() => { for (const s of document.querySelectorAll(".undo span[data-until]")) tick(s); }, 250);
 function matches(t) {
   if (!filter) return true;
-  const hay = (t.id + " " + t.title + " " + (t.assignee || "") + " " + NAMES[t.status] + " " + t.risk + " " + prNumber(t.pr)).toLowerCase();
+  const hay = (t.project + " " + t.id + " " + t.title + " " + (t.assignee || "") + " " + NAMES[t.status] + " " + t.risk + " " + prNumber(t.pr)).toLowerCase();
   return filter.toLowerCase().split(/\\s+/).every((w) => hay.includes(w));
 }
-function visible() { return S.lanes.flatMap((l) => tasks.filter((t) => t.status === l && matches(t))); }
+function visible() { return S.lanes.flatMap((l) => inView().filter((t) => t.status === l && matches(t))); }
 
 function card(t, now) {
-  const c = el("article", "card" + (t.status === "needs_approval" ? " attn" : t.status === "approved" ? " go" : "") + (sel === t.id ? " sel" : ""));
+  const c = el("article", "card" + (t.status === "needs_approval" ? " attn" : t.status === "approved" ? " go" : "") + (sel === t.k ? " sel" : ""));
   c.tabIndex = 0;
-  c.dataset.id = t.id;
+  c.dataset.id = t.k;
   const top = el("div", "top");
   const when = el("time", "", ago(t.updatedAt, now));
   when.title = new Date(t.updatedAt).toLocaleString();
-  top.append(el("span", "id", t.id), when);
+  top.append(el("span", "id", t.id));
+  if (multi && view === "all") top.append(el("span", "proj", t.project));
+  top.append(when);
   c.append(top, el("div", "title", t.title));
   const meta = el("div", "meta");
   meta.append(el("span", "risk " + t.risk, t.risk));
@@ -430,8 +470,8 @@ function card(t, now) {
   c.append(meta);
   const act = actionArea(t);
   if (act) c.append(act);
-  c.addEventListener("click", () => { sel = t.id; openTask(t.id); });
-  c.addEventListener("focus", () => { if (sel !== t.id) { sel = t.id; markSel(); } });
+  c.addEventListener("click", () => { sel = t.k; openTask(t.k); });
+  c.addEventListener("focus", () => { if (sel !== t.k) { sel = t.k; markSel(); } });
   return c;
 }
 function markSel() { for (const c of document.querySelectorAll(".card")) c.classList.toggle("sel", c.dataset.id === sel); }
@@ -443,9 +483,11 @@ function render() {
   const sx = main.scrollLeft;
   main.replaceChildren();
   const shown = visible();
-  if (!tasks.length || !shown.length) {
+  const mine = inView();
+  switcher();
+  if (!mine.length || !shown.length) {
     const b = el("div", "blank");
-    if (!tasks.length) {
+    if (!mine.length) {
       b.append(el("h2", "", "No tasks yet"), el("p", "", "Add one from the terminal, and it shows up here:"));
       const p = el("p"); p.append(el("code", "", 'fm add "What to build" --check "cmd: bun test" --ready')); b.append(p);
     } else b.append(el("h2", "", "Nothing matches “" + filter + "”"), el("p", "", "Press Esc to clear the filter."));
@@ -458,8 +500,8 @@ function render() {
     sec.setAttribute("aria-label", NAMES[lane]);
     const head = el("div", "lane-head");
     head.append(el("h2", "", NAMES[lane]), el("span", "n", ts.length));
-    if (lane === "needs_approval" && ts.length > 1) head.append(laneButton("lane:approve", "approve", "Approve all " + ts.length, ts.map((t) => t.id)));
-    if (lane === "approved" && ts.length) head.append(laneButton("queue", "queue", "Run queue", ts.map((t) => t.id)));
+    if (lane === "needs_approval" && ts.length > 1) head.append(laneButton("lane:approve", "approve", "Approve all " + ts.length, ts.map((t) => t.k)));
+    if (lane === "approved" && ts.length) head.append(laneButton("queue", "queue", "Run queue", ts.map((t) => t.k)));
     sec.append(head);
     if (lane === "approved") {
       const p = pending.get("queue"), r = results.get("queue");
@@ -485,11 +527,29 @@ function render() {
     const lane = main.querySelector(".lane.attn") || main.querySelector(".lane.go");
     if (lane && innerWidth > 640 && lane.getBoundingClientRect().right > innerWidth) main.scrollLeft = lane.offsetLeft - 16;
   }
-  const waiting = tasks.filter((t) => t.status === "needs_approval").length, toMerge = tasks.filter((t) => t.status === "approved").length;
+  const waiting = mine.filter((t) => t.status === "needs_approval").length, toMerge = mine.filter((t) => t.status === "approved").length;
   $("#n-attn").replaceChildren(el("b", "", waiting), document.createTextNode(" to sign off"));
   $("#n-go").replaceChildren(el("b", "", toMerge), document.createTextNode(" to merge"));
   if (focused) { const c = main.querySelector('.card[data-id="' + CSS.escape(focused) + '"]'); if (c) c.focus({ preventScroll: true }); }
-  if (openId) { const t = tasks.find((x) => x.id === openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t)].filter(Boolean)); }
+  if (openId) { const t = byKey(openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t)].filter(Boolean)); }
+}
+// The project switcher: All, then each project, each with what waits for the person there.
+function switcher() {
+  const nav = $("#projects");
+  nav.hidden = !multi;
+  if (!multi) return;
+  const mk = (value, name) => {
+    const ts = value === "all" ? tasks : tasks.filter((t) => t.project === value);
+    const n = ts.filter((t) => t.status === "needs_approval" || t.status === "approved").length;
+    const b = el("button", "tab" + (view === value ? " on" : ""), name);
+    b.type = "button";
+    b.dataset.project = value;
+    b.setAttribute("aria-pressed", String(view === value));
+    if (n) { const c = el("span", "n", n); c.title = n + " waiting for you"; b.append(c); }
+    b.addEventListener("click", () => { view = value; setHash(value === "all" ? "" : "#p=" + encodeURIComponent(value)); render(); });
+    return b;
+  };
+  nav.replaceChildren(mk("all", "All"), ...PROJECTS.map((n) => mk(n, n)));
 }
 function laneButton(key, kind, label, ids) {
   const b = el("button", "btn quiet", label);
@@ -514,9 +574,11 @@ function summary(e) {
 let liveTimer = 0;
 async function openTask(id) {
   openId = id;
-  if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  const k = byKey(id);
+  if (!k) return;
+  setHash(hashFor(k));
   let d;
-  try { d = await get("/api/tasks/" + encodeURIComponent(id)); } catch (e) { return; }
+  try { d = await get(proj(k.project) + "/tasks/" + encodeURIComponent(k.id)); } catch (e) { return; }
   if (openId !== id) return;
   const t = d.task, p = $("#detail");
   const keepScroll = p.hidden ? 0 : p.scrollTop;
@@ -525,7 +587,7 @@ async function openTask(id) {
   const close = el("button", "btn quiet", "Close");
   close.type = "button";
   close.addEventListener("click", closeTask);
-  bar.append(el("span", "", t.id + "  " + NAMES[t.status]), close);
+  bar.append(el("span", "", (multi ? k.project + " / " : "") + t.id + "  " + NAMES[t.status]), close);
   p.append(bar, el("h2", "", t.title));
   const meta = el("div", "meta");
   meta.append(el("span", "risk " + t.risk, t.risk));
@@ -537,7 +599,7 @@ async function openTask(id) {
   p.append(meta);
   const slot = el("div");
   slot.id = "detail-act";
-  const act = actionArea({ id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, pr: t.pr, updatedAt: t.updatedAt });
+  const act = actionArea({ ...k, status: t.status, pr: t.pr, assignee: t.assignee });
   if (act) slot.append(act);
   p.append(slot, el("h3", "", "Spec"), el("pre", "spec", t.spec || "(none)"));
   p.append(el("h3", "", "Acceptance checks"));
@@ -579,25 +641,30 @@ async function openTask(id) {
 function closeTask() {
   clearTimeout(liveTimer);
   openId = null; $("#detail").hidden = true; $("#scrim").hidden = true;
-  history.replaceState(null, "", location.pathname);
+  setHash(view === "all" || !multi ? "" : "#p=" + encodeURIComponent(view));
   const c = sel && document.querySelector('.card[data-id="' + CSS.escape(sel) + '"]');
   if (c) c.focus();
 }
 function help(show) { $("#help").hidden = !show; $("#scrim").hidden = !show && !openId; }
 
 async function refresh() {
-  const s = await get("/api/tasks");
-  lastEvent = Math.max(lastEvent, s.lastEvent);
-  tasks = s.tasks;
-  S.canApprove = s.canApprove;
+  const all = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/tasks").then((s) => [n, s])));
+  tasks = [];
+  for (const [n, s] of all) {
+    lastEvents.set(n, Math.max(lastEvents.get(n) || 0, s.lastEvent));
+    tasks.push(...tag(n, s.tasks));
+    S.canApprove = s.canApprove;
+  }
   render();
   if (openId) await openTask(openId);
 }
 async function poll() {
   try {
-    const r = await get("/api/events?since=" + lastEvent);
+    const rs = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/events?since=" + (lastEvents.get(n) || 0)).then((r) => [n, r])));
     setLive(true);
-    if (r.events.length) { lastEvent = r.lastEvent; await refresh(); }
+    let changed = false;
+    for (const [n, r] of rs) if (r.events.length) { lastEvents.set(n, r.lastEvent); changed = true; }
+    if (changed) await refresh();
   } catch { setLive(false); }
   setTimeout(poll, 2000);
 }
@@ -618,7 +685,7 @@ function move(step) {
   const c = document.querySelector('.card[data-id="' + CSS.escape(sel) + '"]');
   if (c) { c.focus({ preventScroll: true }); c.scrollIntoView({ block: "nearest", inline: "nearest" }); }
 }
-function current() { return tasks.find((t) => t.id === (openId || sel)); }
+function current() { return byKey(openId || sel); }
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const typing = e.target instanceof HTMLInputElement;
@@ -636,8 +703,8 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "k") move(-1);
   else if (e.key === "u") undoLast();
   else if (e.key === "Enter" && e.target.classList && e.target.classList.contains("card")) openTask(e.target.dataset.id);
-  else if (e.key === "a" && t && nextAction(t, canAct(), !S.canApprove).kind === "approve") schedule(t.id, "approve", [t.id]);
-  else if (e.key === "m" && t && nextAction(t, canAct(), !S.canApprove).kind === "merge") schedule(t.id, "merge", [t.id]);
+  else if (e.key === "a" && t && nextAction(t, canAct(), !S.canApprove).kind === "approve") schedule(t.k, "approve", [t.k]);
+  else if (e.key === "m" && t && nextAction(t, canAct(), !S.canApprove).kind === "merge") schedule(t.k, "merge", [t.k]);
 });
 $("#filter").addEventListener("input", (e) => { filter = e.target.value.trim(); render(); });
 $("#help-open").addEventListener("click", () => help(true));
@@ -649,7 +716,15 @@ notice();
 render();
 setInterval(render, 30000);
 setTimeout(poll, 2000);
-if (/^#[A-Za-z0-9_-]+$/.test(location.hash)) { sel = location.hash.slice(1); openTask(sel); }
+{
+  const h = parseHash(location.hash);
+  if (h.project && PROJECTS.includes(h.project)) view = h.project;
+  if (h.id) {
+    const t = tasks.find((x) => x.id === h.id && (!h.project || x.project === h.project)) || tasks.find((x) => x.id === h.id);
+    if (t) { sel = t.k; openTask(t.k); }
+  }
+  render();
+}
 `;
 
 export function pageHtml(nonce: string, initial: unknown): string {
@@ -666,11 +741,12 @@ export function pageHtml(nonce: string, initial: unknown): string {
 <body>
 <header>
 <h1 class="brand">foreman <small>127.0.0.1</small></h1>
-<label class="filter"><input id="filter" type="search" placeholder="Filter by id, title, person, status" aria-label="Filter tasks" autocomplete="off"><kbd>/</kbd></label>
+<label class="filter"><input id="filter" type="search" placeholder="Filter by project, id, title, person, status" aria-label="Filter tasks" autocomplete="off"><kbd>/</kbd></label>
 <div class="yours"><span class="n-attn" id="n-attn"></span><span class="n-go" id="n-go"></span>
 <span class="live"><i id="live" class="dot"></i><span id="livetext">live</span></span>
 <button type="button" class="icon" id="help-open" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button></div>
 </header>
+<nav id="projects" class="projects" aria-label="Projects" hidden></nav>
 <p class="notice" id="notice" hidden></p>
 <main></main>
 <div class="scrim" id="scrim" hidden></div>

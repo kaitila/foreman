@@ -4,6 +4,7 @@
 // own terminal, in the fragment of the URL it prints (never in a page or an API response),
 // and, when the browser sends one, our own Origin (D0021).
 import { timingSafeEqual } from "node:crypto";
+import { basename } from "node:path";
 import { type Actor, type Event, type Foreman, ForemanError, type Status, type Task } from "../core";
 import { defaultRun, GITHUB_PR } from "../policy";
 import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
@@ -23,8 +24,18 @@ export const LANES: Status[] = [
   "cancelled",
 ];
 
-export interface BoardOptions {
+/** One repo on the board. */
+export interface BoardProject {
+  name: string;
   foreman: Foreman;
+  /** Where gh runs for this project (default: the foreman's root). */
+  dir?: string;
+}
+
+export interface BoardOptions {
+  /** One project (named after its folder), or `projects` for several; the first is the current one. */
+  foreman?: Foreman;
+  projects?: BoardProject[];
   /** 0 picks a free port. */
   port?: number;
   /** Who approves and merges from the page. null: both are off (an agent started the board). */
@@ -90,12 +101,29 @@ export function checksWithVerdicts(t: Task, events: Event[]) {
   return t.acceptance.map((c) => ({ ...c, verdict: latest.get(c.id) ?? null }));
 }
 
+/** What one project needs: its database, where gh runs, its PR cache and its one-pass-at-a-time flag. */
+interface Ctx {
+  name: string;
+  f: Foreman;
+  cwd: string;
+  prCache: Map<string, { at: number; body: unknown }>;
+  passing: boolean;
+}
+
 export function startBoard(opts: BoardOptions): Board {
-  const f = opts.foreman;
+  const list: BoardProject[] =
+    opts.projects ?? (opts.foreman ? [{ name: basename(opts.foreman.root ?? "") || "project", foreman: opts.foreman }] : []);
+  if (!list.length) throw new ForemanError("invalid", "the board needs at least one project");
+  const ctxs: Ctx[] = list.map((p) => ({
+    name: p.name,
+    f: p.foreman,
+    cwd: p.dir ?? opts.queue?.cwd ?? p.foreman.root ?? process.cwd(),
+    prCache: new Map(),
+    passing: false,
+  }));
   const token = opts.approver ? newToken() : null;
   let origins: Set<string> = new Set();
   let hosts: Set<string> = new Set();
-
   const security = (nonce?: string): Record<string, string> => ({
     "content-security-policy": [
       "default-src 'self'",
@@ -119,27 +147,34 @@ export function startBoard(opts: BoardOptions): Board {
     });
   const fail = (status: number, error: string, message: string) => json({ error, message }, status);
 
-  const state = () => ({
+  const state = (c: Ctx) => ({
     lanes: LANES,
-    tasks: f.list().map((t) => ({ ...card(t), live: hasLiveSession(f, t.id) })),
-    lastEvent: f.events().at(-1)?.id ?? 0,
+    tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id) })),
+    lastEvent: c.f.events().at(-1)?.id ?? 0,
     canApprove: token !== null,
   });
+  const summary = (c: Ctx) => {
+    const ts = c.f.list();
+    return {
+      name: c.name,
+      waiting: ts.filter((t) => t.status === "needs_approval").length,
+      toMerge: ts.filter((t) => t.status === "approved").length,
+      total: ts.length,
+    };
+  };
 
   const run = opts.queue?.run ?? defaultRun;
-  const cwd = opts.queue?.cwd ?? f.root ?? process.cwd();
   const prCacheMs = opts.prCacheMs ?? 15_000;
-  const prCache = new Map<string, { at: number; body: unknown }>();
   /** A PR's state for its card: what the merge queue would read first, without merging. */
   const prTimeoutMs = opts.prTimeoutMs ?? 15_000;
   const readRun = opts.readRun ?? (opts.queue?.run ? async (c: string[], d: string) => run(c, d) : asyncRun);
   const inflight = new Map<string, Promise<unknown>>();
-  const prState = async (t: Task): Promise<unknown> => {
+  const prState = async (c: Ctx, t: Task): Promise<unknown> => {
     if (!t.pr || !GITHUB_PR.test(t.pr)) return { pr: t.pr, readable: false, reason: "no GitHub PR" };
-    const hit = prCache.get(t.id);
+    const hit = c.prCache.get(t.id);
     if (hit && Date.now() - hit.at < prCacheMs) return hit.body;
     const pr = t.pr;
-    const key = `${t.id} ${pr}`;
+    const key = `${c.name} ${t.id} ${pr}`;
     const going = inflight.get(key);
     if (going) return going;
     const p = (async () => {
@@ -148,16 +183,16 @@ export function startBoard(opts: BoardOptions): Board {
         timer = setTimeout(() => r("timeout"), prTimeoutMs);
       });
       try {
-        const out = await Promise.race([readRun(PR_VIEW(pr), cwd).catch(() => null), timeout]);
+        const out = await Promise.race([readRun(PR_VIEW(pr), c.cwd).catch(() => null), timeout]);
         if (out === "timeout") {
           return { pr, readable: false, timedOut: true, reason: `couldn't reach GitHub (no answer in ${Math.round(prTimeoutMs / 1000)} s)` };
         }
         const s = parsePr(out);
-        const verified = f.verifiedHead(t.id);
+        const verified = c.f.verifiedHead(t.id);
         const body = s
           ? { pr, readable: true, mergeable: s.mergeable, checks: judgeChecks(s.checks), atVerified: verified !== null && s.headSha === verified }
           : { pr, readable: false, reason: `couldn't read ${pr} (is gh installed and logged in?)` };
-        prCache.set(t.id, { at: Date.now(), body });
+        c.prCache.set(t.id, { at: Date.now(), body });
         return body;
       } finally {
         clearTimeout(timer);
@@ -168,15 +203,14 @@ export function startBoard(opts: BoardOptions): Board {
     return p;
   };
 
-  // One merge-queue pass at a time, whoever asks: two clicks must not merge in parallel.
-  let passing = false;
-  const pass = async (only?: string): Promise<QueueEntry[]> => {
-    passing = true;
+  // One merge-queue pass at a time per project, whoever asks: two clicks must not merge in parallel.
+  const pass = async (c: Ctx, only?: string): Promise<QueueEntry[]> => {
+    c.passing = true;
     try {
-      return await mergeQueuePass(f, opts.approver!, { ...opts.queue, only });
+      return await mergeQueuePass(c.f, opts.approver!, { ...opts.queue, cwd: c.cwd, only });
     } finally {
-      passing = false;
-      prCache.clear();
+      c.passing = false;
+      c.prCache.clear();
     }
   };
 
@@ -200,23 +234,48 @@ export function startBoard(opts: BoardOptions): Board {
       const url = new URL(req.url);
       // DNS rebinding: a page on another name that resolves to 127.0.0.1 sends its own Host.
       if (!hosts.has(req.headers.get("host") ?? "")) return fail(421, "bad_host", "unknown host");
-      const path = url.pathname;
+      let path = url.pathname;
       try {
-        if (req.method === "GET" || req.method === "HEAD") {
-          if (path === "/") {
-            const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
-            return new Response(pageHtml(nonce, state()), {
-              headers: { ...security(nonce), "content-type": "text/html; charset=utf-8" },
-            });
+        if (path === "/") {
+          if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
+          const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+          const initial = {
+            lanes: LANES,
+            canApprove: token !== null,
+            projects: ctxs.map((c) => ({ name: c.name, ...state(c) })),
+          };
+          return new Response(pageHtml(nonce, initial), {
+            headers: { ...security(nonce), "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        if (path === "/api/projects" && (req.method === "GET" || req.method === "HEAD")) {
+          return json({ board: "foreman", canApprove: token !== null, projects: ctxs.map(summary) });
+        }
+        // /api/p/<project>/tasks is /api/tasks for that project; the unscoped routes are the first project's.
+        let ctx = ctxs[0]!;
+        const scoped = /^\/api\/p\/([^/]+)(\/.*)$/.exec(path);
+        if (scoped) {
+          let name: string;
+          try {
+            name = decodeURIComponent(scoped[1]!);
+          } catch {
+            name = "";
           }
-          if (path === "/api/tasks") return json(state());
+          const hit = ctxs.find((c) => c.name === name);
+          if (!hit) return fail(404, "not_found", `no project "${name}" on this board`);
+          ctx = hit;
+          path = "/api" + scoped[2]!;
+        }
+        const f = ctx.f;
+        if (req.method === "GET" || req.method === "HEAD") {
+          if (path === "/api/tasks") return json(state(ctx));
           if (path === "/api/events") {
             const since = Number(url.searchParams.get("since") ?? 0) || 0;
             const events = f.events().filter((e) => e.id > since);
             return json({ events, lastEvent: events.at(-1)?.id ?? since });
           }
           const pr = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/pr$/.exec(path);
-          if (pr) return json(await prState(f.get(pr[1]!)));
+          if (pr) return json(await prState(ctx, f.get(pr[1]!)));
           const m = /^\/api\/tasks\/([A-Za-z0-9_-]+)$/.exec(path);
           if (m) {
             const t = f.get(m[1]!);
@@ -236,14 +295,14 @@ export function startBoard(opts: BoardOptions): Board {
           const no = refuse(req);
           if (no) return no;
           if (w?.[2] === "approve") return json({ task: f.approve(w[1]!, opts.approver!) });
-          if (passing) return fail(409, "busy", "merge in progress: a merge-queue pass is already running, try again when it finishes");
+          if (ctx.passing) return fail(409, "busy", "merge in progress: a merge-queue pass is already running, try again when it finishes");
           if (w) {
             const t = f.get(w[1]!);
             if (t.status !== "approved") return fail(409, "not_approved", `${t.id} is ${t.status}, not approved: nothing to merge`);
-            const entries = await pass(t.id);
+            const entries = await pass(ctx, t.id);
             return json({ entry: entries[0] ?? null, entries, task: f.get(t.id) });
           }
-          return json({ entries: await pass() });
+          return json({ entries: await pass(ctx) });
         }
         return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
       } catch (e) {
