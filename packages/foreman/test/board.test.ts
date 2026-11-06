@@ -21,14 +21,14 @@ function setup() {
 function waitingTask(f: Foreman, title = "Add a stage filter") {
   const t = f.create({ title, acceptance: ["cmd: bun test", "statement: the filter shows"], ready: true, risk: "review" }, human);
   f.claim(t.id, worker);
-  f.submit(t.id, worker, { pr: "#1" });
+  f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
   f.startVerify(t.id, verifier);
   f.recordVerify(t.id, verifier, [
     { check: "c1", pass: false, evidence: "2 tests fail" },
     { check: "c2", pass: true, evidence: "first look ok" },
   ]);
   f.claim(t.id, worker);
-  f.submit(t.id, worker, { pr: "#1" });
+  f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
   f.startVerify(t.id, verifier);
   f.recordVerify(t.id, verifier, [
     { check: "c1", pass: true, evidence: "40 pass" },
@@ -74,7 +74,7 @@ describe("listing", () => {
     expect(byId[draft].status).toBe("draft");
     expect(byId[waiting].status).toBe("needs_approval");
     expect(byId[evil].status).toBe("ready");
-    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "pr", "risk", "status", "title", "updatedAt"]);
+    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "live", "pr", "risk", "status", "title", "updatedAt"]);
     expect(body.lastEvent).toBe(f.events().at(-1)!.id);
   });
 

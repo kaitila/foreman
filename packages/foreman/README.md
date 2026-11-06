@@ -34,7 +34,9 @@ draft → ready → claimed → in_progress → in_review → verifying → appr
 
 ## Use
 
-One-time setup, from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
+A project made with `create` or `init` already has it: `bun node_modules/@meta-repo/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
+
+In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
 ```sh
 fm help
@@ -116,9 +118,10 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   ```json
   { "mcpServers": { "foreman": { "type": "stdio", "command": "bun", "args": ["packages/foreman/src/cli.ts", "mcp"] } } }
   ```
+- **MCP actor:** `FOREMAN_ACTOR` if set, else `mcp-<session id>` when the client passes `CLAUDE_CODE_SESSION_ID`/`CLAUDE_SESSION_ID`, else `mcp-p<parent pid>`, else `mcp-<user>`. A restarted server keeps the session's claims. `not_holder` errors name the holder and how to continue.
 - **MCP tools:** `list_tasks`, `next_tasks`, `show_task`, `create_task`, `claim_task`, `heartbeat`, `report_progress`, `submit_task`, `start_verify`, `record_verdict`, `mark_merged`, `reserve_number`, `edit_task`, `rework_task`. There is no approve tool.
 - **The PR** ([D0009](../../docs/decisions/D0009-edit-rework-verified-head.md)):
-  - **On submit:** a GitHub PR must be on this repo, and its branch must be the task's. A PR GitHub reports as CONFLICTING is refused (merge main, resolve, push). The dispatcher tells a worker on a task that came back from review why: the latest rework reason, each failed check with its evidence, and for a conflict send-back how to merge main.
+  - **On submit:** a GitHub PR must be on this repo, and its branch must be the task's. A bare `60` or `#60` becomes the origin repo's PR URL (refused with no GitHub origin; so is anything that isn't a URL). A draft PR is refused (`gh pr ready`), and so is one GitHub reports as CONFLICTING (merge main, resolve, push). The merge queue skips a draft with "draft: mark it ready" and, when `gh pr merge` fails, adds gh's own last error line to the reason. The dispatcher tells a worker on a task that came back from review why: the latest rework reason, each failed check with its evidence, and for a conflict send-back how to merge main.
   - **At the verdict:** foreman records the PR's head commit.
   - **On merge:** `merged` is refused if the PR has changed since. Rework and verify again.
 - **Identity:** `FOREMAN_ACTOR` names the caller. A command Claude Code runs for the model (`CLAUDE_CODE_CHILD_SESSION=1`) counts as an agent. IDE terminals don't, even though Claude Code sets `CLAUDECODE=1` there. This is a guardrail, not a security boundary: branch protection and the verifier are the hard limits.
@@ -141,7 +144,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
   - The role comes from the actor's prefix: `worker-T-0042` gets `worker`'s rules too, `verifier-…` gets `verifier`'s, `intake` gets `intake`'s.
   - Any other name gets only `agent`.
   - No `FOREMAN_ACTOR` (a person) gets none.
-- **One source:** `foreman policy [--actor name | --role r] --json` prints the rules that apply (`{actor, role, rules: [{rule, role}]}`). The default actor is `$FOREMAN_ACTOR`. The rules come from the main checkout's `foreman.json`, so editing the file in a worktree changes nothing. A malformed block (an unknown role, a key other than `deny`, an entry that isn't a rule) is an error. The guard hook asks this command; `resolvePolicy()` in `src/roles.ts` is the library call.
+- **One source:** `foreman policy [--actor name | --role r] --json` prints the rules that apply (`{actor, role, rules: [{rule, role}]}`). The default actor is `$FOREMAN_ACTOR`. The rules come from the main checkout's `foreman.json`, so editing the file in a worktree changes nothing. A rule ending in `:*` right after a word (`Bash(*gamma prod:*)`, the legacy form of `gamma prod *`, which lets `gamma prod:pull` through) gets a warning on stderr naming the rule and the intended form. A malformed block (an unknown role, a key other than `deny`, an entry that isn't a rule) is an error. The guard hook asks this command; `resolvePolicy()` in `src/roles.ts` is the library call.
 - **Enforced twice:** agent-kit's guard hook matches the rules against every command and tool call, wrappers included (see [agent-kit](../agent-kit/README.md)). The launch adapter adds them to `--disallowedTools`.
 - **Not a security boundary:** a script or an interpreter can still do what a string rule names. See D0019 for the limits.
 
@@ -226,6 +229,8 @@ What must hold:
 - `claude --resume <session id>` continues one after foreman has stopped it.
 
 `fm dispatch` prints each session's `claude attach <id>` as it starts it. `fm show <task>` and the board's history show it too, on the `lease_pinned` event. The janitor runs `claude rm` on a task's sessions when it removes the worktree of a done or cancelled task. `--print`, or `FOREMAN_LAUNCH=print`, runs headless `claude -p` sessions instead, under foreman's own config dir (D0011).
+
+**Watching a session.** `fm logs <task> [--role worker|verifier] [-f]` reads the task's session transcripts (found from the session id on the `lease_pinned` event) and prints readable lines: `> Bash bun test` for a tool call with its main argument, `# text` for what the session said, `  -> first line` of a result, and turns and cost so far. `-f` keeps printing lines appended later until no session of the task is alive. `fm list` marks a task with a live session with `*`. The board's task view shows each session's last 10 lines and its cost, refreshed every few seconds while a session runs (`sessions` in `/api/tasks/<id>`, `live` on the task list). Nothing is stored: it all comes from the transcripts Claude Code already writes.
 
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
