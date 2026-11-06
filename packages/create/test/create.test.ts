@@ -533,3 +533,28 @@ describe("helpers", () => {
     expect(pointDep(text, "other", "x.tgz")).toBe(text); // a version we didn't vendor is left alone
   });
 });
+
+describe("the person's registry (T-0077)", () => {
+  test("init leaves a sentinel registry untouched", async () => {
+    const home = join(base, "sentinel-home");
+    const sentinel = join(home, ".config", "foreman", "projects.json");
+    mkdirSync(dirname(sentinel), { recursive: true });
+    writeFileSync(sentinel, '{"projects":["/sentinel"]}\n');
+    const saved = { HOME: process.env.HOME, X: process.env.XDG_CONFIG_HOME, F: process.env.FOREMAN_PROJECTS_FILE };
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.FOREMAN_PROJECTS_FILE;
+    try {
+      const dir = join(base, "registry-init");
+      mkdirSync(dir, { recursive: true });
+      Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+      writeFileSync(join(dir, "package.json"), '{"name":"x","private":true}\n');
+      init(dir);
+    } finally {
+      process.env.HOME = saved.HOME;
+      if (saved.X !== undefined) process.env.XDG_CONFIG_HOME = saved.X;
+      if (saved.F !== undefined) process.env.FOREMAN_PROJECTS_FILE = saved.F;
+    }
+    expect(await Bun.file(sentinel).text()).toBe('{"projects":["/sentinel"]}\n');
+  });
+});

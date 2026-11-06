@@ -4,13 +4,16 @@
 // A registry entry is a directory and nothing more: the board opens its database and runs gh
 // there, and never serves a file from it.
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ForemanError } from "./core";
 import { repoRoot } from "./store";
 
 export function registryPath(env: Record<string, string | undefined> = process.env): string {
   if (env.FOREMAN_PROJECTS_FILE) return env.FOREMAN_PROJECTS_FILE;
+  // Under `bun test` (NODE_ENV=test, inherited by the `fm` and `create` processes tests spawn) never
+  // touch the person's real registry (T-0077): use a throwaway file unless a test names its own.
+  if (env.NODE_ENV === "test" && !env.XDG_CONFIG_HOME) return join(tmpdir(), `foreman-test-registry-${process.getuid?.() ?? 0}`, "projects.json");
   const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
   return join(base, "foreman", "projects.json");
 }
@@ -83,6 +86,14 @@ export function removeProject(nameOrDir: string, file = registryPath()): string 
   if (!hit) throw new ForemanError("not_found", `no registered project "${nameOrDir}"`);
   writeRegistry(dirs.filter((d) => d !== hit.dir), file);
   return hit.dir;
+}
+
+/** Drops entries whose repo or database is gone; returns the directories removed. */
+export function pruneProjects(file = registryPath()): string[] {
+  const dirs = readRegistry(file);
+  const gone = dirs.filter((d) => "error" in projectRoot(d));
+  if (gone.length) writeRegistry(dirs.filter((d) => !gone.includes(d)), file);
+  return gone;
 }
 
 /** Best effort, for when a database is opened: never fails the command. */

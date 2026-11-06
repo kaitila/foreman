@@ -88,7 +88,7 @@ Housekeeping
   serve [--port 4499] [--project name|dir]
                                 local web board on 127.0.0.1 for every project on this machine (or one);
                                 approve and merge from the link it prints
-  projects [list|add <dir>|rm <name|dir>]
+  projects [list|add <dir>|rm <name|dir>|prune]
                                 the repos the board shows (~/.config/foreman/projects.json)
 
 Who you are: FOREMAN_ACTOR names you; CLAUDE_CODE_CHILD_SESSION=1 (a command Claude Code runs) or
@@ -203,11 +203,14 @@ export async function main(argv: string[]): Promise<number | null> {
     } else if (sub === "rm") {
       if (!target) throw new ForemanError("invalid", "missing project name or directory");
       console.log(`removed ${reg.removeProject(target)}`);
+    } else if (sub === "prune") {
+      const gone = reg.pruneProjects();
+      console.log(gone.length ? `removed ${gone.length} missing:\n${gone.join("\n")}` : "nothing to prune");
     } else if (sub === undefined || sub === "list") {
       const ps = reg.listProjects();
       const text = ps.length ? ps.map((p) => `${p.name.padEnd(20)} ${p.dir}${"error" in reg.projectRoot(p.dir) ? "  (missing: no repo or database)" : ""}`).join("\n") : "no projects yet: run fm in a repo, or fm projects add <dir>";
       console.log(o.json ? JSON.stringify(ps, null, 2) : text);
-    } else throw new ForemanError("invalid", `fm projects [list | add <dir> | rm <name|dir>], got "${sub}"`);
+    } else throw new ForemanError("invalid", `fm projects [list | add <dir> | rm <name|dir> | prune], got "${sub}"`);
     return 0;
   }
   if (cmd === "serve") {
