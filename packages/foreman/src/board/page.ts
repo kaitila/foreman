@@ -258,11 +258,21 @@ async function get(path) {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.statusText);
   return r.json();
 }
-async function post(path) {
-  let r;
-  try { r = await fetch(path, { method: "POST", headers: { "x-foreman-token": token } }); }
-  catch (e) { return { ok: false, body: { message: "couldn't reach the board: " + (e && e.message ? e.message : e) } }; }
-  const body = await r.json().catch(() => ({}));
+// A merge is running (the server answers 409 busy): show "merge in progress…" and retry
+// the click every few seconds rather than failing it.
+async function post(path, key) {
+  let r, body;
+  for (let tries = 0; ; tries++) {
+    try { r = await fetch(path, { method: "POST", headers: { "x-foreman-token": token } }); }
+    catch (e) { return { ok: false, body: { message: "couldn't reach the board: " + (e && e.message ? e.message : e) } }; }
+    body = await r.json().catch(() => ({}));
+    if (r.status === 409 && body.error === "busy" && tries < 90) {
+      if (key && busy.has(key)) { busy.set(key, "Merge in progress… waiting for it to finish, then this one goes"); render(); }
+      await new Promise((res) => setTimeout(res, 2000));
+      continue;
+    }
+    break;
+  }
   if (r.status === 403 && /token/.test(body.message || "")) { forgetToken(); notice(); }
   return { ok: r.ok, body };
 }
@@ -298,15 +308,15 @@ async function fire(key) {
   if (p.kind === "approve") {
     const bad = [];
     for (const id of p.ids) {
-      const r = await post(taskPath(id, "approve"));
+      const r = await post(taskPath(id, "approve"), key);
       if (!r.ok) bad.push(id + ": " + (r.body.message || "refused"));
     }
     out = bad.length ? { cls: "bad", text: bad.join("; ") } : { cls: "ok", text: p.ids.length > 1 ? "Approved " + p.ids.length + " tasks." : "Approved." };
   } else if (p.kind === "merge") {
-    const r = await post(taskPath(p.ids[0], "merge"));
+    const r = await post(taskPath(p.ids[0], "merge"), key);
     out = r.ok ? entryOut(r.body.entry) : { cls: "bad", text: r.body.message || "refused" };
   } else {
-    const r = await post("/api/queue/run");
+    const r = await post("/api/queue/run", key);
     out = r.ok
       ? { cls: "ok", text: r.body.entries.length ? r.body.entries.map((e) => e.id + " " + e.action.replace(/_/g, " ") + ": " + e.reason).join("\\n") : "Nothing approved." }
       : { cls: "bad", text: r.body.message || "refused" };
@@ -501,6 +511,7 @@ function summary(e) {
   if (Array.isArray(d.results)) parts.push(d.results.map((r) => r.check + (r.pass ? " pass" : " fail")).join(", "));
   return parts.join("\\n");
 }
+let liveTimer = 0;
 async function openTask(id) {
   openId = id;
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
@@ -540,7 +551,16 @@ async function openTask(id) {
     if (v) li.append(el("div", "ev", v.evidence + "\\n" + v.by + ", " + new Date(v.at).toLocaleString()));
     ul.append(li);
   }
-  p.append(ul, el("h3", "", "History"));
+  p.append(ul);
+  let anyLive = false;
+  for (const s of d.sessions || []) {
+    if (s.live) anyLive = true;
+    p.append(el("h3", "", s.role + (s.live ? " (running)" : "") + "  " + s.turns + " turns, $" + s.costUsd.toFixed(2)));
+    p.append(el("pre", "ev", s.lines.length ? s.lines.map((l) => (l.kind === "result" ? "  -> " : l.kind === "tool" ? "> " : "# ") + l.text).join("\n") : "(no activity yet)"));
+  }
+  clearTimeout(liveTimer);
+  if (anyLive) liveTimer = setTimeout(() => { if (openId === id) openTask(id); }, 3000);
+  p.append(el("h3", "", "History"));
   const hl = el("ul", "hist");
   for (const e of d.events.slice().reverse()) {
     const li = el("li");
@@ -557,6 +577,7 @@ async function openTask(id) {
   p.scrollTop = keepScroll;
 }
 function closeTask() {
+  clearTimeout(liveTimer);
   openId = null; $("#detail").hidden = true; $("#scrim").hidden = true;
   history.replaceState(null, "", location.pathname);
   const c = sel && document.querySelector('.card[data-id="' + CSS.escape(sel) + '"]');

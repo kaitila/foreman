@@ -1,7 +1,7 @@
 // Deny rules per agent role: the guard matches foreman's resolved rules against every
 // command the shell would run and against tool calls; a person's session is unaffected.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, type RoleRule, bashPatternMatches, checkCommand, decide, pathPatternMatches } from "../templates/claude/hooks/guard";
@@ -218,5 +218,49 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("can't read your role's rules");
     expect(run("ls", undefined, { FOREMAN_BIN: "false" }).code).toBe(0);
+  });
+  // A project made by create or init has foreman only as its installed package, and a
+  // session's PATH has no node_modules/.bin: the hook must find the package there.
+  test("finds the project's installed @meta-repo/foreman when FOREMAN_BIN is unset and the PATH has none", () => {
+    const bin = join(tmp, "bin"); // bun alone: this machine's PATH may have a linked foreman next to it
+    mkdirSync(bin, { recursive: true });
+    symlinkSync(process.execPath, join(bin, "bun"));
+    const env = { FOREMAN_BIN: "", PATH: `${bin}:/usr/bin:/bin` };
+    expect(Bun.spawnSync(["sh", "-c", "command -v foreman"], { env }).exitCode).not.toBe(0);
+    const modules = join(project, "node_modules");
+    try {
+      // Not installed: the hook can't find foreman. Another package's bin named foreman doesn't count.
+      expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
+      mkdirSync(join(modules, ".bin"), { recursive: true });
+      writeFileSync(join(modules, ".bin/foreman"), "console.log('[]');\n");
+      expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
+
+      mkdirSync(join(modules, "@meta-repo"));
+      symlinkSync(join(repoRoot, "packages/foreman"), join(modules, "@meta-repo/foreman"));
+      expect(run("ls", "worker-T-1", env)).toEqual({ code: 0, stderr: "" });
+      const r = run("ssh host true", "worker-T-1", env);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("is denied to worker sessions by Bash(ssh *)");
+    } finally {
+      rmSync(modules, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Bash deny rules match their words in order past options (T-0057)", () => {
+  const r = ctx(rules(["agent", "Bash(gh pr merge *)"], ["agent", "Bash(git push *)"]));
+  test.each([
+    "gh -R a/b pr merge 1",
+    "gh --repo a/b pr merge 1",
+    "gh --repo=a/b pr merge 1",
+    "git -C . push origin x",
+    "git -c core.x=1 --no-pager push",
+    "/usr/bin/git -C . push origin x",
+    "env FOO=1 git -C . push origin x",
+  ])("blocks %s", (cmd) => {
+    expect(checkCommand(cmd, r)).toContain("is denied to agent sessions");
+  });
+  test.each(["gh pr list", "gh -R a/b pr list", "git -C . status", "git -C push status", "gh pr view merge"])("allows %s", (cmd) => {
+    expect(checkCommand(cmd, r)).toBeNull();
   });
 });

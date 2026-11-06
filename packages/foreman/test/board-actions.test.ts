@@ -260,7 +260,7 @@ describe("the page", () => {
     const t = (status: string, pr: string | null = null, assignee: string | null = null) => ({ id: "T-1", status, pr, assignee });
     expect(nextAction(t("needs_approval"), true, false)).toEqual({ kind: "approve", label: "Approve" });
     expect(nextAction(t("approved", PR(344)), true, false)).toEqual({ kind: "merge", label: "Merge #344" });
-    expect(nextAction(t("approved", "#12"), true, false).kind).toBe("wait");
+    expect(nextAction(t("approved", "https://example.com/pull/12"), true, false).kind).toBe("wait");
     expect(nextAction(t("in_review"), true, false)).toEqual({ kind: "wait", label: "waiting for verifier" });
     expect(nextAction(t("in_progress", null, "worker-1"), true, false).label).toBe("with worker-1");
     expect(nextAction(t("done"), true, false).kind).toBe("none");

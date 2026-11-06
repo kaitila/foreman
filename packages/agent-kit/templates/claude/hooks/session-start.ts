@@ -1,7 +1,7 @@
 // SessionStart hook: hands the session the task its FOREMAN_ACTOR holds.
 // Prints hookSpecificOutput.additionalContext. Prints nothing and exits 0 when there is no actor,
 // no task, no foreman, or anything goes wrong: a missing task must never stop a session.
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 type Check = { id: string; kind: string; text: string };
 type Task = {
@@ -32,11 +32,28 @@ export function render(tasks: Task[]): string {
     .join("\n\n---\n\n");
 }
 
+/**
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
+ * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
+ * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * main checkout, since a fresh worktree has no node_modules yet.
+ */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  const local = resolve(root, "packages/foreman/src/cli.ts");
-  if (Bun.file(local).size) return ["bun", local]; // the repo's own, before any on the PATH
-  return Bun.which("foreman") ? ["foreman"] : null;
+  const roots = [root];
+  const common = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore", timeout: 5000 });
+  if (common.exitCode === 0) {
+    const main = dirname(common.stdout.toString().trim());
+    if (main !== root) roots.push(main);
+  }
+  const find = (rel: string) => {
+    for (const dir of roots) {
+      const f = resolve(dir, rel);
+      if (Bun.file(f).size) return ["bun", f];
+    }
+    return null;
+  };
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
 }
 
 /** The additionalContext to inject, or null for "say nothing". */

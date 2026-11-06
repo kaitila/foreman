@@ -17,6 +17,7 @@ interface RollupItem {
 export interface PrState {
   headSha: string;
   mergeable: string; // MERGEABLE, CONFLICTING or UNKNOWN
+  isDraft?: boolean;
   checks: RollupItem[];
 }
 
@@ -89,12 +90,17 @@ export function approvedOldestFirst(f: Foreman): Task[] {
 }
 
 export function readPr(run: Run, cwd: string, pr: string): PrState | null {
-  const out = run(["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,statusCheckRollup"], cwd);
+  return parsePr(run(PR_VIEW(pr), cwd));
+}
+
+export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup"];
+
+export function parsePr(out: string | null): PrState | null {
   if (out === null) return null;
   try {
-    const j = JSON.parse(out) as { headRefOid?: string; mergeable?: string; statusCheckRollup?: RollupItem[] | null };
+    const j = JSON.parse(out) as { headRefOid?: string; mergeable?: string; isDraft?: boolean; statusCheckRollup?: RollupItem[] | null };
     if (!j.headRefOid) return null;
-    return { headSha: j.headRefOid, mergeable: j.mergeable ?? "UNKNOWN", checks: j.statusCheckRollup ?? [] };
+    return { headSha: j.headRefOid, mergeable: j.mergeable ?? "UNKNOWN", isDraft: j.isDraft === true, checks: j.statusCheckRollup ?? [] };
   } catch {
     return null;
   }
@@ -130,6 +136,10 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     const first = readPr(run, cwd, t.pr);
     if (!first) {
       entry("skipped", `couldn't read ${t.pr} (is gh installed and logged in?)`);
+      continue;
+    }
+    if (first.isDraft) {
+      entry("skipped", "draft: mark it ready (gh pr ready)");
       continue;
     }
     if (first.mergeable === "CONFLICTING") {
@@ -178,6 +188,10 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", `checks not settled: ${v1.names.join(", ")} became ${v2.names.join(", ")}`);
       continue;
     }
+    if (second.isDraft) {
+      entry("skipped", "draft: mark it ready (gh pr ready)");
+      continue;
+    }
     if (second.mergeable !== "MERGEABLE") {
       entry("skipped", `GitHub no longer says it merges cleanly (${second.mergeable})`);
       continue;
@@ -188,12 +202,14 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // --match-head-commit: GitHub refuses if the head moved between our read and the merge.
     const out = run(["gh", "pr", "merge", t.pr, "--merge", "--delete-branch", "--match-head-commit", verified], cwd);
+    const mergeError = out === null ? run.lastError : undefined;
     if (out === null) {
       // gh can fail after the merge itself (deleting a local branch a worktree holds):
       // ask GitHub whether it merged before calling it a failure.
       const state = run(["gh", "pr", "view", t.pr, "--json", "state", "--jq", ".state"], cwd);
       if (state !== "MERGED") {
-        entry("error", `gh pr merge failed for ${t.pr}`);
+        const why = mergeError?.split("\n").map((l) => l.trim()).filter(Boolean).pop();
+        entry("error", `gh pr merge failed for ${t.pr}${why ? `: ${why}` : ""}`);
         return report;
       }
     }

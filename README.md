@@ -28,6 +28,6 @@ fm setup              # checks gh and claude, links fm, says how to fix what is 
 
 Then `fm` works from anywhere: `fm create ~/x` starts a project, `fm init` adds the kit to the repo you are in, `fm sync --all` takes the kit's updates in every project fm has seen, and `fm help` lists the rest. See [packages/foreman](packages/foreman/README.md).
 
-Status: research. Start with [docs/research-plan.md](docs/research-plan.md).
+Status: steps M0–M7 of [the plan](docs/research-plan.md) are done; M8 is a private pilot.
 
 License: [MIT](LICENSE).

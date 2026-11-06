@@ -281,11 +281,11 @@ describe("the janitor and background sessions", () => {
     f.claim(t.id, w);
     f.progress(t.id, w, { branch: "b", worktree: wt });
     f.pinLease(t.id, w, 123, { session: "abc00000", name: "repo T-0001 worker" });
-    f.submit(t.id, w, { pr: "#1" });
+    f.submit(t.id, w, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, v);
     f.pinLease(t.id, v, 124, { session: "abc00001", name: "repo T-0001 verifier" });
     f.recordVerify(t.id, v, f.get(t.id).acceptance.map((c) => ({ check: c.id, pass: true, evidence: "ok" })));
-    f.merged(t.id, ada, "#1");
+    f.merged(t.id, ada, "https://example.com/pull/1");
     const ran: string[][] = [];
     const run = (cmd: string[]) => {
       ran.push(cmd);
@@ -340,7 +340,7 @@ describe("dispatch with background sessions", () => {
     const { t, sessions, fake } = await env.run((task) => [
       [
         { status: "busy", out: 1000 },
-        { status: "idle", out: 1000, text: "submitted", then: () => env.f.submit(task().id, worker(env.f, task().id), { pr: "#1", summary: "s" }) },
+        { status: "idle", out: 1000, text: "submitted", then: () => env.f.submit(task().id, worker(env.f, task().id), { pr: "https://example.com/pull/1", summary: "s" }) },
       ],
       [
         { status: "busy", out: 500 },
