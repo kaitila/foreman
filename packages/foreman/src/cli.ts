@@ -162,7 +162,7 @@ export async function main(argv: string[]): Promise<number | null> {
   }
   if (cmd === "policy") {
     // Needs no database: the guard hook asks this on every tool call of an agent session.
-    const { resolvePolicy, loadRoles, rulesForRole, ROLES } = await import("./roles");
+    const { resolvePolicy, loadRoles, rulesForRole, ruleWarning, ROLES } = await import("./roles");
     const root = repoRoot();
     let policy;
     if (o.role !== undefined) {
@@ -175,6 +175,10 @@ export async function main(argv: string[]): Promise<number | null> {
       policy = resolvePolicy(root, o.actor ?? process.env.FOREMAN_ACTOR ?? null);
     }
     const text = policy.rules.length ? policy.rules.map((r) => `${r.role.padEnd(9)} ${r.rule}`).join("\n") : "no role rules";
+    for (const r of policy.rules) {
+      const w = ruleWarning(r.rule);
+      if (w) console.error(`warning: ${w}`); // stderr: --json on stdout stays parseable
+    }
     console.log(o.json ? JSON.stringify(policy, null, 2) : text);
     return 0;
   }
