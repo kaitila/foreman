@@ -94,3 +94,14 @@ export function noteProject(cwd: string, file = registryPath()): void {
     /* the registry is a convenience */
   }
 }
+
+/** Remember a project that may not have a foreman database yet (create, init, sync, setup). Best effort. */
+export function recordProject(dir: string, file = registryPath()): void {
+  try {
+    const root = realpathSync(repoRoot(resolve(dir)));
+    const dirs = readRegistry(file);
+    if (!dirs.includes(root)) writeRegistry([...dirs, root], file);
+  } catch {
+    /* the registry is a convenience */
+  }
+}

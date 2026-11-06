@@ -14,7 +14,9 @@ import {
 import { hasLiveSession, printLogs } from "./activity";
 import { toMarkdown } from "./export";
 import { janitor } from "./janitor";
+import { listProjects, recordProject } from "./projects";
 import { mergeQueue, type QueueEntry } from "./queue";
+import { checkMachine, formatItems, realEnv } from "./setup";
 import { repoRoot } from "./store";
 
 function num(v: string | undefined, fallback: number, flag: string): number {
@@ -26,7 +28,18 @@ function num(v: string | undefined, fallback: number, flag: string): number {
 
 const HELP = `foreman: a task layer for AI coding agents in parallel git worktrees
 
-Usage: foreman <command> [args] [--json]
+Usage: fm <command> [args] [--json]
+
+Projects
+  setup [--no-link]             check this machine (bun, git, gh, claude, fm on the PATH, repo trusted
+                                in Claude Code), link fm unless --no-link, print what is missing and
+                                the command that fixes it; --json for scripts
+  create <dir> [--preset p] [--name n] [--no-install] [--no-git]
+                                a new project from a preset, with the kit, foreman.json, CI, first commit
+  init [dir] [--name n]         add the kit to an existing repository; never overwrites a file
+  sync [dir] [--dry-run]        update the kit's files to this version; keeps what the project changed
+  sync --all [--dry-run]        every project fm has seen (create, init, sync, setup record them), one
+                                result per project
 
 Tasks
   add <title> [--spec md] [--check "cmd: bun test"]... [--path glob]... [--risk auto|review|human]
@@ -60,7 +73,7 @@ Signing off
   approve [id...] [--note text] people only; no id = everything waiting, after one yes
   merged <id> [--pr url]
 
-Running agents
+Agents
   dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]
                                 claim ready tasks into worktrees, run a worker for each and a fresh
                                 verifier once it is submitted; at most --max sessions at once, never two
@@ -69,7 +82,8 @@ Running agents
                                 Sessions run as Claude Code background sessions: watch them with
                                 "claude agents", "claude attach <name>"; --print (or
                                 FOREMAN_LAUNCH=print) runs headless "claude -p" instead
-Running the loop
+Board
+  serve [--port 4499]           local web board on 127.0.0.1; approve and merge from the link it prints
   merge-queue [--once] [--dry-run] [--settle-seconds 30] [--interval 60]
                                 merge approved PRs one at a time: settled green checks at the
                                 verified commit; a PR that conflicts with main goes back to ready
@@ -157,6 +171,12 @@ export async function main(argv: string[]): Promise<number | null> {
       "stuck-hours": { type: "string" },
       actor: { type: "string" },
       role: { type: "string" },
+      preset: { type: "string" },
+      name: { type: "string" },
+      "no-install": { type: "boolean" },
+      "no-git": { type: "boolean" },
+      all: { type: "boolean" },
+      "no-link": { type: "boolean" },
       follow: { type: "boolean", short: "f" },
     },
   });
@@ -190,6 +210,53 @@ export async function main(argv: string[]): Promise<number | null> {
       if (w) console.error(`warning: ${w}`); // stderr: --json on stdout stays parseable
     }
     console.log(o.json ? JSON.stringify(policy, null, 2) : text);
+    return 0;
+  }
+
+  if (cmd === "setup") {
+    const root = (() => {
+      try {
+        return repoRoot();
+      } catch {
+        return null;
+      }
+    })();
+    const items = checkMachine(realEnv(root), { link: !o["no-link"] });
+    if (root) recordProject(root);
+    console.log(o.json ? JSON.stringify({ ok: items.every((i) => i.ok), items }, null, 2) : formatItems(items));
+    return items.every((i) => i.ok) ? 0 : 1;
+  }
+  if (cmd === "create" || cmd === "init" || cmd === "sync") {
+    // The same code as packages/create's own CLI; this adds only the registry and sync --all.
+    const { runKitCommand } = await import("../../create/src/index").catch(() => {
+      throw new ForemanError("invalid", `fm ${cmd} needs the meta-repo checkout: run it from the globally linked fm (bun run link)`);
+    });
+    const kit = { preset: o.preset, name: o.name, noInstall: o["no-install"], noGit: o["no-git"], dryRun: o["dry-run"] };
+    if (args.length > 1) throw new ForemanError("invalid", `unexpected argument: ${args[1]}`);
+    if (cmd === "sync" && o.all) {
+      if (args.length) throw new ForemanError("invalid", "sync --all takes no directory");
+      const projects = listProjects();
+      if (!projects.length) return console.log("no projects yet: create, init, sync or setup in one first"), 0;
+      let failed = 0;
+      for (const { dir } of projects) {
+        console.log(`== ${dir}`);
+        try {
+          runKitCommand("sync", dir, kit);
+        } catch (e) {
+          failed++;
+          console.log(`failed: ${(e as Error).message}`);
+        }
+      }
+      console.log(`\n${projects.length} projects, ${failed} failed`);
+      return failed ? 1 : 0;
+    }
+    try {
+      runKitCommand(cmd, args[0], kit);
+    } catch (e) {
+      throw new ForemanError("invalid", (e as Error).message);
+    }
+    const dir = args[0] ?? ".";
+    recordProject(dir);
     return 0;
   }
 

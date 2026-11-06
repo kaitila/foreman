@@ -38,6 +38,8 @@ A project made with `create` or `init` already has it: `bun node_modules/@meta-r
 
 In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
+`fm` also runs the project commands of [packages/create](../create/README.md), through the same code ([D0025](../../docs/decisions/D0025-one-global-fm.md)): `fm create <dir>`, `fm init [dir]`, `fm sync [dir] [--dry-run]`. `fm sync --all` syncs every project fm has seen, listed in `~/.config/foreman/projects.json` (`$FOREMAN_PROJECTS_FILE` moves it; the same registry as `fm projects`), and prints one block per project. `fm setup` checks the machine: bun, git, gh (installed, logged in), claude (installed, signed in, time left on the token), fm on the PATH (it links it unless `--no-link`) and whether Claude Code trusts the current repo. Each missing item comes with the command that fixes it, `--json` is for scripts, and the exit code is 1 when something is missing. `fm help` groups the commands: Projects, Tasks, Agents, Board.
+
 ```sh
 fm help
 
