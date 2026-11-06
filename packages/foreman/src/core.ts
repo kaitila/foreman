@@ -268,7 +268,7 @@ export class Foreman {
     if (t.assignee !== actor.name) {
       throw new ForemanError(
         "not_holder",
-        `can't ${verb} ${t.id}: it is held by ${t.assignee ?? "nobody"}, not ${actor.name}`,
+        `can't ${verb} ${t.id}: it is held by ${t.assignee ?? "nobody"}, not ${actor.name}. To continue as the holder, set FOREMAN_ACTOR=${t.assignee ?? "<holder>"} (CLI) or ask the person who started that session`,
       );
     }
   }
