@@ -680,6 +680,16 @@ export class Foreman {
     });
   }
 
+  /** A recorded bare number or #number as this repository's PR URL (GitHub origin); anything else as recorded. */
+  fullPr(pr: string): string;
+  fullPr(pr: string | null): string | null;
+  fullPr(pr: string | null): string | null {
+    const bare = pr ? /^#?(\d+)$/.exec(pr.trim()) : null;
+    if (!pr || !bare) return pr;
+    const origin = this.policy.originRepo?.() ?? null;
+    return origin ? `https://github.com/${origin}/pull/${bare[1]}` : pr;
+  }
+
   /** The approved PR was merged. */
   merged(id: string, actor: Actor, pr?: string): Task {
     // What was verified must be what merges: a PR that moved after its verdict goes back.
@@ -688,10 +698,10 @@ export class Foreman {
     const verifiedSha = (verified?.data.headSha as string | undefined) ?? undefined;
     // The PR that was verified is the one that merges: another PR argument can't stand in
     // for it and skip the checks below (T-0037).
-    if (pr && before.pr && pr.trim() !== before.pr) {
+    if (pr && before.pr && this.fullPr(pr.trim()) !== this.fullPr(before.pr)) {
       throw new ForemanError("pr_mismatch", `${id}'s PR is ${before.pr}, not ${pr}: the verified PR is the one that merges`);
     }
-    const target = before.pr ?? pr;
+    const target = this.fullPr(before.pr ?? pr ?? null) ?? undefined;
     // A GitHub PR's verdict always records its commit; none means gh couldn't say then, so we can't tell now.
     if (verified && !verifiedSha && target && prRepo(target)) {
       throw new ForemanError("pr_unverifiable", `${id} was verified without a recorded commit for ${target}: rework and verify again`);

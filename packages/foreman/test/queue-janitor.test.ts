@@ -94,6 +94,16 @@ describe("merge queue", () => {
     expect((await pass()).map((e) => [e.id, e.action])).toEqual([[b, "merged"]]);
   });
 
+  test("a task recorded with a bare PR number still merges (T-0076)", async () => {
+    const { f, gh, pass } = setup();
+    const a = approvedTask(f, gh, 60);
+    (f as unknown as { set(id: string, fields: object): void }).set(a, { pr: "60" });
+    expect(f.get(a).pr).toBe("60");
+    expect((await pass()).map((e) => [e.id, e.action])).toEqual([[a, "merged"]]);
+    expect(f.get(a).status).toBe("done");
+    expect(gh.calls.find((c) => c[2] === "merge")![3]).toBe(PR(60));
+  });
+
   test("red, pending or unsettled checks, and a PR that moved, are skipped with the reason", async () => {
     const { f, gh, pass } = setup();
     const red = approvedTask(f, gh, 1);
