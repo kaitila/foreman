@@ -20,7 +20,7 @@
 // paths can't be checked because foreman is unreachable, and so is every call of an agent
 // session (FOREMAN_ACTOR set) whose role rules foreman can't give.
 // Self-contained on purpose: a project gets a copy, with no package to install.
-import { relative, resolve, basename, isAbsolute } from "node:path";
+import { relative, resolve, basename, dirname, isAbsolute } from "node:path";
 
 export interface Decision {
   deny: string;
@@ -803,11 +803,28 @@ function sh(cmd: string[], cwd: string): string | null {
 
 /** foreman from $FOREMAN_BIN, this repo's own copy, or the PATH. The repo's own comes before the
  * PATH so a worktree is judged by its own foreman, not an older linked one. */
+/**
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
+ * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
+ * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * main checkout, since a fresh worktree has no node_modules yet.
+ */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  const local = resolve(root, "packages/foreman/src/cli.ts");
-  if (Bun.file(local).size) return ["bun", local];
-  return Bun.which("foreman") ? ["foreman"] : null;
+  const roots = [root];
+  const common = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore", timeout: 5000 });
+  if (common.exitCode === 0) {
+    const main = dirname(common.stdout.toString().trim());
+    if (main !== root) roots.push(main);
+  }
+  const find = (rel: string) => {
+    for (const dir of roots) {
+      const f = resolve(dir, rel);
+      if (Bun.file(f).size) return ["bun", f];
+    }
+    return null;
+  };
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
 }
 
 export function realContext(cwd: string): Context {
