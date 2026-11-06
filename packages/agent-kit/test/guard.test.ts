@@ -207,6 +207,8 @@ describe("fail closed when task paths can't be known (T-0012)", () => {
       process.env.FOREMAN_ACTOR = "w1";
       process.env.FOREMAN_BIN = "false"; // a command that always fails
       expect(() => realContext(process.cwd()).taskPaths()).toThrow(/failed/);
+      process.env.FOREMAN_BIN = "bun -e process.stderr.write('boom-from-foreman');process.exit(3)";
+      expect(() => realContext(process.cwd()).taskPaths()).toThrow(/can't be run.*list.*exit 3.*boom-from-foreman/);
       delete process.env.FOREMAN_ACTOR;
       expect(realContext(process.cwd()).taskPaths()).toBeNull();
     } finally {
