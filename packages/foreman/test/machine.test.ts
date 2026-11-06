@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkMachine, type Env, formatItems, type RunResult } from "../src/setup";
@@ -18,7 +18,7 @@ function fm(args: string[], cwd: string, home: string) {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, FOREMAN_HOME: home, FOREMAN_DB: join(home, "x.db") },
+    env: { ...process.env, FOREMAN_PROJECTS_FILE: join(home, "projects.json"), FOREMAN_DB: join(home, "x.db") },
   });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
@@ -33,7 +33,7 @@ describe("fm create, init, sync reach packages/create", () => {
     expect(c.code).toBe(0);
     expect(c.out).toContain("created");
     expect(existsSync(join(app, "foreman.json"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(home, "projects.json"), "utf8"))).toContain(app);
+    expect(JSON.parse(readFileSync(join(home, "projects.json"), "utf8")).projects).toContain(realpathSync(app));
 
     // The package's own CLI gives the same text for a sync.
     const own = Bun.spawnSync(["bun", join(import.meta.dir, "..", "..", "create", "src", "cli.ts"), "sync", app], { stdout: "pipe", stderr: "pipe" });
@@ -59,7 +59,7 @@ describe("fm create, init, sync reach packages/create", () => {
 
   test("sync --all reports a project that is gone and exits 1; create without a dir fails", () => {
     const home = mkdtempSync(join(base, "home-"));
-    Bun.write(join(home, "projects.json"), JSON.stringify(["/nonexistent/zzz"]));
+    Bun.write(join(home, "projects.json"), JSON.stringify({ projects: ["/nonexistent/zzz"] }));
     const r = fm(["sync", "--all"], base, home);
     expect(r.code).toBe(1);
     expect(r.out).toContain("failed:");

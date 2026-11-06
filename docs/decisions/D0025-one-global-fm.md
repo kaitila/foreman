@@ -6,7 +6,7 @@
 
 **Chosen:**
 - `fm create | init | sync` call `runKitCommand` from `@meta-repo/create`, the same function the package's own CLI calls. `packages/create/src/commands.ts` holds it; there is no second copy of the logic or the output.
-- `fm sync --all` walks the projects fm has seen: absolute paths in `$FOREMAN_HOME/projects.json` (default `~/.config/foreman/projects.json`), added by create, init, sync and setup. It prints one block per project, keeps going past a failure, and exits 1 if any failed.
+- `fm sync --all` walks the projects fm has seen: the registry `fm projects` lists (`~/.config/foreman/projects.json`, see D0024), added by create, init, sync and setup. It prints one block per project, keeps going past a failure, and exits 1 if any failed.
 - `fm setup` checks bun, git, gh (installed, logged in), claude (installed, signed in, time left on the token from `~/.claude/.credentials.json`), fm on the PATH (it runs `bun link` unless `--no-link`) and whether Claude Code trusts the current repo. It prints the exact fix per missing item, `--json` for scripts, and exits 1 when something is missing. Trust is only read from `~/.claude.json`; the fix is to run `claude` once in the repo, never an edit of that file.
 - Commands and files go through an `Env` object so tests use fakes.
 
