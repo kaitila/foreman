@@ -11,6 +11,15 @@ A Bun HTTP API on Postgres, with one server-rendered web page. Setup and layout:
 - `bun run db:generate` after changing `src/db/schema.ts`; commit the migration it writes. Never edit a committed migration.
 - Tests use `TEST_DATABASE_URL` (each worktree gets its own database). Locally they skip without Postgres; CI fails without it.
 
+## Tasks
+Work here is tracked in foreman: the MCP server `foreman` in `.mcp.json`, or its CLI, `bun node_modules/@meta-repo/foreman/src/cli.ts help`. Its board is in `.foreman/`, which git ignores.
+- Before starting: `next_tasks`, then `claim_task`. A request that has no task yet: search `list_tasks`, then `create_task` with acceptance checks and the paths it may touch.
+- Code tasks follow the `ship` skill. Report with `report_progress`, hand in with `submit_task` and the PR.
+- The work needs files outside your task's paths: `edit_task` with `addPaths`. A gap found after you submitted: `rework_task` with the reason, then claim it again.
+- Found other work on the way: search `list_tasks`, then `create_task` with `discoveredFrom`.
+- Numbers that must be unique (decision files, migrations): take them from `reserve_number`.
+- Never verify your own task, and never approve: a fresh session runs the `verify` skill, and a person signs off changes to the paths listed in `foreman.json`.
+
 ## Rules
 - Every route in `src/server/routes/` declares `mcp`: the tool that exposes it to agents, or `skip` with a reason. The parity test enforces it.
 - Validate every input with zod via `parse()`. Throw `ApiFailure` for errors the client may see; anything else becomes "internal error" and its text is never logged.

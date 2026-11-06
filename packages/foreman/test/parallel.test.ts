@@ -97,7 +97,7 @@ test("real git: a branch that changes a protected file is escalated; an unprotec
     const w = { name: `w-${branch}`, kind: "agent" as const };
     f.claim(t.id, w);
     f.progress(t.id, w, { branch });
-    f.submit(t.id, w, { pr: "#1" });
+    f.submit(t.id, w, { pr: "https://example.com/pull/1" });
     const v = { name: `v-${branch}`, kind: "agent" as const };
     f.startVerify(t.id, v);
     return f.recordVerify(t.id, v, [{ check: "c1", pass: true, evidence: "ok" }]).status;

@@ -15,6 +15,6 @@ It also fills that codebase's gaps:
 - security scanning
 - isolation for agents working in parallel
 
-Status: research. Start with [docs/research-plan.md](docs/research-plan.md).
+Status: steps M0–M7 of [the plan](docs/research-plan.md) are done; M8 is a private pilot.
 
 License: [MIT](LICENSE).

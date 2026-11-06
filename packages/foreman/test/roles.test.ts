@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseRoles, resolvePolicy, roleOf, rulesForRole } from "../src/roles";
+import { parseRoles, ruleWarning, resolvePolicy, roleOf, rulesForRole } from "../src/roles";
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), "foreman-roles-")));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -136,10 +136,30 @@ describe("foreman policy", () => {
     expect(JSON.parse(run(wt, ["--json"], "worker-T-1").out).rules).toHaveLength(3);
   });
 
+  test("foreman policy warns on stderr, names the rule, keeps stdout JSON", () => {
+    const root = repo({ roles: { agent: { deny: ["Bash(*gamma prod:*)", "Bash(gh pr merge *)"] } } });
+    const r = run(root, ["--json"], "worker-T-1");
+    expect(r.code).toBe(0);
+    expect(r.err).toContain("Bash(*gamma prod:*)");
+    expect(r.err).not.toContain("gh pr merge");
+    expect(JSON.parse(r.out).rules).toHaveLength(2);
+  });
+
   test("a bad roles block or --role fails with a reason", () => {
     const bad = run(repo({ roles: { worker: { deny: ["Bash("] } } }), ["--json"], "worker-T-1");
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("isn't a permission rule");
     expect(run(repo({}), ["--role", "boss"]).err).toContain("--role must be");
   });
+});
+
+describe("ruleWarning", () => {
+  test("flags a rule ending in ':*' after a word, not ' *'", () => {
+    expect(ruleWarning("Bash(*gamma prod:*)")).toContain("*gamma prod *");
+    expect(ruleWarning("Bash(*gamma prod:*)")).toContain("Bash(*gamma prod *)");
+    expect(ruleWarning("Bash(gh pr merge *)")).toBeNull();
+    expect(ruleWarning("Bash(gh pr merge :*)")).toBeNull();
+    expect(ruleWarning("mcp__deploy")).toBeNull();
+  });
+
 });

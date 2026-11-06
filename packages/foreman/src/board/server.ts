@@ -9,6 +9,7 @@ import { type Actor, type Event, type Foreman, ForemanError, type Status, type T
 import { defaultRun, GITHUB_PR } from "../policy";
 import { judgeChecks, mergeQueuePass, type QueueEntry, type QueueOptions, readPr } from "../queue";
 import { pageHtml } from "./page";
+import { hasLiveSession, recentActivity, taskSessions } from "../activity";
 
 export const LANES: Status[] = [
   "draft",
@@ -43,6 +44,8 @@ export interface BoardOptions {
   queue?: Omit<QueueOptions, "dryRun" | "only">;
   /** How long a PR's state is cached for the cards, in ms (default 15000). */
   prCacheMs?: number;
+  /** Where Claude Code keeps session transcripts (default: the person's config dir and foreman's own). */
+  configDirs?: string[];
 }
 
 export interface Board {
@@ -131,7 +134,7 @@ export function startBoard(opts: BoardOptions): Board {
 
   const state = (c: Ctx) => ({
     lanes: LANES,
-    tasks: c.f.list().map(card),
+    tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id) })),
     lastEvent: c.f.events().at(-1)?.id ?? 0,
     canApprove: token !== null,
   });
@@ -238,7 +241,12 @@ export function startBoard(opts: BoardOptions): Board {
           if (m) {
             const t = f.get(m[1]!);
             const events = f.events(t.id);
-            return json({ task: t, checks: checksWithVerdicts(t, events), events });
+            // Each dispatched session with its last lines and cost, read from its transcript (T-0065).
+            const sessions = taskSessions(f, t.id, opts.configDirs, events).map((s) => ({
+              role: s.role, actor: s.actor, name: s.name ?? null, id: s.id ?? null, live: s.live,
+              ...(s.path ? recentActivity(s.path, 10) : { lines: [], turns: 0, costUsd: 0 }),
+            }));
+            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions });
           }
           return fail(404, "not_found", "no such page");
         }

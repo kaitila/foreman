@@ -561,6 +561,7 @@ function summary(e) {
   if (Array.isArray(d.results)) parts.push(d.results.map((r) => r.check + (r.pass ? " pass" : " fail")).join(", "));
   return parts.join("\\n");
 }
+let liveTimer = 0;
 async function openTask(id) {
   openId = id;
   const k = byKey(id);
@@ -602,7 +603,16 @@ async function openTask(id) {
     if (v) li.append(el("div", "ev", v.evidence + "\\n" + v.by + ", " + new Date(v.at).toLocaleString()));
     ul.append(li);
   }
-  p.append(ul, el("h3", "", "History"));
+  p.append(ul);
+  let anyLive = false;
+  for (const s of d.sessions || []) {
+    if (s.live) anyLive = true;
+    p.append(el("h3", "", s.role + (s.live ? " (running)" : "") + "  " + s.turns + " turns, $" + s.costUsd.toFixed(2)));
+    p.append(el("pre", "ev", s.lines.length ? s.lines.map((l) => (l.kind === "result" ? "  -> " : l.kind === "tool" ? "> " : "# ") + l.text).join("\n") : "(no activity yet)"));
+  }
+  clearTimeout(liveTimer);
+  if (anyLive) liveTimer = setTimeout(() => { if (openId === id) openTask(id); }, 3000);
+  p.append(el("h3", "", "History"));
   const hl = el("ul", "hist");
   for (const e of d.events.slice().reverse()) {
     const li = el("li");
@@ -619,6 +629,7 @@ async function openTask(id) {
   p.scrollTop = keepScroll;
 }
 function closeTask() {
+  clearTimeout(liveTimer);
   openId = null; $("#detail").hidden = true; $("#scrim").hidden = true;
   setHash(view === "all" || !multi ? "" : "#p=" + encodeURIComponent(view));
   const c = sel && document.querySelector('.card[data-id="' + CSS.escape(sel) + '"]');

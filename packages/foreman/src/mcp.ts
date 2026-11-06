@@ -161,8 +161,24 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
   return server;
 }
 
+/**
+ * The name this server acts as. FOREMAN_ACTOR wins. Otherwise it must survive the client restarting the
+ * server mid-session, so it comes from the parent (the client session), never this process's own pid:
+ * an id the client passes (CLAUDE_CODE_SESSION_ID or CLAUDE_SESSION_ID), else the parent pid, else the user.
+ */
+export function actorName(
+  env: Record<string, string | undefined> = process.env,
+  ppid: number = process.ppid,
+): string {
+  if (env.FOREMAN_ACTOR) return env.FOREMAN_ACTOR;
+  const session = env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID;
+  if (session) return `mcp-${session.replace(/[^\w.-]/g, "").slice(0, 36)}`;
+  if (ppid > 1) return `mcp-p${ppid}`;
+  return `mcp-${env.USER || env.USERNAME || "user"}`;
+}
+
 export async function serve() {
-  const me: Actor = { name: process.env.FOREMAN_ACTOR || `mcp-${process.pid}`, kind: "agent" };
+  const me: Actor = { name: actorName(), kind: "agent" };
   const opts = { draftsOnly: process.env.FOREMAN_DRAFTS_ONLY === "1" };
   await buildServer(Foreman.open(), me, opts).connect(new StdioServerTransport());
 }

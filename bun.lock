@@ -20,6 +20,7 @@
       "devDependencies": {
         "@meta-repo/design-kit": "workspace:*",
         "@meta-repo/docs-check": "workspace:*",
+        "@meta-repo/foreman": "workspace:*",
         "@meta-repo/test-kit": "workspace:*",
         "@types/bun": "1.3.5",
         "drizzle-kit": "0.31.11",
@@ -62,6 +63,7 @@
       "version": "0.1.0",
       "bin": {
         "foreman": "src/cli.ts",
+        "fm": "src/cli.ts",
       },
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.32.0",

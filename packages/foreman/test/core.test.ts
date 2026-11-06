@@ -41,7 +41,7 @@ describe("lifecycle", () => {
     f.markReady(t.id, human);
     expect(f.claim(null, worker).assignee).toBe("worker-1");
     f.progress(t.id, worker, { branch: "t-0001", note: "started" });
-    expect(f.submit(t.id, worker, { pr: "#12" }).status).toBe("in_review");
+    expect(f.submit(t.id, worker, { pr: "https://example.com/pull/12" }).status).toBe("in_review");
     f.startVerify(t.id, verifier);
     const v = f.recordVerify(t.id, verifier, [
       { check: "c1", pass: true, evidence: "bun test: 40 pass" },
@@ -58,7 +58,7 @@ describe("lifecycle", () => {
     const { f } = setup();
     const t = task(f, { risk: "review", ready: true });
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, verifier);
     const v = f.recordVerify(t.id, verifier, [
       { check: "c1", pass: true, evidence: "ok" },
@@ -74,7 +74,7 @@ describe("lifecycle", () => {
     const { f } = setup();
     const t = task(f, { ready: true });
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, verifier);
     const v = f.recordVerify(t.id, verifier, [
       { check: "c1", pass: false, evidence: "2 tests fail" },
@@ -99,7 +99,7 @@ describe("guards", () => {
     const { f } = setup();
     const t = task(f, { ready: true });
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     expect(code(() => f.startVerify(t.id, worker))).toBe("own_work");
   });
 
@@ -107,7 +107,7 @@ describe("guards", () => {
     const { f } = setup();
     const t = task(f, { ready: true });
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, verifier);
     expect(code(() => f.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "" }]))).toBe("incomplete");
     expect(
@@ -127,7 +127,7 @@ describe("guards", () => {
     f.claim(t.id, worker);
     expect(code(() => f.claim(t.id, verifier))).toBe("bad_status");
     expect(code(() => f.progress(t.id, verifier))).toBe("not_holder");
-    expect(code(() => f.submit(t.id, verifier, { pr: "#1" }))).toBe("not_holder");
+    expect(code(() => f.submit(t.id, verifier, { pr: "https://example.com/pull/1" }))).toBe("not_holder");
   });
 
   test("risk human: agents can't claim it, a person can and signs it off", () => {
@@ -182,7 +182,7 @@ describe("leases", () => {
     const { f, tick } = setup();
     const t = task(f, { ready: true });
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, verifier, 5);
     tick(6 * 60_000);
     expect(f.reclaim(human)).toEqual([t.id]);
@@ -199,7 +199,7 @@ describe("risk from paths (D0008)", () => {
   const passVerify = (f: Foreman, id: string) => {
     f.claim(id, worker);
     f.progress(id, worker, { branch: "b" });
-    f.submit(id, worker, { pr: "#1" });
+    f.submit(id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(id, verifier);
     return f.recordVerify(id, verifier, f.get(id).acceptance.map((c) => ({ check: c.id, pass: true, evidence: "ok" })));
   };
@@ -285,14 +285,14 @@ describe("the PR decides, not the reported branch (T-0016)", () => {
     const { f } = setup([]);
     const t = f.create({ title: "x", acceptance: ["cmd: true"], paths: ["src/**"], ready: true }, human);
     f.claim(t.id, worker);
-    f.submit(t.id, worker, { pr: "#1" });
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
     f.startVerify(t.id, verifier);
     expect(f.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status).toBe("needs_approval");
   });
 
   test("GitHub PR URL shape", () => {
     expect(GITHUB_PR.test(PR)).toBe(true);
-    expect(GITHUB_PR.test("#7")).toBe(false);
+    expect(GITHUB_PR.test("https://example.com/pull/7")).toBe(false);
     expect(GITHUB_PR.test("https://github.com/acme/app/pull/7; rm x")).toBe(false);
   });
 });

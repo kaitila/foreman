@@ -38,6 +38,8 @@ interface FakePr {
   /** What each `gh pr view` of checks returns, in order; the last one repeats. prInfo sees the current one. */
   views: PrState[];
   mergeFails?: boolean;
+  /** What gh says on stderr when the merge fails. */
+  mergeError?: string;
   /** What `gh pr view --json state` says after a failed merge. */
   stateAfterFail?: string;
   merged?: boolean;
@@ -59,7 +61,7 @@ function setupQueue() {
       const p = prs.get(pr);
       if (prInfoDown || !p) return null;
       const v = p.views[0]!;
-      return { head: p.head, headSha: v.headSha, mergeable: submitting ? "MERGEABLE" : v.mergeable };
+      return { head: p.head, headSha: v.headSha, mergeable: submitting ? "MERGEABLE" : v.mergeable, isDraft: submitting ? false : (v.isDraft ?? false) };
     },
     originRepo: () => "acme/app",
   };
@@ -69,14 +71,17 @@ function setupQueue() {
     if (cmd[0] !== "gh" || cmd[1] !== "pr") return null;
     const p = prs.get(cmd[3]!);
     if (!p) return null;
-    if (cmd[2] === "view" && cmd[5] === "headRefOid,mergeable,statusCheckRollup") {
+    if (cmd[2] === "view" && cmd[5] === "headRefOid,mergeable,isDraft,statusCheckRollup") {
       const v = p.views[0]!;
       if (p.views.length > 1) p.views.shift();
-      return JSON.stringify({ headRefOid: v.headSha, mergeable: v.mergeable, statusCheckRollup: v.checks });
+      return JSON.stringify({ headRefOid: v.headSha, mergeable: v.mergeable, isDraft: v.isDraft ?? false, statusCheckRollup: v.checks });
     }
     if (cmd[2] === "view" && cmd[5] === "state") return p.merged ? "MERGED" : (p.stateAfterFail ?? "OPEN");
     if (cmd[2] === "merge") {
-      if (p.mergeFails) return null;
+      if (p.mergeFails) {
+        run.lastError = p.mergeError;
+        return null;
+      }
       p.merged = true;
       return "";
     }
@@ -241,7 +246,7 @@ describe("merge queue (T-0033)", () => {
     const local = q.f.create({ title: "local", acceptance: ["cmd: true"], paths: ["src/**"], ready: true }, human);
     q.f.claim(local.id, worker);
     q.f.progress(local.id, worker, { branch: "t-local" });
-    q.f.submit(local.id, worker, { pr: "#3" });
+    q.f.submit(local.id, worker, { pr: "https://example.com/pull/3" });
     q.f.startVerify(local.id, verifier);
     // changedFiles is faked, so it's approved without a person
     expect(q.f.recordVerify(local.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status).toBe("approved");
@@ -357,6 +362,25 @@ describe("merge queue (T-0033)", () => {
     expect(q.f.get(next.id).status).toBe("approved");
   });
 
+  test("a failed merge names gh's own error line", async () => {
+    const q = setupQueue();
+    const t = q.approved();
+    t.fake.mergeFails = true;
+    t.fake.mergeError = "warning: x\nPull request is in draft state\n";
+    const r = await q.pass();
+    expect(r[0]!.action).toBe("error");
+    expect(r[0]!.reason).toContain("Pull request is in draft state");
+  });
+
+  test("a draft PR is skipped with 'draft' in the reason, not merged", async () => {
+    const q = setupQueue();
+    const t = q.approved();
+    t.fake.views = [{ ...green(), isDraft: true }];
+    const r = await q.pass();
+    expect(r).toEqual([{ id: t.id, pr: t.pr, action: "skipped", reason: expect.stringContaining("draft") }]);
+    expect(q.calls.some((c) => c[2] === "merge")).toBe(false);
+  });
+
   test("mergeQueue with once runs a single pass and reports it", async () => {
     const q = setupQueue();
     q.approved();
@@ -432,7 +456,7 @@ describe("janitor (T-0033)", () => {
   test("a done task's worktree is removed, its ports released first, and its merged branch deleted", async () => {
     const r = setupRepo();
     const a = r.task("a");
-    r.f.submit(a.id, worker, { pr: "#1" });
+    r.f.submit(a.id, worker, { pr: "https://example.com/pull/1" });
     r.f.startVerify(a.id, verifier);
     expect(r.f.recordVerify(a.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status).toBe("approved");
     must(["git", "merge", "-q", "--no-ff", "-m", "merge t-a", a.branch], r.repo);
@@ -560,10 +584,10 @@ describe("janitor (T-0033)", () => {
     const startedAt = r.clk.t;
     const reviewed = mk("in review");
     r.f.claim(reviewed.id, worker);
-    r.f.submit(reviewed.id, worker, { pr: "#9" });
+    r.f.submit(reviewed.id, worker, { pr: "https://example.com/pull/9" });
     const verifying = mk("verifying");
     r.f.claim(verifying.id, worker);
-    r.f.submit(verifying.id, worker, { pr: "#10" });
+    r.f.submit(verifying.id, worker, { pr: "https://example.com/pull/10" });
     r.f.startVerify(verifying.id, verifier);
 
     // a day later the worker is still sending heartbeats and progress
