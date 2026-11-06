@@ -20,7 +20,7 @@
 // paths can't be checked because foreman is unreachable, and so is every call of an agent
 // session (FOREMAN_ACTOR set) whose role rules foreman can't give.
 // Self-contained on purpose: a project gets a copy, with no package to install.
-import { relative, resolve, basename, isAbsolute } from "node:path";
+import { relative, resolve, basename, dirname, isAbsolute } from "node:path";
 
 export interface Decision {
   deny: string;
@@ -322,6 +322,31 @@ export function bashPatternMatches(pattern: string, command: string): boolean {
   return re(p).test(c) || (p.endsWith(" *") && re(p.slice(0, -2)).test(c));
 }
 
+/** Options that take their value as the next word (`gh -R a/b`, `git -C dir`); other options are flags. */
+const RULE_VALUE_OPTIONS = new Set(["-C", "-c", "-R", "--repo", "--git-dir", "--work-tree", "--namespace", "--exec-path", "-H", "--hostname"]);
+
+/**
+ * Deny rules only: does `Bash(gh pr merge *)` match `gh -R a/b pr merge 1`? True when the rule's
+ * literal words appear in the command in order, with only options (and the values of known
+ * value-taking options) between them. Rules with a `*` before the end, or none at the end, don't qualify.
+ */
+export function bashWordsInOrder(pattern: string, words: string[]): boolean {
+  let p = pattern.trim().replace(/\s+/g, " ");
+  if (p.endsWith(":*")) p = `${p.slice(0, -2)} *`;
+  if (!p.endsWith(" *")) return false;
+  const lit = p.slice(0, -2).split(" ");
+  if (!lit.length || lit.some((w) => w.includes("*"))) return false;
+  let i = 0;
+  for (const [k, want] of lit.entries()) {
+    while (k > 0 && i < words.length && words[i]!.startsWith("-") && words[i] !== want) {
+      i += RULE_VALUE_OPTIONS.has(words[i]!) ? 2 : 1;
+    }
+    if (words[i] !== want) return false;
+    i++;
+  }
+  return true;
+}
+
 /** Claude Code's path rules: `//abs`, `~/home`, `/root-relative`, `relative`; a pattern without `/` matches at any depth. */
 export function pathPatternMatches(pattern: string, path: string, ctx: Pick<Context, "projectRoot" | "cwd">): boolean {
   const home = process.env.HOME ?? "";
@@ -359,16 +384,19 @@ function roleBashRule(words: string[], ctx: Context): string | null {
   if (typeof rules === "string") return rules;
   const bash = rules.filter((r) => splitRule(r.rule).tool === "Bash");
   if (!bash.length) return null;
-  const forms = new Set<string>();
+  const forms = new Map<string, string[]>();
   for (const layer of unwrapLayers(words)) {
     if (!layer.length) continue;
-    forms.add(layer.join(" "));
+    forms.set(layer.join(" "), layer);
     // `/usr/bin/ssh host` is `ssh host`.
-    forms.add([basename(layer[0]!), ...layer.slice(1)].join(" "));
+    const base = [basename(layer[0]!), ...layer.slice(1)];
+    forms.set(base.join(" "), base);
   }
   for (const r of bash) {
     const { spec } = splitRule(r.rule);
-    for (const f of forms) if (spec === null || bashPatternMatches(spec, f)) return denied(r, `\`${f}\``);
+    for (const [f, ws] of forms) {
+      if (spec === null || bashPatternMatches(spec, f) || bashWordsInOrder(spec, ws)) return denied(r, `\`${f}\``);
+    }
   }
   return null;
 }
@@ -782,11 +810,28 @@ function run(cmd: string[], cwd: string): { out: string | null; err: string } {
 
 /** foreman from $FOREMAN_BIN, this repo's own copy, or the PATH. The repo's own comes before the
  * PATH so a worktree is judged by its own foreman, not an older linked one. */
+/**
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
+ * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
+ * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * main checkout, since a fresh worktree has no node_modules yet.
+ */
 function foremanCmd(root: string): string[] | null {
   if (process.env.FOREMAN_BIN) return process.env.FOREMAN_BIN.split(" ");
-  const local = resolve(root, "packages/foreman/src/cli.ts");
-  if (Bun.file(local).size) return ["bun", local];
-  return Bun.which("foreman") ? ["foreman"] : null;
+  const roots = [root];
+  const common = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore", timeout: 5000 });
+  if (common.exitCode === 0) {
+    const main = dirname(common.stdout.toString().trim());
+    if (main !== root) roots.push(main);
+  }
+  const find = (rel: string) => {
+    for (const dir of roots) {
+      const f = resolve(dir, rel);
+      if (Bun.file(f).size) return ["bun", f];
+    }
+    return null;
+  };
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
 }
 
 export function realContext(cwd: string): Context {

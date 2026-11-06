@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,41 @@ test("injects the claimed task; silent without an actor, without a task, or with
     expect(run(base, dir)).toEqual({ code: 0, out: "" });
     // foreman unreachable
     expect(run({ ...base, FOREMAN_ACTOR: "w1", FOREMAN_BIN: "/nonexistent/fm" }, dir)).toEqual({ code: 0, out: "" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finds the installed @meta-repo/foreman, also from a worktree with no node_modules, when FOREMAN_BIN is unset and the PATH has none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ss-"));
+  try {
+    const project = join(dir, "project");
+    mkdirSync(project);
+    const git = (...args: string[]) => expect(Bun.spawnSync(["git", "-C", project, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args]).exitCode).toBe(0);
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "start");
+    const worktree = join(dir, "wt");
+    git("worktree", "add", "-q", "-b", "side", worktree);
+
+    const db = { FOREMAN_DB: join(dir, "f.db"), FOREMAN_AGENT: "1" };
+    const added = fm({ ...db, FOREMAN_ACTOR: "boss" }, "add", "Installed foreman", "--spec", "Found it", "--check", "cmd: bun test", "--ready");
+    const id = /T-\d+/.exec(added.stdout.toString())![0];
+    expect(fm({ ...db, FOREMAN_ACTOR: "w1" }, "claim", id).exitCode).toBe(0);
+
+    // bun alone on the PATH: this machine's PATH may have a linked foreman next to it.
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    symlinkSync(process.execPath, join(bin, "bun"));
+    const env = { ...db, FOREMAN_ACTOR: "w1", PATH: `${bin}:/usr/bin:/bin` };
+    expect(run(env, project)).toEqual({ code: 0, out: "" }); // nothing installed: silent
+
+    mkdirSync(join(project, "node_modules/@meta-repo"), { recursive: true });
+    symlinkSync(join(FM, "..", ".."), join(project, "node_modules/@meta-repo/foreman"));
+    for (const at of [project, worktree]) {
+      const r = run(env, at);
+      expect({ at, code: r.code }).toEqual({ at, code: 0 });
+      expect(JSON.parse(r.out || "{}").hookSpecificOutput?.additionalContext ?? "", at).toContain(id);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -7,8 +7,10 @@ import { basename, join, resolve } from "node:path";
 import { generate, NAME } from "../../../presets/generate";
 import {
   type Change,
+  FOREMAN_SERVER,
   matchingKitFiles,
   matchingKitHooks,
+  MCP,
   ownTemplate,
   pack,
   pointDep,
@@ -148,6 +150,12 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   const target = resolve(dir);
   if (!existsSync(join(target, ".git"))) throw new Error(`${dir} is not a git repository (use create for a new project)`);
   if (readInstalled(target)) throw new Error(`${RECORD} is already there: the kit is installed (use sync to update it)`);
+  // Read up front, so a malformed file stops init before anything is written.
+  const pkgText = readIfThere(target, "package.json");
+  const pkg = pkgText === null ? null : parseJson<PackageJson>(pkgText, "package.json");
+  const mcpText = readIfThere(target, MCP);
+  const mcp = mcpText === null ? null : parseJson<McpJson>(mcpText, MCP);
+  if (mcp?.mcpServers !== undefined && !isObject(mcp.mcpServers)) throw new Error(`${MCP}: "mcpServers" is not a JSON object`);
   const changes = fromInstall(install(target));
 
   writeOnce(target, "AGENTS.md", ownTemplate("AGENTS.md").replaceAll("{{name}}", opts.name ?? basename(target)), changes);
@@ -168,19 +176,120 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   }
 
   writeOnce(target, "foreman.json", ownTemplate("foreman.json"), changes);
+  const vendored = pkg && pkgText !== null ? addForeman(target, pkgText, pkg, mcp, mcpText, changes) : {};
+  if (!pkg) changes.push({ action: "skipped", path: "foreman", note: `no package.json to install it in: ${MCP}, the AGENTS.md Tasks section and the .gitignore entry not added` });
 
   // A CI workflow only if the repo has none, and only one that can pass: it runs `bun run check`.
   const workflows = join(target, ".github", "workflows");
-  const scripts = existsSync(join(target, "package.json"))
-    ? ((JSON.parse(readFileSync(join(target, "package.json"), "utf8")) as { scripts?: Record<string, string> }).scripts ?? {})
-    : {};
+  const scripts = pkg?.scripts ?? {};
   if (existsSync(workflows) && readdirSync(workflows).some((f) => /\.ya?ml$/.test(f))) {
     changes.push({ action: "kept", path: ".github/workflows/", note: "already has a workflow" });
   } else if (!scripts.check) {
     changes.push({ action: "skipped", path: CI_PATH, note: "package.json has no check script for CI to run" });
   } else writeOnce(target, CI_PATH, ownTemplate("ci-bun.yml"), changes);
 
-  writeInstalled(target, { source: source(), files: matchingKitFiles(target), hooks: matchingKitHooks(target) });
+  writeInstalled(target, { source: source(), files: { ...matchingKitFiles(target), ...vendored }, hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: RECORD });
   return changes;
+}
+
+const DEP_KEYS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
+type PackageJson = { scripts?: Record<string, string> } & Partial<Record<(typeof DEP_KEYS)[number], Record<string, string>>>;
+type McpJson = { mcpServers?: Record<string, unknown> };
+const FOREMAN = "@meta-repo/foreman";
+
+function readIfThere(dir: string, path: string): string | null {
+  return existsSync(join(dir, path)) ? readFileSync(join(dir, path), "utf8") : null;
+}
+
+function parseJson<T>(text: string, path: string): T {
+  let v: unknown;
+  try {
+    v = JSON.parse(text.replace(/^\uFEFF/, ""));
+  } catch (e) {
+    throw new Error(`${path} is not valid JSON: ${(e as Error).message}`);
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error(`${path} is not a JSON object`);
+  return v as T;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * package.json with one devDependency added as text, so the rest of the file (order, line
+ * endings, inline arrays) is untouched. Falls back to a JSON rewrite if the edit doesn't parse.
+ */
+export function addDevDependency(text: string, name: string, spec: string): string {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const ind = indentOf(text);
+  const entry = `${JSON.stringify(name)}: ${JSON.stringify(spec)}`;
+  const dev = /("devDependencies"\s*:\s*)\{(\s*)(\}?)/.exec(text);
+  let out: string;
+  if (dev) {
+    const at = dev.index + dev[1]!.length + 1;
+    out = dev[3]
+      ? `${text.slice(0, at)}${eol}${ind}${ind}${entry}${eol}${ind}${text.slice(at + dev[2]!.length)}`
+      : `${text.slice(0, at)}${eol}${ind}${ind}${entry},${text.slice(at)}`;
+  } else {
+    const end = text.lastIndexOf("}");
+    const before = text.slice(0, end).replace(/\s*$/, "");
+    const block = `${ind}"devDependencies": {${eol}${ind}${ind}${entry}${eol}${ind}}${eol}`;
+    out = `${before}${before.endsWith("{") ? "" : ","}${eol}${block}${text.slice(end)}`;
+  }
+  try {
+    const parsed = JSON.parse(out.replace(/^\uFEFF/, "")) as PackageJson;
+    if (parsed.devDependencies?.[name] === spec) return out;
+  } catch {}
+  const pkg = JSON.parse(text.replace(/^\uFEFF/, "")) as PackageJson;
+  pkg.devDependencies = { ...pkg.devDependencies, [name]: spec };
+  return JSON.stringify(pkg, null, ind) + eol;
+}
+
+/** The indent of a JSON file's first nested line, so a rewrite keeps its style (default two spaces). */
+const indentOf = (text: string) => /\n([ \t]+)"/.exec(text)?.[1] ?? "  ";
+const withNewline = (text: string) => (text === "" || text.endsWith("\n") ? text : `${text}\n`);
+
+/**
+ * foreman for a repository with a package.json: the package vendored as a devDependency, its
+ * MCP server, `.foreman/` ignored, and the Tasks section in AGENTS.md. Returns the vendored
+ * tarball's record entry, so sync updates it like a preset's packages.
+ */
+function addForeman(target: string, pkgText: string, pkg: PackageJson, mcp: McpJson | null, mcpText: string | null, changes: Change[]): Record<string, string> {
+  const vendored: Record<string, string> = {};
+  if (DEP_KEYS.some((k) => pkg[k]?.[FOREMAN] !== undefined)) changes.push({ action: "kept", path: "package.json", note: `already depends on ${FOREMAN}` });
+  else {
+    const { path, data } = pack("foreman");
+    write(target, path, data);
+    vendored[path] = sha256(data);
+    write(target, "package.json", addDevDependency(pkgText, FOREMAN, `file:${path}`));
+    changes.push({ action: "created", path, note: `${FOREMAN}, vendored` });
+    changes.push({ action: "merged", path: "package.json", note: `${FOREMAN} added as a devDependency: run bun install` });
+  }
+
+  if (!mcp || mcpText === null) writeOnce(target, MCP, JSON.stringify({ mcpServers: { foreman: FOREMAN_SERVER } }, null, 2) + "\n", changes);
+  else if (mcp.mcpServers?.foreman !== undefined) changes.push({ action: "kept", path: MCP, note: "already has a foreman server" });
+  else {
+    // A small config file Claude Code reads: rewritten whole, keeping its indent.
+    mcp.mcpServers = { ...mcp.mcpServers, foreman: FOREMAN_SERVER };
+    const eol = mcpText.includes("\r\n") ? "\r\n" : "\n";
+    write(target, MCP, (JSON.stringify(mcp, null, indentOf(mcpText)) + "\n").replaceAll("\n", eol));
+    changes.push({ action: "merged", path: MCP, note: "foreman server added" });
+  }
+
+  const ignore = readIfThere(target, ".gitignore");
+  if (ignore === null) writeOnce(target, ".gitignore", ".foreman/\n", changes);
+  else if (/^\/?\.foreman\/?[ \t\r]*$/m.test(ignore)) changes.push({ action: "kept", path: ".gitignore", note: "already ignores .foreman/" });
+  else {
+    const eol = ignore.includes("\r\n") ? "\r\n" : "\n";
+    write(target, ".gitignore", `${ignore}${ignore === "" || ignore.endsWith("\n") ? "" : eol}.foreman/${eol}`);
+    changes.push({ action: "merged", path: ".gitignore", note: "`.foreman/` added" });
+  }
+
+  const agents = readFileSync(join(target, "AGENTS.md"), "utf8");
+  if (/^## Tasks\b/m.test(agents)) changes.push({ action: "kept", path: "AGENTS.md", note: "already has a Tasks section" });
+  else {
+    write(target, "AGENTS.md", `${withNewline(agents)}\n${ownTemplate("tasks-section.md")}`);
+    changes.push({ action: "merged", path: "AGENTS.md", note: "Tasks section appended (foreman)" });
+  }
+  return vendored;
 }

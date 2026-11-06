@@ -268,7 +268,7 @@ export class Foreman {
     if (t.assignee !== actor.name) {
       throw new ForemanError(
         "not_holder",
-        `can't ${verb} ${t.id}: it is held by ${t.assignee ?? "nobody"}, not ${actor.name}`,
+        `can't ${verb} ${t.id}: it is held by ${t.assignee ?? "nobody"}, not ${actor.name}. To continue as the holder, set FOREMAN_ACTOR=${t.assignee ?? "<holder>"} (CLI) or ask the person who started that session`,
       );
     }
   }
@@ -370,7 +370,7 @@ export class Foreman {
    * doesn't time out; once it's gone, the claim is released at the next reclaim.
    * The dispatcher calls this right after it starts a worker or verifier.
    */
-  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string }): Task {
+  pinLease(id: string, actor: Actor, pid: number, session?: { session: string; name: string; sessionId?: string }): Task {
     if (!Number.isInteger(pid) || pid <= 0) throw new ForemanError("invalid", `bad pid ${pid}`);
     return this.tx(() => {
       const t = this.get(id);
@@ -432,13 +432,22 @@ export class Foreman {
 
   /** The worker hands in its PR. It lets go of the task: verification is someone else's job. */
   submit(id: string, actor: Actor, s: { pr: string; summary?: string }): Task {
-    const pr = s.pr.trim();
+    let pr = s.pr.trim();
     if (!pr) throw new ForemanError("invalid", "submit needs the PR (url or number)");
+    // A bare number or #number becomes this repository's PR URL: the merge queue only takes URLs (T-0074).
+    const bare = /^#?(\d+)$/.exec(pr);
+    if (bare) {
+      const origin = this.policy.originRepo?.() ?? null;
+      if (!origin) throw new ForemanError("invalid", `${pr} is a bare PR number and there is no GitHub origin remote to expand it with: submit the PR's full URL`);
+      pr = `https://github.com/${origin}/pull/${bare[1]}`;
+    } else if (!/^https?:\/\/\S+$/.test(pr)) {
+      throw new ForemanError("invalid", `${pr} isn't a PR URL: submit the PR's full URL (or its number)`);
+    }
     // A GitHub PR must be this repository's, and its branch the task's (T-0017): otherwise
     // a worker could point foreman at some other, harmless PR. Looked up outside the
     // transaction because it calls GitHub.
     const before = this.get(id);
-    let info: { head: string; headSha: string; mergeable?: string } | null = null;
+    let info: { head: string; headSha: string; mergeable?: string; isDraft?: boolean } | null = null;
     const urlRepo = prRepo(pr);
     if (urlRepo) {
       // A GitHub PR is checked or refused, never waved through: if gh can't confirm it,
@@ -456,6 +465,9 @@ export class Foreman {
       }
       if (before.branch && info.head !== before.branch) {
         throw new ForemanError("pr_mismatch", `${pr} is from branch ${info.head}, but ${id}'s branch is ${before.branch}`);
+      }
+      if (info.isDraft) {
+        throw new ForemanError("pr_draft", `${pr} is a draft: mark it ready with \`gh pr ready ${pr}\`, then submit again`);
       }
       if (info.mergeable === "CONFLICTING") {
         throw new ForemanError("pr_conflicting", `${pr} conflicts with main: merge origin/main, resolve the conflicts, run the gate, push, and submit again`);
