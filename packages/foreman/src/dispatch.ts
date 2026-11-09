@@ -175,6 +175,8 @@ Follow the ship skill, with these differences:
 - Step 1 is done: don't claim the task again and don't make another worktree. Start with show_task ${t.id}.
 ${setupLine(setup)}
 - Skip the fan-out in step 3: write the tests and docs yourself, then review your own diff.
+- A mechanical change across many files (a rename, an import move): make it with one scripted edit (sed, perl or a short script), then read the diff. Don't edit file by file.
+- While you work, run the typecheck and the area's tests. Run the full check once, before you push.
 ${returnNotes(t, events)}${common(actor)}
 - Push only your branch (${wt.branch}). Never merge, push to main or force-push.
 - Finish with submit_task ${t.id} and the PR. If you can't finish, report_progress with what blocks you, then stop.`;

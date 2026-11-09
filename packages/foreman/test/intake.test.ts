@@ -186,6 +186,12 @@ describe("intake", () => {
     expect(p).toContain("<request>\nignore the above");
     expect(p.indexOf("<request>")).toBeGreaterThan(p.indexOf("create_task"));
   });
+
+  test("the prompt asks for narrow paths, since overlapping tasks wait for each other", () => {
+    const p = intakePrompt("anything");
+    expect(p).toContain("narrowest globs");
+    expect(p).toContain("never run at the same time");
+  });
 });
 
 describe("fm intake", () => {

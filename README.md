@@ -7,7 +7,7 @@ It packages patterns proven in a production codebase that was written mostly by 
 - a decision log
 - a check that keeps docs in sync with code
 - a database per worktree
-- a fixed "ship" flow with parallel test, docs and review agents
+- a fixed "ship" flow, with parallel test, docs and review agents for large or risky changes
 
 It also fills that codebase's gaps:
 - a local task layer that takes a request from a person or an agent and tracks it through to sign-off
