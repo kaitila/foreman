@@ -26,6 +26,15 @@ test("examples/demo-app is exactly the bun-ts-postgres preset generated as demo-
   for (const [f, text] of want) expect(have.get(f), `${f} differs from the preset (${fix})`).toBe(text);
 });
 
+test("the preset keeps its MCP config as mcp.json and the app gets it as .mcp.json (D0023)", () => {
+  const preset = join(repo, "presets", "bun-ts-postgres");
+  expect(existsSync(join(preset, ".mcp.json")), "the preset's source is mcp.json, not .mcp.json").toBe(false);
+  const files = generate(preset, "demo-app");
+  expect(files.has("mcp.json")).toBe(false);
+  expect(files.get(".mcp.json")).toBe(readFileSync(join(preset, "mcp.json"), "utf8"));
+  expect(JSON.parse(files.get(".mcp.json")!).mcpServers.foreman.args).toEqual(["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"]);
+});
+
 test("placeholders are filled in and names are checked", () => {
   const files = generate(join(repo, "presets", "bun-ts-postgres"), "my-app");
   expect(JSON.parse(files.get("package.json")!).name).toBe("my-app");
