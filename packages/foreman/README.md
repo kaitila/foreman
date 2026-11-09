@@ -65,6 +65,7 @@ foreman janitor --dry-run          # reclaim, clean up finished tasks, list stuc
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
 fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
+fm serve --queue                   # the board, plus the merge queue every 60 s in the same process (--interval, --settle-seconds 30)
 ```
 
 Every command takes `--json`.
@@ -83,6 +84,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **A PR that conflicts with main** (`CONFLICTING`) goes back to `ready`, to merge main and be verified again. Foreman asks GitHub itself first, so anyone may trigger this, but only a real conflict counts.
 - **Anything else** is skipped with the reason and tried again next pass. Without `--once` it loops.
 - **From the board:** Merge on an approved card runs one pass limited to that task, and Run queue runs one pass (see Board).
+- **With the board:** `fm serve --queue` runs the loop inside the board's process, for every project it shows (see Board). `fm merge-queue` runs it on its own.
 - **Janitor** (`janitor`):
   - reclaims expired claims;
   - for done and cancelled tasks, removes the recorded worktree if it is a clean git worktree inside this repo. One with uncommitted changes is kept and reported;
@@ -96,6 +98,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 
 - **The page:** one lane per status, `draft` to `cancelled`, scrolling sideways with snapping (on a phone, one lane per screen, the two that wait for you first). A card shows the id, title, risk, assignee, PR link and how long ago it changed, and its next action: **Approve** (needs approval), **Merge #n** with the PR's checks and mergeability (approved), or what it waits for (`waiting for verifier`, `with worker-1`). Click a card for the spec, the acceptance checks with each one's latest verdict, and the history. `/#T-0001` opens that task. It polls for changes every 2 seconds.
 - **One click, then Undo:** Approve, **Approve all** (the needs-approval lane), Merge and **Run queue** (the approved lane) wait 5 seconds with an Undo button before anything is sent. There is no confirm dialog. The result shows on the card: approved, merged, sent back, or skipped with the merge queue's reason.
+- **`--queue`:** `fm serve --queue [--interval 60] [--settle-seconds 30]` also runs the merge queue: a pass for each project shown right away, then one every `--interval` seconds after the previous pass ends. It shares the board's one-pass-at-a-time lock per project, so a tick skips a project whose pass is still running and a click during a loop pass gets `busy`. It acts as `merge-queue` unless `FOREMAN_ACTOR` is set, and runs even when the board's buttons are off (from an agent), since merging approved tasks needs no person. Each pass prints like `fm merge-queue`, each line prefixed with the project name when there are several. Ctrl-C stops both. `--settle-seconds` applies to the buttons too.
 - **Merging** is the merge queue (see above), not a second implementation. Merge runs one pass for that task only, with the same rules: the verified commit, settled green checks, `MERGEABLE`, and a conflict sends it back. Run queue runs one pass over all approved tasks, so it merges at most one. The checks settle for `--settle-seconds` (30), so a merge answers after about half a minute. One pass runs at a time, and a second request gets 409 `busy`. The merge runs as the person who started the board.
 - **Keys:** `j`/`k` move between cards, `Enter` opens, `a` approves, `m` merges, `u` undoes, `/` filters, `Esc` closes or clears the filter, `?` lists them. The filter matches id, title, person, status, risk and PR number.
 - **Look:** CSS and JS are inline, with no external assets or fonts, so it works offline. It follows the system's light or dark mode, with thin themed scroll bars (hidden on the lanes until you hover). It works at phone width.
