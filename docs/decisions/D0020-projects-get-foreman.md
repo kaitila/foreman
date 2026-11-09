@@ -9,7 +9,7 @@
 - **The MCP server runs the package's own file:** `.mcp.json` has `foreman` as `bun node_modules/@meta-repo/foreman/src/cli.ts mcp`. `init` merges it into an existing `.mcp.json` and keeps the other servers and any `foreman` entry there.
 - **`init` edits `package.json` as text** to add the devDependency, so the rest of the file stays as it was, and rewrites it as JSON only if that edit doesn't parse.
 - **`.mcp.json` is protected** in the template `foreman.json`: it says what runs as foreman, so changing it needs a person.
-- **The rest of the wiring:** `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` (`packages/create/templates/tasks-section.md`), appended by `init` only if there is no `## Tasks` heading.
+- **The rest of the wiring:** `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` (`packages/create/templates/tasks-section.md`), appended by `init` only if there is no `## Tasks` heading. <!-- docs-check: removed -->
 - **`init` does this only for a repo with a `package.json`.** Without one it skips foreman and says so.
 - **The hooks find the installed package** at `node_modules/@meta-repo/foreman/src/cli.ts`, after `$FOREMAN_BIN`, the PATH and `packages/foreman`, looking in the project root and then the main checkout.
 

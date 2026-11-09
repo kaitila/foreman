@@ -2,11 +2,9 @@
 
 Guardrails and templates for projects where Claude Code agents do most of the work.
 
-```sh
-bun packages/agent-kit/src/cli.ts init [dir]
-```
+This package is where the templates are edited. It isn't published: the templates ship inside `@foreman-kit/foreman`, and `fm init`, `fm create` and `fm sync` install them, with the installer in [`packages/foreman/src/kit/install.ts`](../foreman/src/kit/install.ts) ([D0032](../../docs/decisions/D0032-kit-ships-inside-foreman.md), [KIT.md](../foreman/KIT.md)).
 
-`init` adds the templates to a repository and never overwrites a file. The one exception is `.claude/settings.json`: if the project already has one, the baseline's permission rules are added to it (a union) and the project's own rules and other keys are kept.
+`fm init` adds the templates to a repository and never overwrites a file. The one exception is `.claude/settings.json`: if the project already has one, the baseline's permission rules are added to it (a union) and the project's own rules and other keys are kept.
 
 **Removing a baseline rule on purpose:** delete it from `.claude/settings.json` and list it in `.claude/agent-kit.json`, or the next `init` adds it back ([D0014](../../docs/decisions/D0014-init-omit-file.md)): <!-- docs-check: elsewhere -->
 
