@@ -7,7 +7,7 @@
     "examples/*"
   ],
   "scripts": {
-    "check": "bun run typecheck && bun run docs:check && bun run test && bun run demo:check",
+    "check": "bun run typecheck && bun run docs:check && bun run board:design && bun run test && bun run demo:check",
     "typecheck": "tsc --noEmit -p packages/foreman && tsc --noEmit -p packages/agent-kit && tsc --noEmit -p packages/test-kit && tsc --noEmit -p packages/docs-check && tsc --noEmit -p packages/create && tsc --noEmit -p packages/design-kit && tsc --noEmit -p presets",
     "test": "bun test ./packages ./presets/test",
     "demo:check": "bun run --cwd examples/demo-app check",
@@ -16,7 +16,8 @@
     "live-launch": "bun packages/foreman/scripts/live-launch.ts",
     "live-intake": "bun packages/foreman/scripts/live-intake.ts",
     "link": "cd packages/foreman && bun link",
-    "docs:check": "bun packages/docs-check/src/cli.ts"
+    "docs:check": "bun packages/docs-check/src/cli.ts",
+    "board:design": "bun packages/design-kit/src/cli.ts lint packages/foreman/src/board --tokens packages/foreman/src/board/tokens.css"
   },
   "devDependencies": {
     "@types/bun": "1.3.5",

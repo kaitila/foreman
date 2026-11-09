@@ -6,7 +6,7 @@ A starter for projects where AI coding agents (Claude Code; other tools later, s
 - `docs/research-plan.md`: the plan. Tracks R1–R8, steps M0–M8, each gated by a check.
 - `docs/decisions/`: one file per decision, `Dnnnn-short-slug.md`.
 - `docs/research/`: findings, one file per track (`R5.md`), written when the track's check runs.
-- `packages/foreman/`: the task layer ([README](packages/foreman/README.md)).
+- `packages/foreman/`: the task layer ([README](packages/foreman/README.md)). The board's design system: `docs/board-design.md`.
 - `packages/agent-kit/`: guardrail baseline and templates ([README](packages/agent-kit/README.md)). This repo runs its own baseline (`.claude/settings.json`).
 - `packages/docs-check/`: keeps the docs true to the code ([README](packages/docs-check/README.md)).
 - `packages/create/`: `create`, `init` and `sync`: start a project from a preset, add the kit to a repo, take the kit's updates ([README](packages/create/README.md)).
@@ -14,7 +14,7 @@ A starter for projects where AI coding agents (Claude Code; other tools later, s
 
 ## Commands
 - Test Postgres (once): `docker run -d --name metarepo-pg -e POSTGRES_USER=metarepo -e POSTGRES_PASSWORD=metarepo -p 127.0.0.1:5544:5432 postgres:16 -c fsync=off`. Database tests skip without it locally and fail without it on CI.
-- `bun install`, then `bun run check` (typecheck, docs check, tests). `bun run link` once makes the foreman CLI available as `fm`. CI runs the same command, plus `bun audit`, gitleaks and zizmor.
+- `bun install`, then `bun run check` (typecheck, docs check, the board's design lint, tests). `bun run link` once makes the foreman CLI available as `fm`. CI runs the same command, plus `bun audit`, gitleaks and zizmor.
 - `rm -rf` is denied here: use the tool's own clean command (e.g. `bun install --force`) or ask.
 - A guard hook (`packages/agent-kit/templates/claude/hooks/guard.ts`, which `.claude/settings.json` runs in place) checks every command and edit. With `FOREMAN_ACTOR` set, edits must stay inside your claimed task's `paths`.
 - Change the kit's hooks, skills and agents in `packages/agent-kit/templates/claude/`; this repo's `.claude/skills` and `.claude/agents` are links to them. Claude Code won't let an unattended agent edit anything under a `.claude/` folder, so don't try (D0023).
