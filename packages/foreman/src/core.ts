@@ -102,7 +102,8 @@ export function checkVersion(root: string | null, version = VERSION, config: Con
   if (typeof range !== "string" || !range.trim()) throw new ForemanError("invalid", `foreman.json "foreman" must be a version range like ">=0.2.0", got ${JSON.stringify(range)}`);
   // Bun.semver.satisfies accepts nonsense ("abc" is satisfied), so the range is checked first.
   if (!isVersionRange(range)) throw new ForemanError("invalid", `foreman.json "foreman" is not a version range: ${JSON.stringify(range)}`);
-  if (!Bun.semver.satisfies(version, range)) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
+  // A prerelease fm (0.2.0-rc.1) counts as its release: semver would refuse it for every plain range.
+  if (!Bun.semver.satisfies(version.replace(/-.*$/, ""), range)) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
 }
 
 export const DEFAULT_LEASE_MINUTES = 30;

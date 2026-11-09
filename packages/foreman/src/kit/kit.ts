@@ -9,7 +9,7 @@ import { FILE_PIECES, type Piece, pieceOfFile } from "./pieces";
 
 export { CHECKOUT, OWN_TEMPLATES, PRESETS } from "./paths";
 export const RECORD = join(".foreman-kit", "installed.json");
-/** Where the record was before D0026. A project made then keeps it there until sync moves it. */
+/** Where the record was before D0026. A project made then keeps it there; moving it is sync's migration (T-0086). */
 export const LEGACY_RECORD = join(".meta-repo", "installed.json");
 /** Vendored kit packages, as tarballs named by content hash (D0018). */
 export const VENDOR = ".meta-repo/packages";

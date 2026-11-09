@@ -2,7 +2,7 @@
 // init: foreman added to a repository that exists, plus the pieces it chooses; add: one more piece later (D0026).
 // None of them overwrites a file the project has (settings.json is merged, D0014), and all
 // record what they installed in .foreman-kit/installed.json so sync can update it later (D0018).
-import { install, type InstallResult, SCOPE } from "./install";
+import { install, type InstallResult, readOmit, SCOPE, templateSettings } from "./install";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { generate, NAME } from "./generate";
@@ -21,6 +21,7 @@ import {
   PRESETS,
   readInstalled,
   recordPath,
+  SETTINGS,
   sha256,
   source,
   write,
@@ -30,6 +31,7 @@ import {
   workspaceDeps,
 } from "./kit";
 import { FILE_PIECES, type Piece, PIECE_INFO, PIECES } from "./pieces";
+import { checkVersion } from "../core";
 
 export const DEFAULT_PRESET = "bun-ts-postgres";
 /** The CI workflow each preset's apps get; a preset that isn't listed gets the plain Bun one. */
@@ -199,12 +201,14 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   if (!existsSync(join(target, ".git"))) throw new Error(`${dir} is not a git repository (use create for a new project)`);
   if (readInstalled(target)) throw new Error(`${recordPath(target)} is already there: foreman is set up (init --with <piece> adds a piece, sync updates the kit)`);
   // Read up front, so a malformed file stops init before anything is written.
+  checkVersion(target);
   readPackageJson(target);
   const mcpText = readIfThere(target, MCP);
   const mcp = mcpText === null ? null : parseJson<McpJson>(mcpText, MCP);
   if (mcp?.mcpServers !== undefined && !isObject(mcp.mcpServers)) throw new Error(`${MCP}: "mcpServers" is not a JSON object`);
   const changes: Change[] = [];
   const pieces = choosePieces(target, opts.pieces ?? [], opts.all ?? false, changes);
+  if (pieces.includes("guardrails")) readSettings(target);
 
   const rec: Installed = { source: source(), pieces: [], files: {}, hooks: {} };
   // docs first: its AGENTS.md skeleton is what the Tasks section is appended to.
@@ -224,11 +228,15 @@ export function add(dir: string, want: Piece[], opts: { today?: Date; name?: str
   const rec = readInstalled(target);
   if (!rec) throw new Error(`no ${recordPath(target)} here: set up foreman with init first`);
   if (!want.length) throw new Error(`name a piece to add (${PIECES.join(", ")})`);
+  // Everything that can refuse runs before the first write.
+  checkVersion(target);
   readPackageJson(target);
   const changes: Change[] = [];
   const had = rec.pieces ?? FILE_PIECES;
   rec.pieces = [...had];
-  for (const p of choosePieces(target, want, opts.all ?? false, changes)) {
+  const chosen = choosePieces(target, want, opts.all ?? false, changes);
+  if (chosen.includes("guardrails") && !had.includes("guardrails")) readSettings(target);
+  for (const p of chosen) {
     if (had.includes(p)) changes.push({ action: "kept", path: p, note: "already added" });
     else addPiece(target, p, rec, opts, changes);
   }
@@ -245,7 +253,12 @@ function addPiece(target: string, piece: Piece, rec: Installed, opts: { today?: 
     Object.assign(rec.files, matchingKitFiles(target, undefined, [piece]));
     if (piece === "guardrails") rec.hooks = { ...rec.hooks, ...matchingKitHooks(target) };
   } else if (piece === "docs") {
-    writeOnce(target, "AGENTS.md", ownTemplate("AGENTS.md").replaceAll("{{name}}", opts.name ?? basename(target)), changes);
+    const skeleton = ownTemplate("AGENTS.md").replaceAll("{{name}}", opts.name ?? basename(target));
+    // An AGENTS.md that is only the Tasks section foreman-alone wrote gets the skeleton above it.
+    if (readIfThere(target, "AGENTS.md") === ownTemplate("tasks-section.md")) {
+      write(target, "AGENTS.md", `${withNewline(skeleton)}\n${ownTemplate("tasks-section.md")}`);
+      changes.push({ action: "merged", path: "AGENTS.md", note: "skeleton added above the Tasks section" });
+    } else writeOnce(target, "AGENTS.md", skeleton, changes);
     importAgents(target, changes);
     if (hasDecisions(target)) changes.push({ action: "kept", path: "docs/decisions/", note: "already has decisions" });
     else {
@@ -270,6 +283,14 @@ const DEP_KEYS = ["dependencies", "devDependencies", "optionalDependencies"] as 
 type PackageJson = { scripts?: Record<string, string> } & Partial<Record<(typeof DEP_KEYS)[number], Record<string, string>>>;
 type McpJson = { mcpServers?: Record<string, unknown> };
 
+/** settings.json and the omit list parsed, so the guardrails piece can't fail after other files are written. */
+function readSettings(target: string) {
+  readOmit(target);
+  const file = join(target, SETTINGS);
+  if (existsSync(file)) parseJson(readFileSync(file, "utf8"), SETTINGS);
+  JSON.parse(readFileSync(templateSettings(), "utf8"));
+}
+
 function readIfThere(dir: string, path: string): string | null {
   return existsSync(join(dir, path)) ? readFileSync(join(dir, path), "utf8") : null;
 }
@@ -283,7 +304,7 @@ function readPackageJson(target: string): { text: string; pkg: PackageJson } | n
 function parseJson<T>(text: string, path: string): T {
   let v: unknown;
   try {
-    v = JSON.parse(text.replace(/^﻿/, ""));
+    v = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch (e) {
     throw new Error(`${path} is not valid JSON: ${(e as Error).message}`);
   }
@@ -315,10 +336,10 @@ function addEntry(text: string, key: string, name: string, value: string): strin
     out = `${before}${before.endsWith("{") ? "" : ","}${eol}${obj}${text.slice(end)}`;
   }
   try {
-    const parsed = JSON.parse(out.replace(/^﻿/, "")) as Record<string, Record<string, string> | undefined>;
+    const parsed = JSON.parse(out.replace(/^\uFEFF/, "")) as Record<string, Record<string, string> | undefined>;
     if (parsed[key]?.[name] === value) return out;
   } catch {}
-  const obj = JSON.parse(text.replace(/^﻿/, "")) as Record<string, unknown>;
+  const obj = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   obj[key] = { ...(obj[key] as Record<string, string> | undefined), [name]: value };
   return JSON.stringify(obj, null, ind) + eol;
 }

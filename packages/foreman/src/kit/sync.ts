@@ -5,6 +5,7 @@
 import { mergeSettings, OMIT_FILE, readOmit, SCOPE, TEMPLATES, templateSettings } from "./install";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { checkVersion } from "../core";
 import {
   type Change,
   type HookGroup,
@@ -43,6 +44,8 @@ export interface SyncResult {
 export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   const target = resolve(dir);
   const templates = opts.templates ?? TEMPLATES;
+  // An older fm would write its older kit over a project that needs a newer one (D0026).
+  checkVersion(target);
   const rec = readInstalled(target);
   if (!rec) throw new Error(`no ${recordPath(target)} here: set up foreman with init (or create) first`);
   const pieces = filePieces(rec);

@@ -1,5 +1,5 @@
 // The kit's opt-in pieces (D0026). `fm init` always sets up foreman itself; each piece is
-// chosen by name (a checklist in a terminal, --with, --all) or added later with `fm add`.
+// chosen by name (a checklist in a terminal, --with, --all), and added later with `fm init --with`.
 
 export const PIECES = ["docs", "guardrails", "skills", "ci", "test-kit", "design"] as const;
 export type Piece = (typeof PIECES)[number];
