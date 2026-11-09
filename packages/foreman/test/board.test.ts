@@ -268,6 +268,63 @@ describe("an undone approval is flagged (T-0094)", () => {
     expect(approvalUndone([])).toBeNull();
   });
 
+  test("only a person's approval counts: undoing an auto approval isn't flagged", () => {
+    // risk auto: foreman approves by itself, with no approved event
+    expect(approvalUndone([ev("submitted", worker), ev("verified", verifier), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // an approved event by an agent doesn't count either
+    expect(approvalUndone([ev("approved", verifier), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // a person's approval of an earlier submission doesn't carry over to the next one
+    expect(approvalUndone([ev("approved", human), ev("submitted", worker), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // the same rework after a person's approval is flagged
+    expect(approvalUndone([ev("submitted", worker), ev("approved", human), ev("rework", worker, { reason: "gap", was: "approved" })])).toMatchObject({ by: "worker-1", byKind: "agent" });
+  });
+
+  test("/api/tasks: a task approved again has undone null, even when the events alone would flag it", async () => {
+    // Escalated for a protected file, a person approves, then sends it back; the next diff is
+    // ordinary, so foreman approves it by itself (no approved event).
+    let changed = ["foreman.json"];
+    const g = new Foreman(openDb(":memory:"), null, (() => { let c = 1_000_000; return () => (c += 1000); })(), {
+      protectedPaths: DEFAULT_PROTECTED, changedFiles: () => changed,
+    });
+    const t = g.create({ title: "Auto task", acceptance: ["cmd: bun test"], ready: true, risk: "auto" }, human);
+    const round = () => {
+      g.claim(t.id, worker);
+      g.submit(t.id, worker, { pr: "https://example.com/pull/3" });
+      g.startVerify(t.id, verifier);
+      return g.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status;
+    };
+    expect(round()).toBe("needs_approval");
+    g.approve(t.id, human);
+    g.rework(t.id, human, "one more thing");
+    changed = ["src/a.ts"];
+    expect(round()).toBe("approved");
+    expect(approvalUndone(g.events(t.id))).not.toBeNull();
+    const b = startBoard({ foreman: g, port: 0, approver: human });
+    try {
+      const body = await (await fetch(`${b.url}/api/tasks`)).json();
+      expect(body.tasks.find((x: { id: string }) => x.id === t.id).undone).toBeNull();
+    } finally {
+      await b.stop();
+    }
+  });
+
+  test("/api/tasks: an auto-approved task its worker reworked has undone null", async () => {
+    const g = setup();
+    const t = g.create({ title: "Auto task", acceptance: ["cmd: bun test"], ready: true, risk: "auto" }, human);
+    g.claim(t.id, worker);
+    g.submit(t.id, worker, { pr: "https://example.com/pull/2" });
+    g.startVerify(t.id, verifier);
+    expect(g.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status).toBe("approved");
+    g.rework(t.id, worker, "found a gap");
+    const b = startBoard({ foreman: g, port: 0, approver: human });
+    try {
+      const body = await (await fetch(`${b.url}/api/tasks`)).json();
+      expect(body.tasks.find((x: { id: string }) => x.id === t.id).undone).toBeNull();
+    } finally {
+      await b.stop();
+    }
+  });
+
   test("/api/tasks carries undone for the reworked task and null for the others", async () => {
     const g = setup();
     const id = waitingTask(g);
@@ -300,6 +357,11 @@ describe("the page flags surprises (T-0094)", () => {
     expect(html).toContain("Your approval was undone");
     expect(html).toContain('conflict ? "Send back " + prNumber(t.pr)');
     expect(html).toContain("GitHub is checking if it merges");
+    // no alarm for a person's own rework: the page knows who signs off here
+    expect(html).toContain('"me":"ada"');
+    expect(html).toContain("t.undone.by === S.me");
+    // a person's send-back toast closes itself; an agent's stays until dismissed
+    expect(html).toContain('sticky: !t.undone.conflict && t.undone.byKind !== "human"');
   });
 
   test("queueSummary: bad on any failure, ok only when something merged, else skip", () => {
