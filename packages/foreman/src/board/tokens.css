@@ -24,7 +24,7 @@
 
   /* Text, three tiers */
   --color-ink: #1a1a1e;
-  --color-ink-muted: #5b5b66;
+  --color-ink-muted: #4d4d57;
   --color-ink-faint: #666670;
 
   /* The one filled control */
@@ -98,7 +98,7 @@
   --label-width: 7rem;
   --label-width-narrow: 6rem;
   --chip-max: 10rem;
-  --slot-tag: 4.5rem;
+  --slot-tag: 6.25rem;
   --slot-act: 15.5rem;
   --slot-pr: 2.75rem;
 
@@ -118,6 +118,8 @@
   /* Motion: feedback only */
   --duration-fast: 90ms;
   --duration-base: 160ms;
+  --duration-spin: 800ms;
+  --duration-pulse: 1600ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 

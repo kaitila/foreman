@@ -209,6 +209,8 @@ function statusIcon(s) {
   }
   return g;
 }
+const RISK = { auto: "Auto", review: "Review risk", human: "Human only" };
+const riskTag = (r) => { const e = el("span", "tag " + r, RISK[r] || r); e.title = "Risk: " + r; return e; };
 function avatar(name) {
   const a = el("span", "avatar" + (name ? "" : " none"), name ? name.replace(/^[^a-z0-9]+/i, "").charAt(0) || "?" : "");
   a.title = name ? name : "Unassigned";
@@ -279,8 +281,11 @@ function setHash(h) { if (location.hash !== h) history.replaceState(null, "", lo
 const scopeHash = () => (view === "all" || !multi ? "" : "#p=" + encodeURIComponent(view));
 
 // Approve, merge and run queue all wait out the same undo window before anything is sent.
+// A task already waiting out an undo window or in a request (on its own or in Approve all) isn't scheduled twice.
+const inFlight = (k) => [...pending.values(), ...busy.values()].some((p) => p.ids && p.ids.includes(k));
 function schedule(key, kind, ids) {
   if (!canAct() || pending.has(key) || busy.has(key)) return;
+  if (kind !== "queue" && ids.some(inFlight)) return;
   results.delete(key);
   const until = Date.now() + UNDO_MS;
   pending.set(key, { kind, ids, until, timer: setTimeout(() => fire(key), UNDO_MS) });
@@ -302,7 +307,7 @@ async function fire(key) {
   const p = pending.get(key);
   if (!p) return;
   pending.delete(key);
-  busy.set(key, { kind: p.kind, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? "Merging: waiting for checks to settle, then merging…" : "Running the queue: one pass, at most one merge…" });
+  busy.set(key, { kind: p.kind, ids: p.ids, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? "Merging: waiting for checks to settle, then merging…" : "Running the queue: one pass, at most one merge…" });
   render();
   let out;
   if (p.kind === "approve") {
@@ -476,7 +481,7 @@ function row(t, now) {
   const sub = el("div", "sub");
   sub.append(el("span", "", t.id));
   if (multi && view === "all") sub.append(el("span", "", t.project));
-  if (t.risk !== "auto") sub.append(el("span", "tag " + t.risk, t.risk));
+  if (t.risk !== "auto") sub.append(riskTag(t.risk));
   if (t.assignee) sub.append(el("span", "", t.assignee));
   sub.append(when(t, now));
   main.append(title, sub);
@@ -485,7 +490,7 @@ function row(t, now) {
   const slot = (cls, ...kids) => { const s = el("span", "slot " + cls); s.append(...kids.filter(Boolean)); side.append(s); };
   slot("s-live", t.live ? liveDot() : null);
   if (multi && view === "all") slot("s-proj", el("span", "proj", t.project));
-  slot("s-tag", t.risk !== "auto" ? el("span", "tag " + t.risk, t.risk) : null);
+  slot("s-tag", t.risk !== "auto" ? riskTag(t.risk) : null);
   const act = actionArea(t, true);
   slot("s-act", act);
   // An approved task's Merge button already names its PR.
@@ -502,7 +507,7 @@ function card(t, now) {
   if (multi && view === "all") top.append(el("span", "proj", t.project));
   top.append(when(t, now));
   const meta = el("div", "card-meta");
-  if (t.risk !== "auto") meta.append(el("span", "tag " + t.risk, t.risk));
+  if (t.risk !== "auto") meta.append(riskTag(t.risk));
   const pr = t.status === "approved" && prNumber(t.pr) ? null : prLink(t);
   if (pr) meta.append(pr);
   if (t.live) meta.append(liveDot());
@@ -609,10 +614,25 @@ function renderBoard(box, shown, now, scroll) {
   wrap.scrollLeft = scroll.x;
 }
 
+// Re-renders rebuild the DOM, so remember the focused control by where it sits and focus its replacement.
+function focusKey() {
+  const a = document.activeElement;
+  const host = a && a !== document.body && a.closest && a.closest("#content, #detail");
+  if (!host) return null;
+  const item = a.closest("[data-id], [data-lane]");
+  return { host: host.id, item: item ? (item.dataset.id ? '[data-id="' + CSS.escape(item.dataset.id) + '"]' : '[data-lane="' + CSS.escape(item.dataset.lane) + '"]') : "",
+    self: item === a, sel: a.tagName.toLowerCase() + (a.classList[0] ? "." + CSS.escape(a.classList[0]) : "") };
+}
+function restoreFocus(f) {
+  if (!f || (document.activeElement && document.activeElement !== document.body)) return;
+  const host = document.getElementById(f.host);
+  const scope = host && (f.item ? host.querySelector(f.item) : host);
+  const target = scope && (f.self ? scope : scope.querySelector(f.sel));
+  if (target) target.focus({ preventScroll: true });
+}
 function render() {
   const box = $("#content"), now = Date.now();
-  const a = document.activeElement;
-  const focused = a && box.contains(a) && a.dataset && a.dataset.id ? a.dataset.id : null;
+  const fk = focusKey();
   const b = box.querySelector(".board");
   const scroll = { top: box.scrollTop, x: b ? b.scrollLeft : 0, lanes: new Map([...box.querySelectorAll(".lane")].map((l) => [l.dataset.lane, l.querySelector(".cards").scrollTop])) };
   box.replaceChildren();
@@ -624,14 +644,14 @@ function render() {
     else if (!tasks.length) {
       e.append(el("h2", "", "No tasks yet"), el("p", "", "Add one from the terminal, and it shows up here."));
       const p = el("p"); p.append(el("code", "", 'fm add "What to build" --check "cmd: bun test" --ready')); e.append(p);
-    } else e.append(el("h2", "", "No tasks in " + view), el("p", "", "Press g a for every project."));
+    } else e.append(el("h2", "", "No tasks in " + view), el("p", "", "Pick All projects in the sidebar."));
     box.append(e);
   } else if (mode === "board") renderBoard(box, shown, now, scroll);
   else renderList(box, shown, now);
   box.scrollTop = scroll.top;
   $("#total").textContent = filter ? shown.length + " of " + mine.length : String(mine.length);
-  if (focused) { const c = node(focused); if (c) c.focus({ preventScroll: true }); }
   if (openId) { const t = byKey(openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t, false)].filter(Boolean)); }
+  restoreFocus(fk);
 }
 
 // The sidebar: the two views, then each project, each with what waits for the person there.
@@ -670,11 +690,12 @@ function nav() {
     b.append(icon(value === "all" ? "layers" : "folder"), el("span", "name", name));
     const i = PROJECTS.indexOf(value);
     b.title = value === "all" ? "Every project" : name + (i < 9 ? " (g " + (i + 1) + ")" : "");
-    if (n) { const c = el("span", "count attn", n); c.title = n + " waiting for you"; b.append(c); }
+    if (n) { const d = el("span", "attn-dot"); d.title = n + " waiting for you"; b.append(d); }
+    b.append(el("span", "count", ts.length));
     b.addEventListener("click", () => setView(value));
     return b;
   };
-  box.replaceChildren(el("h2", "nav-label", "Projects"), mk("all", "All projects"), ...PROJECTS.map((n) => mk(n, n)));
+  box.replaceChildren(el("div", "nav-label", "Projects"), mk("all", "All projects"), ...PROJECTS.map((n) => mk(n, n)));
 }
 function setView(value) {
   view = value;
@@ -765,6 +786,8 @@ async function openTask(id) {
     body.append(el("h2", "panel-title", k.title), el("p", "wait", "Loading…"));
     p.replaceChildren(panelBar(k, k.status), body);
     p.hidden = false;
+    $(".app").classList.add("panel-open");
+    clearOfPanel(id);
   }
   let d;
   try { d = await get(proj(k.project) + "/tasks/" + encodeURIComponent(k.id)); }
@@ -786,7 +809,7 @@ async function openTask(id) {
   body.append(el("h2", "panel-title", t.title));
   const dl = el("dl", "props");
   prop(dl, "Status", statusIcon(t.status), el("span", "", NAMES[t.status]));
-  prop(dl, "Risk", el("span", "tag " + t.risk, t.risk));
+  prop(dl, "Risk", riskTag(t.risk));
   prop(dl, "Assignee", avatar(t.assignee), el("span", "", t.assignee || "Unassigned"));
   if (t.branch) prop(dl, "Branch", el("span", "mono", t.branch));
   const u = t.pr && safeUrl(t.pr);
@@ -820,7 +843,7 @@ async function openTask(id) {
     const li = el("li", "check");
     const mark = svgEl("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round",
       class: "v " + (v ? (v.pass ? "pass" : "fail") : "pending"), "aria-label": v ? (v.pass ? "pass" : "fail") : "no verdict yet", role: "img" });
-    mark.append(svgEl(v ? "path" : "circle", v ? { d: v.pass ? PATHS.check : PATHS.close } : { cx: "8", cy: "8", r: "5.5", "stroke-dasharray": "2 2" }));
+    mark.append(svgEl(v ? "path" : "circle", v ? { d: v.pass ? PATHS.check : PATHS.close } : { cx: "8", cy: "8", r: "5.5", "stroke-width": "1.5" }));
     const cb = el("div", "check-body");
     const text = el("div", "check-text");
     if (c.kind === "cmd") text.append(el("code", "", c.text)); else text.textContent = c.text;
@@ -857,8 +880,17 @@ async function openTask(id) {
   }
   hs.append(hl);
   body.append(hs);
+  const fk = focusKey();
   p.replaceChildren(panelBar(k, t.status), body);
   body.scrollTop = keepScroll;
+  restoreFocus(fk);
+}
+// On the board the panel floats over the right of the columns: keep the open card left of it.
+function clearOfPanel(k) {
+  const n = mode === "board" && node(k), p = $("#detail"), b = $("#content .board");
+  if (!n || !b || p.hidden || innerWidth <= 768) return;
+  const over = n.getBoundingClientRect().right - p.getBoundingClientRect().left;
+  if (over > 0) b.scrollBy({ left: over + n.offsetWidth / 4, behavior: "smooth" });
 }
 function closeTask() {
   clearTimeout(liveTimer);
@@ -866,6 +898,7 @@ function closeTask() {
   const p = $("#detail");
   p.hidden = true;
   p.dataset.id = "";
+  $(".app").classList.remove("panel-open");
   setHash(scopeHash());
   if (sel) select(sel, true);
 }
@@ -892,7 +925,11 @@ function help(show) {
 
 // The command palette: every action, view and task, found by typing.
 let palOpen = false, palIdx = 0, palItems = [];
-function current() { return byKey(openId || sel); }
+// The task the keys act on: the open one, else the selection while it's still on screen.
+function current() {
+  if (openId) return byKey(openId);
+  return sel && order().some((t) => t.k === sel) ? byKey(sel) : null;
+}
 function commands(q) {
   const t = current(), out = [];
   const off = canAct() ? null : S.canApprove ? "open the link fm serve printed" : "read-only board";
@@ -917,9 +954,9 @@ function commands(q) {
   out.push({ group: "View", label: "Filter tasks", keys: "/", icon: "search", run: () => $("#filter").focus() });
   out.push({ group: "View", label: "Keyboard shortcuts", keys: "?", icon: "key", run: () => help(true) });
   if (pending.size) out.push({ group: "Sign off", label: "Undo the last approve or merge", keys: "u", icon: "undo", run: undoLast });
-  const v = inView();
+  const v = visible();
   const need = v.filter((x) => x.status === "needs_approval"), ok = v.filter((x) => x.status === "approved");
-  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
+  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (filter ? " that match the filter" : view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
   if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", icon: "check", off, run: () => schedule("queue", "queue", ok.map((x) => x.k)) });
   const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
   const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
@@ -933,6 +970,7 @@ function commands(q) {
 }
 // Bring a task into view (leaving Needs you or a project if it isn't there), select it and open it.
 function goToTask(x) {
+  x = byKey(x.k) || x;
   if (!inView().includes(x)) { inbox = false; if (view !== "all" && view !== x.project) view = "all"; }
   if (filter && !matches(x)) { filter = ""; $("#filter").value = ""; }
   if (mode === "list" && collapsed.has(x.status)) { collapsed.delete(x.status); savePrefs(); }
@@ -1084,7 +1122,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { escape(typing); return; }
   if (typing) {
     // From the filter, Enter or ↓ goes to the first match.
-    if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); e.target.blur(); const v = order(); if (v.length) select(v[0].k, true); }
+    if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); e.target.blur(); const v = order(); if (v.length) { select(v[0].k, true); if (openId && openId !== v[0].k) openTask(v[0].k); } }
     return;
   }
   if (!$("#help").hidden && e.key !== "?") return;
