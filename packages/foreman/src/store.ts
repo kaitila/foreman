@@ -118,4 +118,31 @@ function additive(db: Database) {
     assignee TEXT NOT NULL,
     pid      INTEGER NOT NULL
   )`);
+  // Plans (D0033): ordered steps with a check each, and which step each task is in.
+  // Progress isn't stored: plans.ts works it out from the tasks' statuses.
+  db.exec(`CREATE TABLE IF NOT EXISTS plans (
+    id            TEXT PRIMARY KEY,           -- P-0001
+    num           INTEGER NOT NULL UNIQUE,
+    title         TEXT NOT NULL,
+    goal          TEXT NOT NULL DEFAULT '',   -- markdown
+    status        TEXT NOT NULL CHECK (status IN ('active','cancelled')),
+    cancel_reason TEXT,
+    created_by    TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS plan_steps (
+    plan_id    TEXT NOT NULL REFERENCES plans(id),
+    n          INTEGER NOT NULL,              -- 1, 2, ... in order
+    title      TEXT NOT NULL,
+    check_text TEXT NOT NULL,
+    PRIMARY KEY (plan_id, n)
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS plan_tasks (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id), -- a task is in at most one plan
+    plan_id TEXT NOT NULL REFERENCES plans(id),
+    step    INTEGER NOT NULL,
+    FOREIGN KEY (plan_id, step) REFERENCES plan_steps(plan_id, n)
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS plan_tasks_plan ON plan_tasks(plan_id, step)`);
 }

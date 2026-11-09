@@ -69,6 +69,8 @@ export interface LaunchSpec {
 const READ = ["Read", "Glob", "Grep"];
 const EDIT = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 const fm = (...names: string[]) => names.map((n) => `mcp__foreman__${n}`);
+/** foreman's tools that change plans. */
+const PLAN_WRITES = ["create_plan", "edit_plan", "plan_task"];
 
 /**
  * Tools each role may use unless allowedTools overrides, and tools it must never get.
@@ -80,18 +82,19 @@ export const ROLE_TOOLS: Record<Role, { allowed: string[]; disallowed: string[] 
       ...READ, ...EDIT, "Bash", "Agent", "Skill", "TodoWrite",
       ...fm("list_tasks", "next_tasks", "show_task", "create_task", "claim_task", "heartbeat", "report_progress", "submit_task", "reserve_number", "edit_task"),
     ],
-    disallowed: fm("start_verify", "record_verdict", "mark_merged", "rework_task"),
+    // Plans are the person's and intake's to shape (D0033); a worker files tasks into one with create_task.
+    disallowed: fm("start_verify", "record_verdict", "mark_merged", "rework_task", ...PLAN_WRITES),
   },
   verifier: {
     allowed: [...READ, "Bash", "Skill", "TodoWrite", ...fm("show_task", "list_tasks", "start_verify", "record_verdict", "heartbeat")],
-    disallowed: [...EDIT],
+    disallowed: [...EDIT, ...fm(...PLAN_WRITES)],
   },
   intake: {
     allowed: [...READ, ...fm("list_tasks", "show_task", "create_task")],
     disallowed: [
       ...EDIT, "Bash",
       ...fm("next_tasks", "claim_task", "heartbeat", "report_progress", "submit_task", "start_verify",
-        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task"),
+        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task", ...PLAN_WRITES),
     ],
   },
 };

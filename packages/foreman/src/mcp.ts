@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { type Actor, Foreman, ForemanError, type Status } from "./core";
 import { toMarkdown } from "./export";
+import { planText, Plans } from "./plans";
 
 const STATUSES = [
   "draft", "ready", "claimed", "in_progress", "in_review", "verifying",
@@ -32,6 +33,8 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
       }
     };
   const id = { id: z.string().describe("Task id, e.g. T-0001") };
+  const plans = new Plans(f);
+  const step = z.object({ title: z.string(), check: z.string().describe("What shows the step is done") });
 
   server.registerTool(
     "list_tasks",
@@ -46,7 +49,7 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
   server.registerTool(
     "show_task",
     { description: "One task as markdown: spec, acceptance checks, history.", inputSchema: id },
-    wrap(({ id }: { id: string }) => toMarkdown(f.get(id), f.events(id))),
+    wrap(({ id }: { id: string }) => toMarkdown(f.get(id), f.events(id), plans.placement(id))),
   );
   server.registerTool(
     "create_task",
@@ -66,9 +69,74 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
         blockedBy: z.array(z.string()).optional(),
         discoveredFrom: z.string().optional(),
         ready: z.boolean().optional(),
+        plan: z.string().optional().describe("Plan id (P-0001) to file the task into; needs step"),
+        step: z.number().int().positive().optional().describe("Step number in that plan, from show_plan"),
       },
     },
-    wrap((a: Parameters<Foreman["create"]>[0]) => f.create(opts.draftsOnly ? { ...a, ready: false } : a, me)),
+    wrap(({ plan, step, ...a }: Parameters<Foreman["create"]>[0] & { plan?: string; step?: number }) => {
+      if ((plan === undefined) !== (step === undefined)) throw new ForemanError("invalid", "plan and step go together");
+      const input = opts.draftsOnly ? { ...a, ready: false } : a;
+      return plans.createTask(input, plan ? { plan, step: step! } : null, me);
+    }),
+  );
+  server.registerTool(
+    "list_plans",
+    { description: "Every plan with its progress (steps and tasks done), active first.", inputSchema: {} },
+    wrap(() => plans.list().map(({ steps: _s, goal: _g, ...p }) => p)),
+  );
+  server.registerTool(
+    "show_plan",
+    {
+      description: "One plan: its goal, then each step in order with its check, its state (empty, waiting, in_progress, done) and its tasks.",
+      inputSchema: { id: z.string().describe("Plan id, e.g. P-0001") },
+    },
+    wrap(({ id }: { id: string }) => planText(plans.get(id))),
+  );
+  server.registerTool(
+    "create_plan",
+    {
+      description:
+        "File a plan: ordered steps, each with a check that says it is done. Then file its tasks with create_task plan+step (tasks that can run side by side share a step). Search list_plans first.",
+      inputSchema: { title: z.string(), goal: z.string().optional().describe("Markdown: what the plan is for"), steps: z.array(step).min(1) },
+    },
+    wrap((a: { title: string; goal?: string; steps: { title: string; check: string }[] }) => plans.create(a, me)),
+  );
+  server.registerTool(
+    "edit_plan",
+    {
+      description: "Change a plan: title, goal, add steps at the end, or cancel it with a reason.",
+      inputSchema: {
+        id: z.string(),
+        title: z.string().optional(),
+        goal: z.string().optional(),
+        addSteps: z.array(step).optional(),
+        cancel: z.string().optional().describe("Cancel the plan, with this reason"),
+      },
+    },
+    wrap(({ id, cancel, ...c }: { id: string; cancel?: string; title?: string; goal?: string; addSteps?: { title: string; check: string }[] }) => {
+      const p = Object.values(c).some((v) => v !== undefined) ? plans.edit(id, me, c) : plans.get(id);
+      return cancel !== undefined ? plans.cancel(id, me, cancel) : p;
+    }),
+  );
+  server.registerTool(
+    "plan_task",
+    {
+      description: "Put a task in a plan's step (moving it from any other plan), or take it out of its plan with remove.",
+      inputSchema: {
+        task: z.string(),
+        plan: z.string().optional(),
+        step: z.number().int().positive().optional(),
+        remove: z.boolean().optional(),
+      },
+    },
+    wrap(({ task, plan, step, remove }: { task: string; plan?: string; step?: number; remove?: boolean }) => {
+      if (remove) {
+        if (plan !== undefined || step !== undefined) throw new ForemanError("invalid", "remove takes no plan or step");
+        return plans.remove(task, me);
+      }
+      if (plan === undefined || step === undefined) throw new ForemanError("invalid", "plan_task needs plan and step, or remove");
+      return plans.add(task, plan, step, me);
+    }),
   );
   server.registerTool(
     "claim_task",

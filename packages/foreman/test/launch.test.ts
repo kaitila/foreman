@@ -61,7 +61,8 @@ describe("buildLaunch", () => {
     expect(flag(cmd, "--max-budget-usd")).toBe("0.25");
   });
 
-  const WORKER_FORBIDDEN = ["start_verify", "record_verdict", "mark_merged", "rework_task"].map((n) => `mcp__foreman__${n}`);
+  const PLAN_WRITES = ["create_plan", "edit_plan", "plan_task"].map((n) => `mcp__foreman__${n}`);
+  const WORKER_FORBIDDEN = [...["start_verify", "record_verdict", "mark_merged", "rework_task"].map((n) => `mcp__foreman__${n}`), ...PLAN_WRITES];
   const EDITS = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
   test("worker gets edit tools and foreman tools one by one, never verify/merge/rework", () => {
@@ -83,7 +84,7 @@ describe("buildLaunch", () => {
   test("verifier never gets edit tools, even when the override asks", () => {
     const { cmd } = buildLaunch(base({ role: "verifier", allowedTools: ["Read", ...EDITS, "Bash"] }));
     expect(list(cmd, "--allowedTools")).toEqual(["Read", "Bash"]);
-    expect(list(cmd, "--disallowedTools")).toEqual(EDITS);
+    expect(list(cmd, "--disallowedTools")).toEqual([...EDITS, ...PLAN_WRITES]);
 
     const def = buildLaunch(base({ role: "verifier" })).cmd;
     const allowed = list(def, "--allowedTools");
@@ -168,6 +169,7 @@ describe("role deny rules from foreman.json (T-0055, D0019)", () => {
     const denied = list(cmd, "--disallowedTools");
     expect(denied).toEqual([
       "mcp__foreman__start_verify", "mcp__foreman__record_verdict", "mcp__foreman__mark_merged", "mcp__foreman__rework_task",
+      "mcp__foreman__create_plan", "mcp__foreman__edit_plan", "mcp__foreman__plan_task",
       "Bash(gh pr merge *)", "Bash(ssh *)", "Bash(gh release *)",
     ]);
     // Another role's rules stay out; Bash itself stays allowed (deny beats allow for the rest).
@@ -184,8 +186,17 @@ describe("role deny rules from foreman.json (T-0055, D0019)", () => {
     expect(i).toEqual(expect.arrayContaining(["Bash(ssh *)", "Read(data/**)"]));
   });
 
+  test("no dispatched role may change a plan; a worker still files tasks into one with create_task", () => {
+    const d = fresh("plans");
+    for (const role of ["worker", "verifier", "intake"] as const) {
+      const { cmd } = buildLaunch(base({ role, taskId: role === "intake" ? undefined : "T-1", policyRoot: d }));
+      expect(list(cmd, "--disallowedTools")).toEqual(expect.arrayContaining(["mcp__foreman__create_plan", "mcp__foreman__edit_plan", "mcp__foreman__plan_task"]));
+    }
+    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: d })).cmd, "--allowedTools")).toContain("mcp__foreman__create_task");
+  });
+
   test("no roles block: the role defaults only; a malformed one refuses to build the launch", () => {
-    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: fresh("none") })).cmd, "--disallowedTools")).toHaveLength(4);
+    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: fresh("none") })).cmd, "--disallowedTools")).toHaveLength(7);
     expect(() => buildLaunch(base({ role: "worker", policyRoot: withRoles({ workers: {} }) }))).toThrow("unknown role");
   });
 });
