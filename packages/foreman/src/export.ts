@@ -2,7 +2,7 @@
 // the file readable by people and parseable by tools (the Backlog.md idea, D0002).
 import type { Event, Task } from "./core";
 
-export function toMarkdown(t: Task, events: Event[]): string {
+export function toMarkdown(t: Task, events: Event[], plan?: { plan: string; step: number } | null): string {
   const verdict = [...events].reverse().find((e) => e.type === "verified" || e.type === "verify_failed");
   const results = (verdict?.data.results as { check: string; pass: boolean; evidence: string }[]) ?? [];
   const summary = [...events].reverse().find((e) => e.type === "submitted")?.data.summary as
@@ -15,6 +15,7 @@ export function toMarkdown(t: Task, events: Event[]): string {
     `status: ${t.status}`,
     `risk: ${t.risk}`,
     ...(t.parent ? [`parent: ${t.parent}`] : []),
+    ...(plan ? [`plan: ${plan.plan}`, `plan_step: ${plan.step}`] : []),
     ...(t.blockedBy.length ? [`blocked_by: [${t.blockedBy.join(", ")}]`] : []),
     ...(t.discoveredFrom ? [`discovered_from: ${t.discoveredFrom}`] : []),
     ...(t.paths.length ? [`paths: [${t.paths.map((p) => JSON.stringify(p)).join(", ")}]`] : []),
