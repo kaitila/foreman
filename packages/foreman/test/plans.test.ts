@@ -129,7 +129,7 @@ describe("plans", () => {
     const t = taskIn(f, "ready");
     plans.add(t, p1.id, 2, ada);
     expect(plans.placement(t)).toEqual({ plan: p1.id, step: 2 });
-    plans.add(t, p2.id, 1, worker);
+    plans.add(t, p2.id, 1, { name: "mcp-1", kind: "agent" });
     expect(plans.placement(t)).toEqual({ plan: p2.id, step: 1 });
     expect(plans.get(p1.id).steps.flatMap((s) => s.tasks)).toEqual([]);
     expect(plans.remove(t, ada)).toEqual({ plan: p2.id, step: 1 });
@@ -137,7 +137,7 @@ describe("plans", () => {
     expect(code(() => plans.remove(t, ada))).toBe("invalid");
     const types = f.events(t).map((e) => e.type);
     expect(types.filter((x) => x === "planned" || x === "unplanned")).toEqual(["planned", "planned", "unplanned"]);
-    expect(f.events(t).find((e) => e.type === "planned" && e.actor === "worker-1")?.data).toMatchObject({
+    expect(f.events(t).find((e) => e.type === "planned" && e.actor === "mcp-1")?.data).toMatchObject({
       plan: p2.id,
       step: 1,
       from: { plan: p1.id, step: 2 },
@@ -177,6 +177,30 @@ describe("plans", () => {
       ["plan_edited", p.id],
       ["plan_cancelled", p.id],
     ]);
+  });
+
+  test("dispatched sessions can't shape plans from any door, but a worker can file a task into one", () => {
+    const { f, plans } = setup();
+    const p = plans.create(twoSteps, ada);
+    const t = taskIn(f, "ready");
+    for (const name of ["worker-T-0001", "verifier-T-0001", "intake-abc"]) {
+      const agent: Actor = { name, kind: "agent" };
+      expect(code(() => plans.create(twoSteps, agent))).toBe("not_allowed");
+      expect(code(() => plans.edit(p.id, agent, { title: "x" }))).toBe("not_allowed");
+      expect(code(() => plans.add(t, p.id, 1, agent))).toBe("not_allowed");
+      expect(code(() => plans.cancel(p.id, agent, "why"))).toBe("not_allowed");
+    }
+    plans.add(t, p.id, 1, ada);
+    expect(code(() => plans.remove(t, { name: "worker-T-0001", kind: "agent" }))).toBe("not_allowed");
+    // A person's own session (mcp-…) and a person may.
+    const own: Actor = { name: "mcp-abc", kind: "agent" };
+    expect(plans.edit(p.id, own, { goal: "g" }).goal).toBe("g");
+    expect(plans.remove(t, own)).toEqual({ plan: p.id, step: 1 });
+    // A person named like a role is still a person.
+    expect(plans.edit(p.id, { name: "worker-bee", kind: "human" }, { title: "Mine" }).title).toBe("Mine");
+    const filed = plans.createTask({ title: "found on the way", acceptance: ["cmd: true"] }, { plan: p.id, step: 2 }, worker);
+    expect(plans.placement(filed.id)).toEqual({ plan: p.id, step: 2 });
+    expect(f.events(filed.id).find((e) => e.type === "planned")?.actor).toBe("worker-1");
   });
 
   test("list puts active plans first; text forms show steps, checks, states and tasks", () => {

@@ -129,6 +129,9 @@ test("plans over MCP: create, file a task into a step, show progress, move and c
     expect(edited.steps.map((s: { state: string }) => s.state)).toEqual(["empty", "waiting", "empty"]);
     expect(JSON.parse((await call("list_plans")).text)[0]).toMatchObject({ id: "P-0001", progress: { steps: 3, tasks: 1 } });
     expect(JSON.parse((await call("plan_task", { task: t.id, remove: true })).text)).toEqual({ plan: "P-0001", step: 2 });
+    // A blank cancel reason refuses the whole call: the title doesn't change on its own.
+    expect((await call("edit_plan", { id: "P-0001", title: "Renamed", cancel: "  " })).text).toStartWith("invalid:");
+    expect(JSON.parse((await call("show_plan", { id: "P-0001" })).text)).toContain("Publish");
     expect(JSON.parse((await call("edit_plan", { id: "P-0001", cancel: "not now" })).text).state).toBe("cancelled");
   } finally {
     await client.close();

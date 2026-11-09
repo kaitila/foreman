@@ -2,6 +2,7 @@
 // Progress is never stored: it comes from the tasks' statuses every time it's read.
 // The tables are additive (store.ts), so an older foreman on the same database ignores them.
 import { type Actor, type CreateInput, type Foreman, ForemanError, type Status, type Task } from "./core";
+import { roleOf } from "./roles";
 
 export type StepState = "empty" | "waiting" | "in_progress" | "done";
 export type PlanState = "active" | "done" | "cancelled";
@@ -190,7 +191,17 @@ export class Plans {
 
   // ---- writing ----
 
+  /**
+   * Plans are shaped by people and their own sessions, not by dispatched ones (D0033). The CLI and
+   * MCP both come through here, so a worker can't get round its tool list with Bash.
+   */
+  private mayShape(actor: Actor, verb: string) {
+    const role = actor.kind === "agent" ? roleOf(actor.name) : null;
+    if (role) throw new ForemanError("not_allowed", `a dispatched ${role} session can't ${verb} a plan; file the work with create_task, or tell the person`);
+  }
+
   create(input: PlanCreateInput, actor: Actor): Plan {
+    this.mayShape(actor, "create");
     if (!input.title?.trim()) throw new ForemanError("invalid", "a plan needs a title");
     if (!input.steps?.length) throw new ForemanError("invalid", "a plan needs at least one step");
     this.checkSteps(input.steps);
@@ -212,6 +223,7 @@ export class Plans {
   }
 
   edit(id: string, actor: Actor, c: PlanEditInput): Plan {
+    this.mayShape(actor, "edit");
     if (c.title !== undefined && !c.title.trim()) throw new ForemanError("invalid", "a plan needs a title");
     if (c.addSteps?.length) this.checkSteps(c.addSteps);
     this.tx(() => {
@@ -230,6 +242,7 @@ export class Plans {
   }
 
   cancel(id: string, actor: Actor, reason: string): Plan {
+    this.mayShape(actor, "cancel");
     if (!reason?.trim()) throw new ForemanError("invalid", "cancelling a plan needs a reason");
     this.tx(() => {
       this.open(id, "cancel");
@@ -242,6 +255,12 @@ export class Plans {
 
   /** Put a task in a plan's step, moving it if it was in another. */
   add(taskId: string, planId: string, step: number, actor: Actor): Plan {
+    this.mayShape(actor, "move tasks in");
+    this.place(taskId, planId, step, actor);
+    return this.get(planId);
+  }
+
+  private place(taskId: string, planId: string, step: number, actor: Actor) {
     this.tx(() => {
       this.f.get(taskId);
       this.open(planId, "add tasks to");
@@ -258,11 +277,11 @@ export class Plans {
       this.touch(planId);
       this.event(taskId, actor, "planned", { plan: planId, step, ...(was ? { from: was } : {}) });
     });
-    return this.get(planId);
   }
 
   /** Take a task out of its plan. */
   remove(taskId: string, actor: Actor): Placement {
+    this.mayShape(actor, "take a task out of");
     return this.tx(() => {
       this.f.get(taskId);
       const was = this.placement(taskId);
@@ -279,7 +298,7 @@ export class Plans {
     if (!placement) return this.f.create(input, actor);
     return this.tx(() => {
       const t = this.f.create(input, actor);
-      this.add(t.id, placement.plan, placement.step, actor);
+      this.place(t.id, placement.plan, placement.step, actor); // any filer, a worker too
       return this.f.get(t.id);
     });
   }

@@ -90,7 +90,7 @@ fm plan cancel P-0001 --reason "..."
 - **Progress is never stored.** It comes from the tasks' statuses each time a plan is read. A step is `empty` with no tasks (or only cancelled ones), `waiting` while its tasks are draft or ready, `in_progress` once one is claimed or further, and `done` when every task that isn't cancelled is done. The plan is done when every step is. Adding a step reopens it. Cancelling is the one state set by hand.
 - **History:** `plan_created`, `plan_edited` and `plan_cancelled` events, and `planned` and `unplanned` on the task itself. `fm show` and `show_task` name a task's plan and step.
 - **MCP:** `create_plan`, `list_plans`, `show_plan`, `edit_plan` (title, goal, add steps, cancel), `plan_task` (add to a step, or `remove`), and `create_task` takes `plan` and `step`. A bad plan or step refuses the whole `create_task`: nothing is filed.
-- **Who:** anyone with foreman's tools may shape a plan. Dispatched workers, verifiers and intake sessions get `create_plan`, `edit_plan` and `plan_task` in `--disallowedTools`; a worker can still file a task it found into a plan with `create_task`.
+- **Who:** a person, or a session they run, shapes plans. A dispatched worker, verifier or intake session (an agent whose actor is `worker-…`, `verifier-…` or `intake-…`) is refused `not_allowed` by the plans core, from the CLI as from MCP, and gets `create_plan`, `edit_plan` and `plan_task` in `--disallowedTools` too. It can still file a task it found into a plan with `create_task --plan --step`.
 - **Storage:** three tables, `plans`, `plan_steps` and `plan_tasks`, added the additive way, so the schema version doesn't move and an older foreman on the same database ignores them.
 
 ## Merge queue and janitor

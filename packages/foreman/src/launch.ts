@@ -82,7 +82,7 @@ export const ROLE_TOOLS: Record<Role, { allowed: string[]; disallowed: string[] 
       ...READ, ...EDIT, "Bash", "Agent", "Skill", "TodoWrite",
       ...fm("list_tasks", "next_tasks", "show_task", "create_task", "claim_task", "heartbeat", "report_progress", "submit_task", "reserve_number", "edit_task"),
     ],
-    // Plans are the person's and intake's to shape (D0033); a worker files tasks into one with create_task.
+    // Dispatched sessions don't shape plans (D0033; plans.ts refuses them too); a worker files tasks into one with create_task.
     disallowed: fm("start_verify", "record_verdict", "mark_merged", "rework_task", ...PLAN_WRITES),
   },
   verifier: {

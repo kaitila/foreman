@@ -114,6 +114,8 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
       },
     },
     wrap(({ id, cancel, ...c }: { id: string; cancel?: string; title?: string; goal?: string; addSteps?: { title: string; check: string }[] }) => {
+      // Refuse a blank reason before any write, so edits never land without the cancel.
+      if (cancel !== undefined && !cancel.trim()) throw new ForemanError("invalid", "cancelling a plan needs a reason");
       const p = Object.values(c).some((v) => v !== undefined) ? plans.edit(id, me, c) : plans.get(id);
       return cancel !== undefined ? plans.cancel(id, me, cancel) : p;
     }),
