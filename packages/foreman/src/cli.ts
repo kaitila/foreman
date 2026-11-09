@@ -339,6 +339,13 @@ export async function main(argv: string[]): Promise<number | null> {
       if (port !== 0 && (e as { code?: string }).code === "EADDRINUSE") {
         const other = await fetch(`${url}/api/projects`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json() as Promise<{ board?: string }>, () => null);
         if (other?.board === "foreman") {
+          if (o.queue) {
+            // The person asked for the queue: don't let the other board's link hide that it isn't running.
+            throw new ForemanError(
+              "invalid",
+              `a foreman board is already running on port ${port} (${url}), so the merge queue did not start: stop that board and run this again, pass --port for another board, or run fm merge-queue`,
+            );
+          }
           console.log(`a foreman board is already running on port ${port}: ${url}`);
           console.log("use its link (the token was shown in the terminal that started it), or pass --port for another board");
           return 0;
