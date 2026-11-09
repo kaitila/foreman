@@ -34,11 +34,13 @@ draft → ready → claimed → in_progress → in_review → verifying → appr
 
 ## Use
 
-A project made with `create` or `init` already has it: `bun node_modules/@foreman-kit/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
+`fm init` sets up foreman in any git repository, and `fm create` makes a new project with it ([KIT.md](KIT.md)). Either way the project runs the person's own `fm`: the `foreman` MCP server in `.mcp.json` is `fm mcp`, and the project doesn't depend on foreman.
+- **The version a project needs:** `foreman.json`'s `foreman` range (`">=0.2.0"`). An `fm` outside it refuses to open that repo's database and names the upgrade, `bun add -g @foreman-kit/foreman@latest`. A repo without the range, or without `foreman.json`, is accepted.
+- **On a board of several projects** (`fm serve`), a project that needs a newer `fm` is left off with a note, and the rest open.
 
 In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
-`fm` also runs the project commands in [KIT.md](KIT.md), from the checkout or an installed package ([D0025](../../docs/decisions/D0025-one-global-fm.md)): `fm create <dir>`, `fm init [dir]`, `fm sync [dir] [--dry-run]`. `fm sync --all` syncs every project fm has seen, listed in `~/.config/foreman/projects.json` (`$FOREMAN_PROJECTS_FILE` moves it; the same registry as `fm projects`), and prints one block per project. `fm setup` checks the machine: bun, git, gh (installed, logged in), claude (installed, signed in, time left on the token), fm on the PATH (it links it unless `--no-link`) and whether Claude Code trusts the current repo. Each missing item comes with the command that fixes it, `--json` is for scripts, and the exit code is 1 when something is missing. `fm help` groups the commands: Projects, Tasks, Agents, Board.
+`fm` also runs the project commands in [KIT.md](KIT.md), from the checkout or an installed package ([D0025](../../docs/decisions/D0025-one-global-fm.md)): `fm create <dir>`, `fm init [dir] [--with p,q | --all]`, `fm sync [dir] [--dry-run]`. `fm sync --all` syncs every project fm has seen, listed in `~/.config/foreman/projects.json` (`$FOREMAN_PROJECTS_FILE` moves it; the same registry as `fm projects`), and prints one block per project. `fm setup` checks the machine: bun, git, gh (installed, logged in), claude (installed, signed in, time left on the token), fm on the PATH (it links it unless `--no-link`) and whether Claude Code trusts the current repo. Each missing item comes with the command that fixes it, `--json` is for scripts, and the exit code is 1 when something is missing. `fm help` groups the commands: Projects, Tasks, Agents, Board.
 
 ```sh
 fm help
