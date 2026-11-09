@@ -104,8 +104,9 @@ Housekeeping
                                 local web board on 127.0.0.1 for every project on this machine (or one);
                                 approve and merge from the link it prints; --queue also runs the
                                 merge queue for each project shown, a pass every --interval seconds
-  projects [list|add <dir>|rm <name|dir>|prune]
-                                the repos the board shows (~/.config/foreman/projects.json)
+  projects [list|add <dir>|rm <name|dir>|prune|color <name|dir> <colour|none>]
+                                the repos the board shows, and their colour labels
+                                (~/.config/foreman/projects.json)
 
 Who you are: FOREMAN_ACTOR names you; CLAUDE_CODE_CHILD_SESSION=1 (a command Claude Code runs) or
 FOREMAN_AGENT=1 marks you as an agent.
@@ -276,11 +277,19 @@ export async function main(argv: string[]): Promise<number | null> {
     } else if (sub === "prune") {
       const gone = reg.pruneProjects();
       console.log(gone.length ? `removed ${gone.length} missing:\n${gone.join("\n")}` : "nothing to prune");
+    } else if (sub === "color" || sub === "colour") {
+      const color = args[2];
+      if (!target || !color) throw new ForemanError("invalid", `fm projects color <name|dir> <${reg.LABEL_COLORS.join("|")}|none>`);
+      if (color !== "none" && !reg.isLabelColor(color)) throw new ForemanError("invalid", `unknown colour "${color}": use ${reg.LABEL_COLORS.join(", ")} or none`);
+      const p = reg.findProject(target);
+      reg.setColor(p.dir, color === "none" ? null : color);
+      console.log(color === "none" ? `${p.name}: no colour label` : `${p.name}: ${color}`);
     } else if (sub === undefined || sub === "list") {
-      const ps = reg.listProjects();
-      const text = ps.length ? ps.map((p) => `${p.name.padEnd(20)} ${p.dir}${"error" in reg.projectRoot(p.dir) ? "  (missing: no repo or database)" : ""}`).join("\n") : "no projects yet: run fm in a repo, or fm projects add <dir>";
+      const colors = reg.readColors();
+      const ps = reg.listProjects().map((p) => ({ ...p, color: colors[p.dir] ?? null }));
+      const text = ps.length ? ps.map((p) => `${p.name.padEnd(20)} ${(p.color ?? "-").padEnd(7)} ${p.dir}${"error" in reg.projectRoot(p.dir) ? "  (missing: no repo or database)" : ""}`).join("\n") : "no projects yet: run fm in a repo, or fm projects add <dir>";
       console.log(o.json ? JSON.stringify(ps, null, 2) : text);
-    } else throw new ForemanError("invalid", `fm projects [list | add <dir> | rm <name|dir> | prune], got "${sub}"`);
+    } else throw new ForemanError("invalid", `fm projects [list | add <dir> | rm <name|dir> | prune | color <name|dir> <colour|none>], got "${sub}"`);
     return 0;
   }
   if (cmd === "serve") {

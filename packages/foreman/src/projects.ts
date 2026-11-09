@@ -2,7 +2,8 @@
 // to show every project on this machine. Local only: $FOREMAN_PROJECTS_FILE, else
 // $XDG_CONFIG_HOME/foreman/projects.json, else ~/.config/foreman/projects.json.
 // A registry entry is a directory and nothing more: the board opens its database and runs gh
-// there, and never serves a file from it.
+// there, and never serves a file from it. Next to the list, `colors` maps a directory to the
+// person's colour label for it (T-0089): one of LABEL_COLORS, shown on the board.
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -18,6 +19,11 @@ export function registryPath(env: Record<string, string | undefined> = process.e
   return join(base, "foreman", "projects.json");
 }
 
+/** The colour labels a project can carry; the board draws each from its own token. */
+export const LABEL_COLORS = ["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"] as const;
+export type LabelColor = (typeof LABEL_COLORS)[number];
+export const isLabelColor = (c: unknown): c is LabelColor => typeof c === "string" && (LABEL_COLORS as readonly string[]).includes(c);
+
 export interface Project {
   /** Unique within a list: the repo's folder name, with -2, -3 on a clash. */
   name: string;
@@ -25,21 +31,56 @@ export interface Project {
   dir: string;
 }
 
-/** The registered directories, in the order they were added. A missing or damaged file is empty. */
-export function readRegistry(file = registryPath()): string[] {
+function readFile(file: string): { projects?: unknown; colors?: unknown } {
   try {
-    const j = JSON.parse(readFileSync(file, "utf8")) as { projects?: unknown };
-    return Array.isArray(j.projects) ? j.projects.filter((d): d is string => typeof d === "string") : [];
+    const j = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    return j && typeof j === "object" ? (j as { projects?: unknown; colors?: unknown }) : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
-function writeRegistry(dirs: string[], file: string) {
+/** The registered directories, in the order they were added. A missing or damaged file is empty. */
+export function readRegistry(file = registryPath()): string[] {
+  const j = readFile(file);
+  return Array.isArray(j.projects) ? j.projects.filter((d): d is string => typeof d === "string") : [];
+}
+
+/** Each directory's colour label. Unknown colours and malformed entries are left out. */
+export function readColors(file = registryPath()): Record<string, LabelColor> {
+  const c = readFile(file).colors;
+  const out: Record<string, LabelColor> = {};
+  if (c && typeof c === "object") for (const [dir, v] of Object.entries(c)) if (isLabelColor(v)) out[dir] = v;
+  return out;
+}
+
+/** Writes the list, keeping the colour of every directory still on it. */
+function writeRegistry(dirs: string[], file: string, colors = readColors(file)) {
   mkdirSync(dirname(file), { recursive: true });
+  const kept: Record<string, LabelColor> = {};
+  for (const d of dirs) if (colors[d]) kept[d] = colors[d];
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ projects: dirs }, null, 2) + "\n");
+  writeFileSync(tmp, JSON.stringify(Object.keys(kept).length ? { projects: dirs, colors: kept } : { projects: dirs }, null, 2) + "\n");
   renameSync(tmp, file);
+}
+
+/**
+ * Sets (or with null clears) the colour label of a registered directory. A directory that isn't
+ * registered yet is added, so a board showing an unregistered repo can still label it.
+ */
+export function setColor(dir: string, color: LabelColor | null, file = registryPath()): void {
+  const dirs = readRegistry(file);
+  const colors = readColors(file);
+  if (color) colors[dir] = color;
+  else delete colors[dir];
+  writeRegistry(dirs.includes(dir) ? dirs : [...dirs, dir], file, colors);
+}
+
+/** Finds a registered project by name or directory. */
+export function findProject(nameOrDir: string, file = registryPath()): Project {
+  const hit = listProjects(file).find((p) => p.name === nameOrDir || p.dir === resolve(nameOrDir));
+  if (!hit) throw new ForemanError("not_found", `no registered project "${nameOrDir}" (fm projects lists them)`);
+  return hit;
 }
 
 /** The repo root for `dir` if it is a git repo with a .foreman database; otherwise why not. */

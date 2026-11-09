@@ -10,6 +10,7 @@ import { defaultRun, GITHUB_PR } from "../policy";
 import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
 import { pageHtml } from "./page";
 import { hasLiveSession, recentActivity, taskSessions } from "../activity";
+import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
 
 export const LANES: Status[] = [
   "draft",
@@ -54,6 +55,8 @@ export interface BoardOptions {
    * Run the merge queue too (`fm serve --queue`): a pass for each project now, then every
    * `intervalMs`. A project whose pass is still running (a click, or the last tick) is skipped.
    */
+  /** Where each project's colour label is kept (default: the person's project registry). Tests fake it. */
+  labels?: { get(dir: string): LabelColor | null; set(dir: string, color: LabelColor | null): void };
   autoQueue?: {
     actor: Actor;
     intervalMs: number;
@@ -119,6 +122,8 @@ interface Ctx {
   name: string;
   f: Foreman;
   cwd: string;
+  /** The directory its colour label is keyed by. */
+  dir: string;
   prCache: Map<string, { at: number; body: unknown }>;
   passing: boolean;
 }
@@ -131,6 +136,7 @@ export function startBoard(opts: BoardOptions): Board {
     name: p.name,
     f: p.foreman,
     cwd: p.dir ?? opts.queue?.cwd ?? p.foreman.root ?? process.cwd(),
+    dir: p.dir ?? p.foreman.root ?? process.cwd(),
     prCache: new Map(),
     passing: false,
   }));
@@ -160,7 +166,9 @@ export function startBoard(opts: BoardOptions): Board {
     });
   const fail = (status: number, error: string, message: string) => json({ error, message }, status);
 
+  const labels = opts.labels ?? { get: (dir: string) => readColors()[dir] ?? null, set: (dir: string, c: LabelColor | null) => setColor(dir, c) };
   const state = (c: Ctx) => ({
+    color: labels.get(c.dir),
     lanes: LANES,
     tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id) })),
     lastEvent: c.f.events().at(-1)?.id ?? 0,
@@ -170,6 +178,7 @@ export function startBoard(opts: BoardOptions): Board {
     const ts = c.f.list();
     return {
       name: c.name,
+      color: labels.get(c.dir),
       waiting: ts.filter((t) => t.status === "needs_approval").length,
       toMerge: ts.filter((t) => t.status === "approved").length,
       total: ts.length,
@@ -252,7 +261,7 @@ export function startBoard(opts: BoardOptions): Board {
       let path = url.pathname;
       try {
         if (path === "/") {
-          if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
+          if (req.method !== "GET" && req.method !== "HEAD") return fail(405, "method_not_allowed", "the board is read-only, except approve, merge, run queue and colour labels");
           const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
           const initial = {
             lanes: LANES,
@@ -306,6 +315,16 @@ export function startBoard(opts: BoardOptions): Board {
         }
         const w = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/(approve|merge)$/.exec(path);
         const runQueue = path === "/api/queue/run";
+        // A colour label for this project (T-0089): a write like the others, behind the same gate.
+        const label = /^\/api\/color\/([a-z]+)$/.exec(path);
+        if (req.method === "POST" && label) {
+          const no = refuse(req);
+          if (no) return no;
+          const c = label[1]!;
+          if (c !== "none" && !isLabelColor(c)) return fail(400, "invalid", `unknown colour "${c}"`);
+          labels.set(ctx.dir, c === "none" ? null : c);
+          return json({ name: ctx.name, color: labels.get(ctx.dir) });
+        }
         if (req.method === "POST" && (w || runQueue)) {
           const no = refuse(req);
           if (no) return no;
@@ -319,7 +338,7 @@ export function startBoard(opts: BoardOptions): Board {
           }
           return json({ entries: await pass(ctx, opts.approver!) });
         }
-        return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
+        return fail(405, "method_not_allowed", "the board is read-only, except approve, merge, run queue and colour labels");
       } catch (e) {
         if (e instanceof ForemanError) return fail(e.code === "not_found" ? 404 : 409, e.code, e.message);
         return fail(500, "error", "internal error");
