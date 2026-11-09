@@ -1,4 +1,4 @@
-# meta-repo — revised plan: open-source, agent-native project starter
+# foreman — revised plan: open-source, agent-native project starter
 
 ## Context
 
@@ -33,7 +33,7 @@ This is close to what Beads converged on (a DB plus a git-tracked export). R5.1 
 ## Target architecture
 
 ```
-meta-repo/                          (MIT, public)
+foreman/                            (MIT, public)
   packages/
     foreman/        task layer: SQLite store + CLI + MCP server + dispatcher + local web UI
     docs-check/     drift checker with pluggable "registries" (env, CLI, routes); decisions + links + paths

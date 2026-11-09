@@ -34,7 +34,7 @@ draft → ready → claimed → in_progress → in_review → verifying → appr
 
 ## Use
 
-A project made with `create` or `init` already has it: `bun node_modules/@meta-repo/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
+A project made with `create` or `init` already has it: `bun node_modules/@foreman-kit/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
 
 In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
@@ -89,7 +89,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **Janitor** (`janitor`):
   - reclaims expired claims;
   - for done and cancelled tasks, removes the recorded worktree if it is a clean git worktree inside this repo. One with uncommitted changes is kept and reported;
-  - releases that worktree's test-kit ports, if `@meta-repo/test-kit` is installed;
+  - releases that worktree's test-kit ports, if `@foreman-kit/test-kit` is installed;
   - deletes the task's local branch only if it is already in `main` or `origin/main`;
   - lists tasks in `claimed`, `in_progress`, `in_review` or `verifying` for longer than `--stuck-hours` since they entered that state.
 
@@ -234,7 +234,7 @@ What must hold:
 `fm dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
 
 **Watching the sessions.** Workers and verifiers run as Claude Code background sessions ([D0022](../../docs/decisions/D0022-background-sessions.md)), so the person watches them with Claude Code's own commands:
-- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `meta-repo T-0042 worker`);
+- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `foreman T-0042 worker`);
 - `claude attach <name or id>` opens one in the terminal, to watch it or answer it;
 - `claude logs <id>` prints its recent output; `claude stop <id>` stops it;
 - `claude --resume <session id>` continues one after foreman has stopped it.

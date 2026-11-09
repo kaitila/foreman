@@ -1,6 +1,6 @@
 // Preloaded before every test file (bunfig.toml).
 import { setDefaultTimeout } from "bun:test";
-import { COMMON_CREDENTIALS, slot, stripCredentials } from "@meta-repo/test-kit";
+import { COMMON_CREDENTIALS, slot, stripCredentials } from "@foreman-kit/test-kit";
 
 // Bun 1.3.5 ignores bunfig's test timeout; database tests need more than the 5 s default.
 setDefaultTimeout(15_000);

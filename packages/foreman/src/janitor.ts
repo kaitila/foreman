@@ -15,7 +15,7 @@ export interface JanitorOptions {
   now?: () => number;
   /** Report only: reclaim, remove and delete nothing. */
   dryRun?: boolean;
-  /** Frees a worktree's test-kit ports (default: @meta-repo/test-kit's releasePorts, if installed). */
+  /** Frees a worktree's test-kit ports (default: @foreman-kit/test-kit's releasePorts, if installed). */
   releasePorts?: (worktree: string) => Promise<boolean>;
 }
 
@@ -48,7 +48,7 @@ export function enteredStatusAt(t: Task, events: Event[]): number {
 }
 
 async function testKitRelease(worktree: string): Promise<boolean> {
-  const spec = "@meta-repo/test-kit"; // a variable: test-kit is optional, not a dependency
+  const spec = "@foreman-kit/test-kit"; // a variable: test-kit is optional, not a dependency
   try {
     const kit = (await import(spec)) as { slot?: (o: { root: string }) => { releasePorts(): Promise<void> } };
     if (!kit.slot) return false;

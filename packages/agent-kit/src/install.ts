@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 export const TEMPLATES = join(import.meta.dir, "..", "templates");
+/** The npm scope of foreman's packages. It lives with the hooks, which a project gets as standalone files. */
+export { SCOPE } from "../templates/claude/hooks/scope";
 
 /**
  * The kit keeps its .claude files under templates/claude/ (no dot): Claude Code treats any path

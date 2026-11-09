@@ -1,5 +1,5 @@
 {
-  "name": "@meta-repo/design-kit",
+  "name": "@foreman-kit/design-kit",
   "version": "0.1.0",
   "description": "One tokens file as the single source of a design, tokens.ts generated from it, a lint against raw colours and px, and screenshots for a design-critic agent",
   "license": "MIT",

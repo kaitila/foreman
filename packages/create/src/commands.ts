@@ -1,4 +1,4 @@
-// The create | init | sync commands as the CLIs run them (meta-repo's own and foreman's fm).
+// The create | init | sync commands as the CLIs run them (this package's own and foreman's fm).
 import { create, DEFAULT_PRESET, init } from "./create";
 import type { Change } from "./kit";
 import { sync } from "./sync";
@@ -8,7 +8,7 @@ export const USAGE = `  create <dir> [--preset ${DEFAULT_PRESET}] [--name n] [--
   init [dir] [--name n]
                      add the kit to an existing repository; never overwrites a file
   sync [dir] [--dry-run]
-                     update the kit's files to this meta-repo version; keeps every file the project changed`;
+                     update the kit's files to this foreman version; keeps every file the project changed`;
 
 export interface KitCommandOptions {
   preset?: string;
