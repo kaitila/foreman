@@ -176,12 +176,13 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
 
   // Their background sessions (D0022, T-0099) leave the person's `claude agents --all`, worktree or not.
   if (!opts.dryRun) {
-    report.sessions = removeFinishedSessions(f, actor, run, root);
+    // The caller's runner only: under `bun test` without one, removeFinishedSessions touches nothing real.
+    report.sessions = removeFinishedSessions(f, actor, opts.run, root);
     for (const r of report.removed) {
       const s = report.sessions.find((x) => x.id === r.id);
       if (s) r.sessions = s.sessions;
     }
-  } else {
+  } else if (process.env.FOREMAN_KEEP_SESSIONS !== "1") {
     report.sessions = f.list({ status: ["done", "cancelled"] }).map((t) => ({ id: t.id, sessions: sessionsToRemove(f.events(t.id)) })).filter((x) => x.sessions.length);
   }
 
