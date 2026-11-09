@@ -570,7 +570,7 @@ async function runCmd(cmd: string[], o: { cwd?: string; env?: Record<string, str
 }
 
 /** The caller's env minus a parent session's variables, so `claude` doesn't think it is nested. */
-function callerEnv(): Record<string, string> {
+export function callerEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !STRIPPED_ENV.includes(k)) env[k] = v;
   return env;
