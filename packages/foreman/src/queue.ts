@@ -240,6 +240,16 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       );
       continue;
     }
+    // The waits above take a while: a person may have sent it back or cancelled it meanwhile (T-0101).
+    const now = f.get(t.id);
+    if (now.status !== "approved") {
+      entry("skipped", `no longer approved (now ${now.status}): it changed while its checks settled, so it isn't merged`);
+      continue;
+    }
+    if (f.verifiedHead(t.id) !== verified) {
+      entry("skipped", "verified again while its checks settled: the next pass decides");
+      continue;
+    }
     if (opts.dryRun) {
       entry("would_merge", `${v2.names.length} check${v2.names.length === 1 ? "" : "s"} green at ${verified.slice(0, 8)}`);
       return report;
