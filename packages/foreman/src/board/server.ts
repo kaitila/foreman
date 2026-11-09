@@ -93,16 +93,23 @@ export function card(t: Task) {
 }
 
 /**
- * A task's approval that was undone and not given again (T-0094): the last send-back of an
- * approved task (an agent's or person's rework, or the merge queue's conflict send-back),
+ * A person's approval that was undone and not given again (T-0094): the last send-back of a
+ * task a person approved (an agent's or person's rework, or the merge queue's conflict send-back),
  * unless a newer approval, merge or cancel came after it. null when there's nothing to flag.
  */
 export function approvalUndone(events: Event[]) {
   let undone: { by: string; byKind: string; at: number; reason: string; conflict: boolean } | null = null;
+  // Only a person's approval counts: an approval foreman gave by itself (risk auto) undone is no news to them.
+  let personApproved = false;
   for (const e of events) {
-    if (e.type === "rework" && e.data.was === "approved") {
-      undone = { by: e.actor, byKind: e.actorKind, at: e.at, reason: String(e.data.reason ?? ""), conflict: e.data.conflict === true };
-    } else if (e.type === "approved" || e.type === "merged" || e.type === "cancelled") undone = null;
+    if (e.type === "submitted") personApproved = false;
+    else if (e.type === "approved") {
+      undone = null;
+      personApproved = e.actorKind === "human";
+    } else if (e.type === "rework" && e.data.was === "approved") {
+      if (personApproved) undone = { by: e.actor, byKind: e.actorKind, at: e.at, reason: String(e.data.reason ?? ""), conflict: e.data.conflict === true };
+      personApproved = false;
+    } else if (e.type === "merged" || e.type === "cancelled") undone = null;
   }
   return undone;
 }

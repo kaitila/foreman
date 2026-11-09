@@ -153,7 +153,7 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
     "rework_task",
     {
       description:
-        "Send a task you worked on back to work after it was submitted, verified or approved: its PR is changing again, or a gap was found. It must be claimed and verified again.",
+        "Send a task you worked on back to work after it was submitted or verified: its PR is changing again, or a gap was found. It must be claimed and verified again. Not once a person has approved it (refused: approved_by_person): file the new work as its own task with discoveredFrom, or ask the person.",
       inputSchema: { ...id, reason: z.string() },
     },
     wrap(({ id, reason }: { id: string; reason: string }) => f.rework(id, me, reason)),
