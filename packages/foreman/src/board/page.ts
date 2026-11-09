@@ -712,7 +712,7 @@ function nav() {
     const b = el("button", "nav-item" + (view === value || !multi ? " on" : ""));
     b.type = "button";
     b.dataset.project = value;
-    b.setAttribute("aria-pressed", String(view === value));
+    b.setAttribute("aria-pressed", String(view === value || !multi));
     b.append(value === "all" ? icon("layers") : el("span", "label-slot"), el("span", "name", name));
     const i = PROJECTS.indexOf(value);
     b.title = value === "all" ? "Every project" : name + (i < 9 ? " (g " + (i + 1) + ")" : "");
