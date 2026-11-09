@@ -582,6 +582,63 @@ describe("finished tasks' sessions leave the sessions list (T-0099)", () => {
     expect(env.rms()).toEqual([]);
   });
 
+  test("a session whose pinned process is still alive is skipped until it's gone", () => {
+    const env = setup();
+    const d = env.done();
+    const c = env.cancelled();
+    // A finished task has no lease any more, so the check reads the pid each session's
+    // lease_pinned event recorded: mark d's as alive.
+    const alive = new Set(env.f.events(d.id).filter((e) => e.type === "lease_pinned").map((e) => e.data.pid as number));
+    expect(alive.size).toBeGreaterThan(0);
+    env.f.isAlive = (pid: number) => alive.has(pid);
+    const cIds = sessionsToRemove(env.f.events(c.id));
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: c.id, sessions: cIds }]);
+    expect(env.rms()).toEqual(cIds);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    alive.clear();
+    env.ran.length = 0;
+    const ids = sessionsToRemove(env.f.events(d.id));
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: d.id, sessions: ids }]);
+    expect(env.rms()).toEqual(ids);
+  });
+
+  test("a finished task with nothing left to remove isn't read again on later calls (per foreman)", () => {
+    const env = setup();
+    const d = env.done();
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toHaveLength(1);
+    const reads: string[] = [];
+    const events = env.f.events.bind(env.f);
+    env.f.events = (id: string) => (reads.push(id), events(id));
+    // The call that finds it empty marks it; after that it's skipped without reading its events.
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    reads.length = 0;
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(reads).not.toContain(d.id);
+    expect(env.rms()).toHaveLength(2);
+    // A task finished later is still picked up.
+    const later = env.cancelled();
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: later.id, sessions: [expect.stringMatching(/^b0/)] }]);
+    expect(reads).not.toContain(d.id);
+  });
+
+  test("janitor --dry-run attaches the sessions to the worktree it would remove, like a real run", async () => {
+    const env = setup();
+    const wt = join(env.root, ".claude", "worktrees", "T-dry");
+    mkdirSync(wt, { recursive: true });
+    const d = env.done(wt);
+    const ids = sessionsToRemove(env.f.events(d.id));
+    const run: Run = (cmd, cwd) => (cmd.join(" ") === "git worktree list --porcelain" ? `worktree ${env.root}\nworktree ${wt}` : env.run(cmd, cwd));
+    const dry = await janitor(env.f, janitorActor, { run, root: env.root, dryRun: true, releasePorts: async () => false });
+    expect(dry.removed).toEqual([{ id: d.id, worktree: wt, branchDeleted: false, portsReleased: false, sessions: ids }]);
+    expect(dry.sessions).toEqual([{ id: d.id, sessions: ids }]);
+    expect(env.rms()).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    const real = await janitor(env.f, janitorActor, { run, root: env.root, releasePorts: async () => false });
+    expect(real.removed).toEqual([expect.objectContaining({ id: d.id, worktree: wt, sessions: ids })]);
+    expect(real.sessions).toEqual(dry.sessions);
+  });
+
   test("janitor --dry-run lists the sessions it would remove without running claude rm or recording anything", async () => {
     const env = setup();
     const d = env.done();

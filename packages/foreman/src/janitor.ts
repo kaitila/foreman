@@ -5,7 +5,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { type Actor, type Event, Foreman, type Status, type Task } from "./core";
 import { defaultRun, type Run } from "./policy";
-import { hasLiveSession } from "./activity";
 import { callerEnv } from "./launch";
 
 export interface JanitorOptions {
@@ -55,7 +54,7 @@ const pausedUntil = new WeakMap<Foreman, number>();
  * Removes the background sessions of done or cancelled tasks with `claude rm` (T-0099), whatever
  * happened to their worktrees, so they leave the person's sessions list.
  * - A session that is already gone counts as removed; each removal is recorded (sessions_removed).
- * - A task whose session is still running (its lease's process is alive) is left for later.
+ * - A session still running (the process its lease_pinned event recorded is alive) is left for later.
  * - At most SESSIONS_PER_RUN removals a run. The first failure that isn't "already gone" ends the
  *   run and pauses removals for SESSIONS_BACKOFF_MS, so a stuck `claude` can't stall anything.
  * - FOREMAN_KEEP_SESSIONS=1 turns it off. Under `bun test` it does nothing unless given a runner.
@@ -70,12 +69,18 @@ export function removeFinishedSessions(f: Foreman, actor: Actor, run?: Run, cwd 
   let budget = SESSIONS_PER_RUN;
   for (const t of f.list({ status: ["done", "cancelled"] })) {
     if (done.has(t.id)) continue;
-    const ids = sessionsToRemove(f.events(t.id));
-    if (!ids.length) {
+    const events = f.events(t.id);
+    const pending = sessionsToRemove(events);
+    if (!pending.length) {
       done.add(t.id);
       continue;
     }
-    if (hasLiveSession(f, t.id)) continue; // still wrapping up: next time
+    // A session whose process is still alive (a verifier wrapping up after a quick merge, a worker
+    // on a task just cancelled) is left until it ends. Its pid is on the event that pinned it: the
+    // task's lease is gone once it is done or cancelled, so f.leasePid can't say.
+    const pids = new Map<string, number>();
+    for (const e of events) if (e.type === "lease_pinned" && typeof e.data.session === "string" && typeof e.data.pid === "number") pids.set(e.data.session, e.data.pid);
+    const ids = pending.filter((id) => !(pids.has(id) && f.isAlive(pids.get(id)!)));
     const gone: string[] = [];
     let failed = false;
     for (const id of ids) {
@@ -90,7 +95,7 @@ export function removeFinishedSessions(f: Foreman, actor: Actor, run?: Run, cwd 
     if (gone.length) {
       f.sessionsRemoved(t.id, actor, gone);
       out.push({ id: t.id, sessions: gone });
-      if (gone.length === ids.length) done.add(t.id);
+      if (gone.length === pending.length) done.add(t.id);
     }
     if (failed) {
       pausedUntil.set(f, now + SESSIONS_BACKOFF_MS);
