@@ -50,6 +50,16 @@ export interface BoardOptions {
   prTimeoutMs?: number;
   /** Where Claude Code keeps session transcripts (default: the person's config dir and foreman's own). */
   configDirs?: string[];
+  /**
+   * Run the merge queue too (`fm serve --queue`): a pass for each project now, then every
+   * `intervalMs`. A project whose pass is still running (a click, or the last tick) is skipped.
+   */
+  autoQueue?: {
+    actor: Actor;
+    intervalMs: number;
+    onPass?: (project: string, entries: QueueEntry[]) => void;
+    onError?: (project: string, error: unknown) => void;
+  };
 }
 
 /** gh run off the event loop; null on failure or when the process is killed at the timeout. */
@@ -70,6 +80,9 @@ export interface Board {
   port: number;
   /** Shown once, in the terminal that started the board. null when approving is off. */
   token: string | null;
+  /** Whether the --queue loop runs on this board. */
+  queueRunning: boolean;
+  /** Stops the server and the queue loop (waiting for a pass in progress to finish). */
   stop(): Promise<void>;
 }
 
@@ -203,11 +216,13 @@ export function startBoard(opts: BoardOptions): Board {
     return p;
   };
 
-  // One merge-queue pass at a time per project, whoever asks: two clicks must not merge in parallel.
-  const pass = async (c: Ctx, only?: string): Promise<QueueEntry[]> => {
+  // One merge-queue pass at a time per project, whoever asks (a click or the --queue loop):
+  // two passes must not merge in parallel. Callers check `passing` first; it is set before the
+  // first await, so nothing can slip in between.
+  const pass = async (c: Ctx, actor: Actor, only?: string): Promise<QueueEntry[]> => {
     c.passing = true;
     try {
-      return await mergeQueuePass(c.f, opts.approver!, { ...opts.queue, cwd: c.cwd, only });
+      return await mergeQueuePass(c.f, actor, { ...opts.queue, cwd: c.cwd, only });
     } finally {
       c.passing = false;
       c.prCache.clear();
@@ -299,10 +314,10 @@ export function startBoard(opts: BoardOptions): Board {
           if (w) {
             const t = f.get(w[1]!);
             if (t.status !== "approved") return fail(409, "not_approved", `${t.id} is ${t.status}, not approved: nothing to merge`);
-            const entries = await pass(ctx, t.id);
+            const entries = await pass(ctx, opts.approver!, t.id);
             return json({ entry: entries[0] ?? null, entries, task: f.get(t.id) });
           }
-          return json({ entries: await pass(ctx) });
+          return json({ entries: await pass(ctx, opts.approver!) });
         }
         return fail(405, "method_not_allowed", "the board is read-only, except approve, merge and run queue");
       } catch (e) {
@@ -312,6 +327,31 @@ export function startBoard(opts: BoardOptions): Board {
     },
   });
 
+  // The --queue loop: one tick runs a pass per project in turn, then waits intervalMs.
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let ticking: Promise<void> = Promise.resolve();
+  const auto = opts.autoQueue;
+  if (auto) {
+    const tick = async () => {
+      for (const c of ctxs) {
+        if (stopped) return;
+        if (c.passing) continue;
+        try {
+          auto.onPass?.(c.name, await pass(c, auto.actor));
+        } catch (e) {
+          auto.onError?.(c.name, e);
+        }
+      }
+    };
+    const loop = () => {
+      ticking = tick().finally(() => {
+        if (!stopped) timer = setTimeout(loop, auto.intervalMs);
+      });
+    };
+    timer = setTimeout(loop, 0);
+  }
+
   const port = server.port!;
   hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   origins = new Set([...hosts].map((h) => `http://${h}`));
@@ -320,6 +360,12 @@ export function startBoard(opts: BoardOptions): Board {
     openUrl: token ? `http://127.0.0.1:${port}/#t=${token}` : `http://127.0.0.1:${port}/`,
     port,
     token,
-    stop: () => server.stop(true),
+    queueRunning: auto !== undefined,
+    stop: async () => {
+      stopped = true;
+      clearTimeout(timer);
+      await server.stop(true);
+      await ticking;
+    },
   };
 }
