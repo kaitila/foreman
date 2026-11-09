@@ -1,11 +1,11 @@
-# D0035. Pieces are added later with `fm init --with`, and init's open details are settled (2026-11-09)
+# D0035. Pieces are added later with `fm add <piece>` or `fm init --with`, and init's open details are settled (2026-11-09)
 
 **Status:** Active
 
 **Context:** D0026 has `fm init` set up foreman alone and the rest of the kit as opt-in pieces, and says `fm add <piece>` adds one later. Building it (T-0085) left a few details open. Amends D0026.
 
 **Chosen:**
-- **Adding a piece later is `fm init --with <piece>`** in a repo that has foreman, not `fm add`. It uses init's never-overwrite rules, and a piece already there is kept. `fm init` with no flags in such a repo asks in a terminal, and without one it's refused, naming `--with` and `sync`.
+- **Adding a piece later is `fm add <piece>`, or `fm init --with <piece>`,** in a repo that has foreman. Both use init's never-overwrite rules, and a piece already there is kept. `fm add` adds pieces only when every word after it is a piece name (`fm add skills`, `fm add docs guardrails`) and no task flag (`--spec`, `--check`, `--ready` and the rest) is given; anything else files a task, as `fm add <title>` always has. A task titled just "docs" takes a task flag, e.g. `fm add docs --spec "..."`. `fm init` with no flags in such a repo asks in a terminal, and without one it's refused, naming `--with` and `sync`.
 - **Which template files belong to which piece:**
   - `skills`: everything under `.claude/skills/` and `.claude/agents/`.
   - `guardrails`: every other agent-kit template (`.claude/settings.json`, the hooks).
@@ -20,7 +20,7 @@
 - **The version check on a board of several projects:** a project whose `foreman.json` needs a newer `fm` is left off the board with a note naming the upgrade, and the rest open. With one project, `fm` refuses as D0026 says.
 
 **Why:**
-- `fm add <title>` already files a task. `fm add docs` would be either a piece or a task titled "docs", and a typo in a piece name would quietly file a task. init already knows the pieces, the checklist and the rules.
+- D0026 names `fm add <piece>`, and it's the verb people will try. `fm add <title>` already files a task, so the rule is narrow: a title made only of piece names is almost never a task anyone means, and a task flag says it is one. A typo in a piece name still files a task (which `fm add` prints, and `fm cancel` undoes); `init --with` is the strict form, refusing an unknown name.
 - Files go by folder because a skill's agents are what make it work, and everything else in `.claude/` is the guard and its settings.
 - Without the import, Claude Code reads `CLAUDE.md` and never sees `AGENTS.md`, so foreman alone would leave agents unaware of the task flow.
 - `--all` means "everything that fits here". Refusing would leave no one-word way to take the whole kit in a repo without `package.json`.
@@ -29,4 +29,4 @@
 - The hooks are where foreman's limits are enforced, so they check what they run. For the MCP server, a check inside foreman's `fm` can't help when a different `fm` is what runs. An absolute path in the committed `.mcp.json` would break it for everyone else who clones the repo. A dependency that can plant the bin can already run code whenever the project's tests import it.
 - One stale project shouldn't take the board down for all the others.
 
-**Revisit if:** a second way to add pieces is wanted (then a separate verb, not `fm add`), a piece needs files in `.claude/` outside skills and agents, people want the board to show too-old projects instead of skipping them, Claude Code can pin a project MCP server's command, or sessions started with `node_modules/.bin` first on the PATH become common.
+**Revisit if:** people file tasks by mistake with `fm add <piece>`, or want a task titled with piece names without a flag (then a separate verb), a piece needs files in `.claude/` outside skills and agents, people want the board to show too-old projects instead of skipping them, Claude Code can pin a project MCP server's command, or sessions started with `node_modules/.bin` first on the PATH become common.

@@ -10,7 +10,7 @@ import { add, create, init, sync } from "../src/kit/index";
 import { initPieces, runKitCommand } from "../src/kit/commands";
 import { FOREMAN_SERVER, kitFiles, LEGACY_RECORD, ownTemplate, pointDep, RECORD, readInstalled, sha256, workspaceDeps } from "../src/kit/kit";
 import { VERSION } from "../src/kit/paths";
-import { parseAnswer, PIECES } from "../src/kit/pieces";
+import { parseAnswer, PIECES, piecesToAdd } from "../src/kit/pieces";
 
 const TASKS = ownTemplate("tasks-section.md");
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
@@ -547,6 +547,56 @@ describe("fm init's pieces", () => {
     runKitCommand("init", dir, { ask: () => "2,5" }, quiet);
     expect(readInstalled(dir)!.pieces).toEqual(["guardrails", "test-kit"]);
   });
+});
+
+describe("fm add <piece>", () => {
+  test("only piece names and no task flag mean pieces; anything else is a task title", () => {
+    expect(piecesToAdd(["skills"], false)).toEqual(["skills"]);
+    expect(piecesToAdd(["skills", "docs"], false)).toEqual(["docs", "skills"]);
+    expect(piecesToAdd(["guardrails,ci"], false)).toEqual(["guardrails", "ci"]);
+    expect(piecesToAdd(["docs"], true)).toBeNull();
+    expect(piecesToAdd(["Write", "the", "docs"], false)).toBeNull();
+    expect(piecesToAdd(["skils"], false)).toBeNull();
+    expect(piecesToAdd([], false)).toBeNull();
+  });
+
+  test("the add command adds the pieces with init's rules", () => {
+    const dir = repo({});
+    init(dir);
+    expect(() => runKitCommand("add", dir, {}, () => {})).toThrow("name a piece");
+    runKitCommand("add", dir, { pieces: ["guardrails"] }, () => {});
+    expect(readInstalled(dir)!.pieces).toEqual(["guardrails"]);
+    expect(existsSync(join(dir, ".claude/settings.json"))).toBe(true);
+    expect(existsSync(join(dir, ".claude/skills"))).toBe(false);
+    const again: string[] = [];
+    runKitCommand("add", dir, { pieces: ["guardrails"] }, (s) => again.push(s));
+    expect(again.join("\n")).toContain("already added");
+    expect(() => runKitCommand("add", repo({}), { pieces: ["skills"] }, () => {})).toThrow("init first");
+  });
+
+  test("fm add skills adds the piece and files no task; fm add ci is refused without package.json; a title files a task", () => {
+    const dir = repo({});
+    const env = { ...fmEnv(), FOREMAN_PROJECTS_FILE: join(base, "cli-add-projects.json") };
+    const run = (...args: string[]) => Bun.spawnSync(["fm", ...args], { cwd: dir, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+    expect(run("init").exitCode).toBe(0);
+    const skills = run("add", "skills");
+    expect({ code: skills.exitCode, err: skills.stderr.toString() }).toEqual({ code: 0, err: "" });
+    expect(existsSync(join(dir, ".claude/skills/ship/SKILL.md"))).toBe(true);
+    expect(readInstalled(dir)!.pieces).toEqual(["skills"]);
+    const ci = run("add", "ci");
+    expect(ci.exitCode).not.toBe(0);
+    expect(ci.stderr.toString()).toContain("package.json");
+    expect(existsSync(join(dir, ".github"))).toBe(false);
+    expect(readInstalled(dir)!.pieces).toEqual(["skills"]);
+    expect(run("list").stdout.toString()).toContain("no tasks");
+    // Not only piece names, or a task flag: a task, as before.
+    expect(run("add", "Write", "the", "docs").exitCode).toBe(0);
+    expect(run("add", "docs", "--spec", "the docs task").exitCode).toBe(0);
+    const tasks = run("list").stdout.toString();
+    expect(tasks).toContain("Write the docs");
+    expect(tasks).toContain("T-0002");
+    expect(readInstalled(dir)!.pieces).toEqual(["skills"]);
+  }, 60_000);
 });
 
 describe("refusing before anything is written", () => {

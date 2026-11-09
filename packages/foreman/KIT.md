@@ -61,7 +61,7 @@ Sets up foreman in any git repository, with or without `package.json`, plus the 
 - `guardrails`: an existing `.claude/settings.json` gets the baseline's rules merged in, and its own rules and keys are kept (D0014).
 - devDependencies are added as a text edit, so the rest of `package.json` (key order, line endings, inline arrays, a BOM) stays as it was; only if that edit doesn't parse is the file rewritten as JSON. A repo that already depends on the package keeps its own. Then run `bun install`.
 
-**Adding pieces later:** `fm init --with <piece>` in a repo that has foreman adds them, with the same rules. A piece it already has is kept. `fm init` there with no flags asks in a terminal, and is refused without one (not `fm add`, which files a task: D0035).
+**Adding pieces later:** `fm add <piece>` (or `fm init --with <piece>`) in a repo that has foreman adds them, with the same rules. A piece it already has is kept. `fm add` takes pieces only when every word is a piece name and no task flag is given; otherwise it files a task, as before (D0035). `fm init` there with no flags asks in a terminal, and is refused without one.
 
 **The record:** `.foreman-kit/installed.json`, with the pieces.
 

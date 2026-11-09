@@ -10,6 +10,8 @@ export const USAGE = `  create <dir> [--preset ${DEFAULT_PRESET}] [--name n] [--
                      set up foreman in a git repository (any language), plus the kit pieces you choose:
                      ${PIECES.join(", ")}. In a terminal it asks; without one and without flags, foreman only.
                      In a repo that has foreman, adds the pieces chosen. Never overwrites a file.
+  add <piece>... [--name n]
+                     add kit pieces to a repo that has foreman, like init --with. Any other words file a task
   sync [dir] [--dry-run]
                      update the kit's files to this foreman version; keeps every file the project changed`;
 
@@ -23,11 +25,13 @@ export interface KitCommandOptions {
   with?: string;
   /** init: --all. */
   all?: boolean;
+  /** add: the pieces named. */
+  pieces?: Piece[];
   /** init: asks which pieces to add, when there's a terminal and no --with or --all. Returns the answer. */
   ask?: (question: string) => string | null;
 }
 
-export const KIT_COMMANDS = ["create", "init", "sync"] as const;
+export const KIT_COMMANDS = ["create", "init", "add", "sync"] as const;
 
 const show = (changes: Change[], log: (s: string) => void) => {
   for (const c of changes) log(`${c.action.padEnd(8)} ${c.path}${c.note ? ` (${c.note})` : ""}`);
@@ -53,14 +57,18 @@ export function runKitCommand(cmd: string, dir: string | undefined, o: KitComman
   } else if (cmd === "init") {
     const target = dir ?? ".";
     const installed = readInstalled(target) !== null;
-    // A repo that has foreman: init adds the pieces chosen (fm add files a task, so it isn't this).
-    if (installed && !o.with && !o.all && !o.ask) throw new Error("foreman is already set up here: init --with <piece> adds a piece, sync updates the kit");
+    // A repo that has foreman: init adds the pieces chosen, as fm add <piece> does.
+    if (installed && !o.with && !o.all && !o.ask) throw new Error("foreman is already set up here: fm add <piece> (or init --with <piece>) adds a piece, sync updates the kit");
     const { pieces, all } = initPieces(o, log);
     if (installed) {
       if (!pieces.length) return log("nothing to add");
       show(add(target, all ? [...PIECES] : pieces, { name: o.name, all }), log);
     } else show(init(target, { name: o.name, pieces, all }), log);
     log("\nNext: review the changes and commit them. The foreman MCP server runs fm, so fm must be on your PATH (fm setup checks).");
+  } else if (cmd === "add") {
+    if (!o.pieces?.length) throw new Error(`name a piece to add (${PIECES.join(", ")})`);
+    show(add(dir ?? ".", o.pieces, { name: o.name }), log);
+    log("\nNext: review the changes and commit them.");
   } else if (cmd === "sync") {
     const r = sync(dir ?? ".", { dryRun: o.dryRun });
     log(`kit ${r.from} -> ${r.to}${o.dryRun ? " (dry run: nothing written)" : ""}`);

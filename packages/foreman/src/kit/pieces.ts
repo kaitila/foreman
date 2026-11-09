@@ -1,5 +1,5 @@
 // The kit's opt-in pieces (D0026). `fm init` always sets up foreman itself; each piece is
-// chosen by name (a checklist in a terminal, --with, --all), and added later with `fm init --with`.
+// chosen by name (a checklist in a terminal, --with, --all), and added later with `fm add <piece>` or `fm init --with`.
 
 export const PIECES = ["docs", "guardrails", "skills", "ci", "test-kit", "design"] as const;
 export type Piece = (typeof PIECES)[number];
@@ -24,6 +24,16 @@ export const PIECE_INFO: Record<Piece, PieceInfo> = {
 export const FILE_PIECES: Piece[] = ["guardrails", "skills"];
 
 export const isPiece = (s: string): s is Piece => (PIECES as readonly string[]).includes(s);
+
+/**
+ * `fm add`'s arguments as pieces, or null when they are a task title. Pieces only when every word is a
+ * piece name and no task flag is given, so `fm add docs` adds the docs piece (D0035).
+ */
+export function piecesToAdd(args: string[], taskFlags: boolean): Piece[] | null {
+  const words = args.flatMap((a) => a.split(/[\s,]+/)).filter(Boolean);
+  if (taskFlags || !words.length || !words.every(isPiece)) return null;
+  return PIECES.filter((p) => words.includes(p));
+}
 
 /** `docs,guardrails` (or spaces) as pieces, in the kit's order. Throws on a name that isn't one. */
 export function parsePieces(list: string): Piece[] {

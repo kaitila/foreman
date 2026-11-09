@@ -42,6 +42,8 @@ Projects
                                 guardrails, skills, ci, test-kit, design. In a terminal it asks; with no
                                 terminal and no flags, foreman only. In a repo that has foreman, adds
                                 the pieces chosen. Never overwrites a file
+  add <piece>... [--name n]     add kit pieces later, like init --with (a title that isn't only piece
+                                names, or any task flag, files a task instead)
   sync [dir] [--dry-run]        update the kit's files to this version; keeps what the project changed
   sync --all [--dry-run]        every project fm has seen (create, init, sync, setup record them), one
                                 result per project
@@ -248,6 +250,22 @@ export async function main(argv: string[]): Promise<number | null> {
     if (root) recordProject(root);
     console.log(o.json ? JSON.stringify({ ok: items.every((i) => i.ok), items }, null, 2) : formatItems(items));
     return items.every((i) => i.ok) ? 0 : 1;
+  }
+  if (cmd === "add") {
+    // fm add <piece> adds kit pieces; any other words (or a task flag) file a task, below (D0035).
+    const { piecesToAdd } = await import("./kit/pieces");
+    const taskFlags = ["spec", "check", "path", "risk", "parent", "blocked-by", "from", "plan", "step", "ready"].some((k) => o[k as keyof typeof o] !== undefined);
+    const pieces = piecesToAdd(args, taskFlags);
+    if (pieces) {
+      const { runKitCommand } = await import("./kit/index");
+      try {
+        runKitCommand("add", ".", { pieces, name: o.name });
+      } catch (e) {
+        throw new ForemanError("invalid", (e as Error).message);
+      }
+      recordProject(".");
+      return 0;
+    }
   }
   if (cmd === "create" || cmd === "init" || cmd === "sync") {
     const { runKitCommand } = await import("./kit/index");

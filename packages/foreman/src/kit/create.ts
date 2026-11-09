@@ -199,7 +199,7 @@ function choosePieces(target: string, want: Piece[], all: boolean, changes: Chan
 export function init(dir: string, opts: InitOptions = {}): Change[] {
   const target = resolve(dir);
   if (!existsSync(join(target, ".git"))) throw new Error(`${dir} is not a git repository (use create for a new project)`);
-  if (readInstalled(target)) throw new Error(`${recordPath(target)} is already there: foreman is set up (init --with <piece> adds a piece, sync updates the kit)`);
+  if (readInstalled(target)) throw new Error(`${recordPath(target)} is already there: foreman is set up (fm add <piece> adds a piece, sync updates the kit)`);
   // Read up front, so a malformed file stops init before anything is written.
   checkVersion(target);
   readPackageJson(target);
@@ -215,14 +215,14 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   if (pieces.includes("docs")) addPiece(target, "docs", rec, opts, changes);
   addForeman(target, mcp, mcpText, changes);
   for (const p of pieces.filter((x) => x !== "docs")) addPiece(target, p, rec, opts, changes);
-  if (!pieces.length) changes.push({ action: "skipped", path: "pieces", note: `foreman only; add more with fm init --with <piece> (${PIECES.join(", ")})` });
+  if (!pieces.length) changes.push({ action: "skipped", path: "pieces", note: `foreman only; add more with fm add <piece> (${PIECES.join(", ")})` });
 
   writeInstalled(target, rec);
   changes.push({ action: "created", path: recordPath(target) });
   return changes;
 }
 
-/** More pieces for a repo that already has foreman (`init --with` there), with init's never-overwrite rules. */
+/** More pieces for a repo that already has foreman (`fm add <piece>` or `init --with` there), with init's never-overwrite rules. */
 export function add(dir: string, want: Piece[], opts: { today?: Date; name?: string; all?: boolean } = {}): Change[] {
   const target = resolve(dir);
   const rec = readInstalled(target);
