@@ -1,7 +1,7 @@
 // More write forms (T-0014), heredocs that are data vs code (T-0027), and the hook
 // failing closed when bun is missing (T-0026).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, checkCommand, gitWriteTargets, writeTargets } from "../templates/claude/hooks/guard";
@@ -132,8 +132,9 @@ describe("the hook fails closed when bun is missing (T-0026)", () => {
     const dir = mkdtempSync(join(tmpdir(), "withbun-"));
     try {
       mkdirSync(join(dir, ".claude/hooks"), { recursive: true });
-      const guard = readFileSync(join(import.meta.dir, "..", "templates/claude/hooks/guard.ts"), "utf8");
-      Bun.write(join(dir, ".claude/hooks/guard.ts"), guard);
+      for (const f of ["guard.ts", "scope.ts"]) {
+        writeFileSync(join(dir, ".claude/hooks", f), readFileSync(join(import.meta.dir, "..", "templates/claude/hooks", f), "utf8"));
+      }
       const p = Bun.spawnSync(["sh", "-c", command], {
         env: { ...process.env, CLAUDE_PROJECT_DIR: dir, FOREMAN_ACTOR: "" },
         stdin: new TextEncoder().encode(JSON.stringify({ tool_name: "Bash", tool_input: { command: "git push origin main" }, cwd: dir })),

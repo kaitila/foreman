@@ -21,6 +21,7 @@
 // session (FOREMAN_ACTOR set) whose role rules foreman can't give.
 // Self-contained on purpose: a project gets a copy, with no package to install.
 import { relative, resolve, basename, dirname, isAbsolute } from "node:path";
+import { FOREMAN_INSTALLS } from "./scope";
 
 export interface Decision {
   deny: string;
@@ -831,7 +832,7 @@ function foremanCmd(root: string): string[] | null {
     }
     return null;
   };
-  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
 }
 
 export function realContext(cwd: string): Context {

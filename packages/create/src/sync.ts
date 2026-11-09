@@ -1,7 +1,7 @@
-// sync: bring a project's kit files up to the meta-repo version this runs from (D0018).
+// sync: bring a project's kit files up to the foreman version this runs from (D0018).
 // Three-way per file: the hash recorded at install, the file now, and the kit's file now.
 // A file the project changed or deleted is never overwritten or restored.
-import { mergeSettings, OMIT_FILE, readOmit, TEMPLATES, templateSettings } from "@meta-repo/agent-kit";
+import { mergeSettings, OMIT_FILE, readOmit, SCOPE, TEMPLATES, templateSettings } from "@foreman-kit/agent-kit";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -116,7 +116,7 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
     if (!opts.dryRun && existsSync(join(target, old))) unlinkSync(join(target, old));
     delete files[old];
     files[path] = sha256(data);
-    changes.push({ action: "updated", path, note: `@meta-repo/${pkg}, replaces ${old}` });
+    changes.push({ action: "updated", path, note: `${SCOPE}/${pkg}, replaces ${old}` });
     if (pkgJson !== null) pkgJson = pointDep(pkgJson, pkg, path);
     reinstall = true;
   }

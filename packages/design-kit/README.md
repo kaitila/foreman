@@ -42,4 +42,4 @@ Not caught: bare numbers in JS style objects; named colours in unquoted or compu
 `design-kit screenshot` writes `page-<width>-<scheme>.png` at each width, light and dark, and says when a page scrolls sideways. It needs playwright-core and a browser, which this package doesn't install. Without them it exits 3 and says how to add them. The design-critic agent (agent-kit's `templates/claude/agents/design-critic.md`) uses it when it's there, and reviews the served markup and styles when it isn't.
 
 ## API
-`parseTokens`, `generateTs`, `lint`, `lintText`, `parseCss`, `resolveStyles` (each declaration with its `var()` filled from the tokens: how the demo's test proves a tokens-only edit re-skins the page) and `contrast` (WCAG ratio of two hex colours), from `@meta-repo/design-kit`.
+`parseTokens`, `generateTs`, `lint`, `lintText`, `parseCss`, `resolveStyles` (each declaration with its `var()` filled from the tokens: how the demo's test proves a tokens-only edit re-skins the page) and `contrast` (WCAG ratio of two hex colours), from `@foreman-kit/design-kit`.

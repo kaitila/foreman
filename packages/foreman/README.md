@@ -34,7 +34,7 @@ draft → ready → claimed → in_progress → in_review → verifying → appr
 
 ## Use
 
-A project made with `create` or `init` already has it: `bun node_modules/@meta-repo/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
+A project made with `create` or `init` already has it: `bun node_modules/@foreman-kit/foreman/src/cli.ts help`, and the `foreman` MCP server in `.mcp.json`.
 
 In this repo, one-time setup from the repo root: `bun install && bun run link`. This links the `fm` command (and `foreman`, the same thing) into `~/.bun/bin`. After that, run `fm` in any git repository: it uses that repo's tasks, because the database is found from the current directory. Without the link, `bun packages/foreman/src/cli.ts` does the same.
 
@@ -88,7 +88,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **Janitor** (`janitor`):
   - reclaims expired claims;
   - for done and cancelled tasks, removes the recorded worktree if it is a clean git worktree inside this repo. One with uncommitted changes is kept and reported;
-  - releases that worktree's test-kit ports, if `@meta-repo/test-kit` is installed;
+  - releases that worktree's test-kit ports, if `@foreman-kit/test-kit` is installed;
   - deletes the task's local branch only if it is already in `main` or `origin/main`;
   - lists tasks in `claimed`, `in_progress`, `in_review` or `verifying` for longer than `--stuck-hours` since they entered that state.
 
@@ -233,7 +233,7 @@ What must hold:
 `fm dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
 
 **Watching the sessions.** Workers and verifiers run as Claude Code background sessions ([D0022](../../docs/decisions/D0022-background-sessions.md)), so the person watches them with Claude Code's own commands:
-- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `meta-repo T-0042 worker`);
+- `claude agents` lists them, named `<repo> <task> <role>` (e.g. `foreman T-0042 worker`);
 - `claude attach <name or id>` opens one in the terminal, to watch it or answer it;
 - `claude logs <id>` prints its recent output; `claude stop <id>` stops it;
 - `claude --resume <session id>` continues one after foreman has stopped it.
@@ -249,7 +249,7 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **A worker per task:** the dispatcher claims the task as `worker-<task>` and makes `.claude/worktrees/<task>` on a new branch `<task>-<title>` from `origin/main`. It records both with `progress`, then starts a worker with the `ship` skill. A task back for rework keeps its worktree, or its branch if the worktree is gone. If the worktree can't be made, the task goes back to `ready`. A newly made worktree is prepared once with the `setup` command from `foreman.json` (e.g. `"setup": "bun install && bun install --cwd web"`) before the worker starts, and the prompt says so; a failed setup is reported to the worker, not fatal. Without `setup` the prompt tells the session to run `bun install`.
 - **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists.
 - **Leases follow the process:** each session's lease is pinned to its PID (`pinLease`). While the PID lives, the lease doesn't time out; once it's gone, `reclaim` releases the task (`ready`, or `in_review` for a verifier). A new holder ends the pin. The pins live in their own table, so an older foreman on the same database still works.
-- **Prompts:** both prompts say not to spawn helper subagents, to give commands `< /dev/null`, and how to reach foreman through the CLI if its MCP tools are missing. The worker's also says the task is already claimed and to install dependencies in the fresh worktree first. Sessions run with `FOREMAN_AGENT=1`, and their stdin is `/dev/null`.
+- **Prompts:** both prompts say not to spawn helper subagents, to give commands `< /dev/null`, and how to reach foreman through the CLI if its MCP tools are missing. The worker's also says the task is already claimed, to install dependencies in the fresh worktree first, to make a mechanical many-file change with one scripted edit, and to run the full check once, before pushing ([D0029](../../docs/decisions/D0029-faster-sessions.md)). Sessions run with `FOREMAN_AGENT=1`, and their stdin is `/dev/null`.
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
 - **`--once`:** start what fits now, see those tasks through verification, then stop. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
@@ -261,7 +261,7 @@ Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` 
 
 - **What the session can do:** read the code (`Read`, `Glob`, `Grep`) and use foreman's `list_tasks`, `show_task` and `create_task`. Nothing else: no edits, no `Bash`, no other foreman tools.
 - **Its foreman:** the session gets this foreman's own MCP server, by the absolute path of its `cli.ts`, and no other server, so it works in a repo whose `.mcp.json` doesn't list foreman. The server runs as `intake-<run id>`, which is what `created_by` shows, and with `FOREMAN_DRAFTS_ONLY=1`, so `create_task` files drafts whatever the model asks.
-- **What it is told:** search the board first and report what is already filed (any status but cancelled) as a duplicate; then file each remaining piece of work with a spec, at least one acceptance check and paths. It answers with a `--json-schema` structured result: the ids it filed, the duplicates with a reason, and a summary.
+- **What it is told:** search the board first and report what is already filed (any status but cancelled) as a duplicate; then file each remaining piece of work with a spec, at least one acceptance check and the narrowest paths that fit, since tasks whose paths overlap never run at once and a glob like `packages/**` makes the rest wait (D0029). It answers with a `--json-schema` structured result: the ids it filed, the duplicates with a reason, and a summary.
 - **What foreman believes:** the board, not the model. The tasks filed are the ones `intake-<run id>` created during the run. An id the model reports but didn't file, a filed task it doesn't report, a duplicate that wasn't on the board before, or a task without checks or paths is listed as a problem.
 - **Drafts unless `--ready`:** with `--ready`, foreman marks each filed task ready itself, as the person who ran the command. A task without checks or paths stays a draft.
 - **Output:** one line per task filed and per duplicate, then any problems and the cost. Exit 1 if there was a problem (the session failed, ran out of budget or turns, or a check above failed); what was filed is still listed. `--json` prints the whole result.

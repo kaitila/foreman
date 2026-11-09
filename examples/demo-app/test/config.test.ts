@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { firstCellKeys } from "@meta-repo/docs-check";
+import { firstCellKeys } from "@foreman-kit/docs-check";
 import { EnvSchema, env, requireEnv, resetEnv } from "../src/config";
 import { cliMessage } from "../src/cli";
 

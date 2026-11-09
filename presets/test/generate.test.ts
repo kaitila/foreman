@@ -32,7 +32,7 @@ test("the preset keeps its MCP config as mcp.json and the app gets it as .mcp.js
   const files = generate(preset, "demo-app");
   expect(files.has("mcp.json")).toBe(false);
   expect(files.get(".mcp.json")).toBe(readFileSync(join(preset, "mcp.json"), "utf8"));
-  expect(JSON.parse(files.get(".mcp.json")!).mcpServers.foreman.args).toEqual(["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"]);
+  expect(JSON.parse(files.get(".mcp.json")!).mcpServers.foreman.args).toEqual(["node_modules/@foreman-kit/foreman/src/cli.ts", "mcp"]);
 });
 
 test("placeholders are filled in and names are checked", () => {

@@ -39,11 +39,11 @@ describe("project-neutral", () => {
   // Names from the codebase this grew out of, its owners, and this repo itself.
   const banned = [/\bgamma\b/i, /\bwave\b/i, /\bperly\b/i, /\bkaitila\b/i, /\barttu\b/i, /\bmeta-repo\b/i, /\btheta\b/i];
   test.each(files)("%s names no specific project or person", (f) => {
-    // foreman's package name is allowed: the hooks look for the installed package by it.
+    // foreman's old package name is allowed: the hooks still look for an installed package by it.
     const text = readFileSync(join(TEMPLATES, f), "utf8").replaceAll("@meta-repo/foreman", "");
     for (const re of banned) expect(text).not.toMatch(re);
   });
-  test("only the exact package name @meta-repo/foreman is allowed", () => {
+  test("only the exact old package name @meta-repo/foreman is allowed", () => {
     const strip = (t: string) => t.replaceAll("@meta-repo/foreman", "");
     expect(strip("node_modules/@meta-repo/foreman/src/cli.ts")).not.toMatch(/\bmeta-repo\b/i);
     for (const t of ["@meta-repo/docs-check", "the meta-repo kit", "@Meta-Repo/foreman"]) expect(strip(t)).toMatch(/\bmeta-repo\b/i);

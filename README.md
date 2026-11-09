@@ -1,4 +1,4 @@
-# meta-repo
+# foreman
 
 A starter for new projects where most of the code is written by AI coding agents (Claude Code for now).
 
@@ -7,7 +7,7 @@ It packages patterns proven in a production codebase that was written mostly by 
 - a decision log
 - a check that keeps docs in sync with code
 - a database per worktree
-- a fixed "ship" flow with parallel test, docs and review agents
+- a fixed "ship" flow, with parallel test, docs and review agents for large or risky changes
 
 It also fills that codebase's gaps:
 - a local task layer that takes a request from a person or an agent and tracks it through to sign-off
@@ -20,7 +20,7 @@ It also fills that codebase's gaps:
 For anyone, on a machine with [bun](https://bun.sh) and git:
 
 ```sh
-git clone <this repo's URL> meta-repo && cd meta-repo
+git clone <this repo's URL> foreman && cd foreman
 bun install
 bun run link          # or: bun packages/foreman/src/cli.ts setup
 fm setup              # checks gh and claude, links fm, says how to fix what is missing

@@ -1,5 +1,5 @@
 {
-  "name": "@meta-repo/agent-kit",
+  "name": "@foreman-kit/agent-kit",
   "version": "0.1.0",
   "description": "Agent guardrails and templates for Claude Code projects: settings baseline, hooks, subagents, skills",
   "license": "MIT",
