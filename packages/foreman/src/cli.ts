@@ -83,7 +83,8 @@ Agents
                                 "claude agents", "claude attach <name>"; --print (or
                                 FOREMAN_LAUNCH=print) runs headless "claude -p" instead
 Board
-  serve [--port 4499]           local web board on 127.0.0.1; approve and merge from the link it prints
+  serve [--port 4499] [--queue] local web board on 127.0.0.1; approve and merge from the link it prints;
+                                --queue runs the merge queue in the same process (see below)
   merge-queue [--once] [--dry-run] [--settle-seconds 30] [--interval 60]
                                 merge approved PRs one at a time: settled green checks at the
                                 verified commit; a PR that conflicts with main goes back to ready
@@ -99,9 +100,10 @@ Housekeeping
                                 actor $FOREMAN_ACTOR; none for a person
   export <id> [--out dir]       write the task as markdown (default docs/tasks/<id>.md)
   mcp                           run the MCP server on stdio
-  serve [--port 4499] [--project name|dir]
+  serve [--port 4499] [--project name|dir] [--queue [--interval 60] [--settle-seconds 30]]
                                 local web board on 127.0.0.1 for every project on this machine (or one);
-                                approve and merge from the link it prints
+                                approve and merge from the link it prints; --queue also runs the
+                                merge queue for each project shown, a pass every --interval seconds
   projects [list|add <dir>|rm <name|dir>|prune]
                                 the repos the board shows (~/.config/foreman/projects.json)
 
@@ -159,6 +161,7 @@ export async function main(argv: string[]): Promise<number | null> {
       "remove-check": { type: "string", multiple: true },
       "add-path": { type: "string", multiple: true },
       port: { type: "string" },
+      queue: { type: "boolean" },
       project: { type: "string" },
       max: { type: "string" },
       once: { type: "boolean" },
@@ -308,13 +311,41 @@ export async function main(argv: string[]): Promise<number | null> {
     const projects = named.map((p) => ({ name: p.name, dir: p.dir, foreman: Foreman.open(p.dir) }));
     let board;
     try {
-      board = startBoard({ projects, port, approver: person ? me : null });
+      // --queue: the merge queue runs in this process too, as `fm merge-queue` would.
+      const queueActor = process.env.FOREMAN_ACTOR ? me : { name: "merge-queue", kind: me.kind };
+      const prefix = projects.length > 1;
+      const autoQueue = o.queue
+        ? {
+            actor: queueActor,
+            intervalMs: num(o.interval, 60, "--interval") * 1000,
+            onPass: (name: string, r: QueueEntry[]) => {
+              const lines = r.map((e) => `${e.id}  ${e.action.padEnd(15)} ${e.reason}`);
+              const text = lines.join("\n") || "nothing approved";
+              console.log(prefix ? text.split("\n").map((l) => `${name}: ${l}`).join("\n") : text);
+            },
+            onError: (name: string, e: unknown) => console.error(`${name}: merge queue pass failed: ${e instanceof Error ? e.message : String(e)}`),
+          }
+        : undefined;
+      board = startBoard({
+        projects,
+        port,
+        approver: person ? me : null,
+        queue: o.queue ? { settleSeconds: num(o["settle-seconds"], 30, "--settle-seconds") } : undefined,
+        autoQueue,
+      });
     } catch (e) {
       // Another fm serve on this port: say so and point at it, instead of failing.
       const url = `http://127.0.0.1:${port}`;
       if (port !== 0 && (e as { code?: string }).code === "EADDRINUSE") {
         const other = await fetch(`${url}/api/projects`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json() as Promise<{ board?: string }>, () => null);
         if (other?.board === "foreman") {
+          if (o.queue) {
+            // The person asked for the queue: don't let the other board's link hide that it isn't running.
+            throw new ForemanError(
+              "invalid",
+              `a foreman board is already running on port ${port} (${url}), so the merge queue did not start: stop that board and run this again, pass --port for another board, or run fm merge-queue`,
+            );
+          }
           console.log(`a foreman board is already running on port ${port}: ${url}`);
           console.log("use its link (the token was shown in the terminal that started it), or pass --port for another board");
           return 0;
@@ -324,6 +355,7 @@ export async function main(argv: string[]): Promise<number | null> {
       throw e;
     }
     console.log(`projects: ${projects.map((p) => p.name).join(", ")}`);
+    if (board.queueRunning) console.log(`merge queue: on, a pass every ${num(o.interval, 60, "--interval")} s (Ctrl-C stops it and the board)`);
     if (board.token) {
       // The token rides in the fragment, which the browser keeps to itself (D0021).
       console.log(`foreman board: ${board.openUrl}`);
