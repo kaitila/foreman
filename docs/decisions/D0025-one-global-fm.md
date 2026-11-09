@@ -1,6 +1,6 @@
 # D0025. One global `fm`: create, init, sync and setup are fm subcommands (2026-11-05)
 
-**Status:** Active
+**Status:** Amended by D0026
 
 **Context:** A person wants one command on their machine that does everything: tasks, starting a project, adding the kit, taking its updates, and checking the machine.
 
