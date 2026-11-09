@@ -98,6 +98,9 @@
   --label-width: 7rem;
   --label-width-narrow: 6rem;
   --chip-max: 10rem;
+  --slot-tag: 4.5rem;
+  --slot-act: 15.5rem;
+  --slot-pr: 2.75rem;
 
   /* Lines and focus */
   --border-width: 1px;

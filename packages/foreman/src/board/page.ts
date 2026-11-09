@@ -440,7 +440,7 @@ function visible() { return inView().filter(matches); }
 // The order j and k walk: the list's groups (open ones only), or the board's columns.
 function order() {
   const v = visible();
-  if (mode === "board") return S.lanes.flatMap((l) => v.filter((t) => t.status === l));
+  if (mode === "board") return S.lanes.flatMap((l) => v.filter((t) => t.status === l)); // Needs you holds only two statuses anyway
   return LIST_ORDER.filter((l) => !collapsed.has(l)).flatMap((l) => v.filter((t) => t.status === l));
 }
 const node = (k) => document.querySelector('#content [data-id="' + CSS.escape(k) + '"]');
@@ -480,15 +480,16 @@ function row(t, now) {
   if (t.assignee) sub.append(el("span", "", t.assignee));
   sub.append(when(t, now));
   main.append(title, sub);
+  // Fixed slots, so each column lines up from row to row; an empty slot keeps its width.
   const side = el("div", "side");
-  if (t.live) side.append(liveDot());
-  if (multi && view === "all") side.append(el("span", "proj", t.project));
-  if (t.risk !== "auto") side.append(el("span", "tag " + t.risk, t.risk));
+  const slot = (cls, ...kids) => { const s = el("span", "slot " + cls); s.append(...kids.filter(Boolean)); side.append(s); };
+  slot("s-live", t.live ? liveDot() : null);
+  if (multi && view === "all") slot("s-proj", el("span", "proj", t.project));
+  slot("s-tag", t.risk !== "auto" ? el("span", "tag " + t.risk, t.risk) : null);
   const act = actionArea(t, true);
-  if (act) side.append(act);
+  slot("s-act", act);
   // An approved task's Merge button already names its PR.
-  const pr = t.status === "approved" && act ? null : prLink(t);
-  if (pr) side.append(pr);
+  slot("s-pr", t.status === "approved" && act ? null : prLink(t));
   side.append(avatar(t.assignee), when(t, now));
   r.append(statusIcon(t.status), el("span", "id", t.id), main, side);
   return r;
@@ -502,7 +503,7 @@ function card(t, now) {
   top.append(when(t, now));
   const meta = el("div", "card-meta");
   if (t.risk !== "auto") meta.append(el("span", "tag " + t.risk, t.risk));
-  const pr = prLink(t);
+  const pr = t.status === "approved" && prNumber(t.pr) ? null : prLink(t);
   if (pr) meta.append(pr);
   if (t.live) meta.append(liveDot());
   if (t.assignee) meta.append(avatar(t.assignee));
@@ -552,7 +553,7 @@ function queueOut(cls) {
 }
 
 function renderList(box, shown, now) {
-  const wrap = el("div", "list");
+  const wrap = el("div", "list" + (shown.some(YOURS) ? " with-act" : ""));
   for (const lane of LIST_ORDER) {
     const ts = shown.filter((t) => t.status === lane);
     // Empty groups are left out, except the two that wait for the person in Needs you.
@@ -588,7 +589,7 @@ function toggleGroup(lane) {
 }
 function renderBoard(box, shown, now, scroll) {
   const wrap = el("div", "board");
-  for (const lane of S.lanes) {
+  for (const lane of S.lanes.filter((l) => !inbox || l === "needs_approval" || l === "approved")) {
     const ts = shown.filter((t) => t.status === lane);
     const sec = el("section", "lane" + (ts.length ? "" : " empty"));
     sec.dataset.lane = lane;
@@ -606,12 +607,6 @@ function renderBoard(box, shown, now, scroll) {
   box.append(wrap);
   for (const l of wrap.querySelectorAll(".lane")) l.querySelector(".cards").scrollTop = scroll.lanes.get(l.dataset.lane) || 0;
   wrap.scrollLeft = scroll.x;
-  // First paint of the board: bring the columns that wait for the person into view.
-  if (!renderBoard.done) {
-    renderBoard.done = true;
-    const lane = wrap.querySelector('.lane[data-lane="needs_approval"]:not(.empty)') || wrap.querySelector('.lane[data-lane="approved"]:not(.empty)');
-    if (lane && innerWidth > 768 && lane.getBoundingClientRect().right > innerWidth) wrap.scrollLeft = lane.offsetLeft - 12;
-  }
 }
 
 function render() {
@@ -718,6 +713,30 @@ function summary(e) {
   if (Array.isArray(d.results)) parts.push(d.results.map((r) => r.check + (r.pass ? " pass" : " fail")).join(", "));
   return parts.join("\\n");
 }
+// The spec's markdown, kept to what specs use: headings, lists, code fences, inline code.
+// Built with textContent like everything else, so no markup in a spec ever runs.
+function inline(text) {
+  const f = document.createDocumentFragment();
+  text.split("\\u0060").forEach((part, i) => { if (part) f.append(i % 2 ? el("code", "", part) : document.createTextNode(part)); });
+  return f;
+}
+function spec(md) {
+  const box = el("div", "spec");
+  let para = null, list = null, code = null;
+  const end = () => { para = null; list = null; };
+  for (const line of md.replace(/\\r/g, "").split("\\n")) {
+    if (code) { if (/^\\s*\\u0060\\u0060\\u0060/.test(line)) code = null; else code.textContent += (code.textContent ? "\\n" : "") + line; continue; }
+    if (/^\\s*\\u0060\\u0060\\u0060/.test(line)) { end(); code = el("pre", "log"); box.append(code); continue; }
+    const h = /^#{1,6}\\s+(.*)$/.exec(line);
+    const li = /^\\s*(?:[-*+]|\\d+[.)])\\s+(.*)$/.exec(line);
+    if (!line.trim()) end();
+    else if (h) { end(); const e = el("h4"); e.append(inline(h[1])); box.append(e); }
+    else if (li) { para = null; if (!list) { list = el("ul"); box.append(list); } const e = el("li"); e.append(inline(li[1])); list.append(e); }
+    else if (list && /^\\s+\\S/.test(line)) { list.lastChild.append(" ", inline(line.trim())); }
+    else { list = null; if (para) para.append(" "); else { para = el("p"); box.append(para); } para.append(inline(line.trim())); }
+  }
+  return box;
+}
 function prop(dl, name, ...value) {
   const dd = el("dd");
   dd.append(...value.filter(Boolean));
@@ -787,7 +806,7 @@ async function openTask(id) {
   body.append(slot);
   if (t.spec) {
     const s = el("section", "section");
-    s.append(el("h3", "", "Spec"), el("div", "spec", t.spec));
+    s.append(el("h3", "", "Spec"), spec(t.spec));
     body.append(s);
   }
   const cs = el("section", "section");
@@ -878,18 +897,14 @@ function commands(q) {
   const t = current(), out = [];
   const off = canAct() ? null : S.canApprove ? "open the link fm serve printed" : "read-only board";
   if (t) {
+    // Open comes first, so Enter right after Mod K never starts an approve or a merge.
+    out.push({ group: "This task", label: (openId ? "Close " : "Open ") + t.id, keys: openId ? "Esc" : "Enter", icon: "eye", run: () => (openId ? closeTask() : openTask(t.k)) });
     const a = nextAction(t, canAct(), !S.canApprove);
     if (a.kind === "approve") out.push({ group: "This task", label: "Approve " + label(t), keys: "a", icon: "check", off: a.disabled, run: () => schedule(t.k, "approve", [t.k]) });
     if (a.kind === "merge") out.push({ group: "This task", label: a.label + " (" + label(t) + ")", keys: "m", icon: "check", off: a.disabled, run: () => schedule(t.k, "merge", [t.k]) });
     if (safeUrl(t.pr)) out.push({ group: "This task", label: "Open " + (prNumber(t.pr) || "the pull request") + " on GitHub", keys: "p", icon: "external", run: () => openPr(t) });
-    out.push({ group: "This task", label: (openId ? "Close " : "Open ") + t.id, keys: openId ? "Esc" : "Enter", icon: "eye", run: () => (openId ? closeTask() : openTask(t.k)) });
     out.push({ group: "This task", label: "Copy " + t.id, icon: "copy", run: () => copy(t.id) });
   }
-  if (pending.size) out.push({ group: "Sign off", label: "Undo the last approve or merge", keys: "u", icon: "undo", run: undoLast });
-  const v = inView();
-  const need = v.filter((x) => x.status === "needs_approval"), ok = v.filter((x) => x.status === "approved");
-  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
-  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", icon: "check", off, run: () => schedule("queue", "queue", ok.map((x) => x.k)) });
   out.push({ group: "Go to", label: "Needs you", keys: "g n", icon: "inbox", run: () => setInbox(true) });
   out.push({ group: "Go to", label: "All tasks", keys: "g a", icon: "tasks", run: () => setInbox(false) });
   if (multi) {
@@ -901,6 +916,11 @@ function commands(q) {
   out.push({ group: "View", label: fin ? "Show finished tasks" : "Hide finished tasks", icon: "eye", run: () => { for (const s of ["done", "cancelled"]) { if (fin) collapsed.delete(s); else collapsed.add(s); } savePrefs(); render(); } });
   out.push({ group: "View", label: "Filter tasks", keys: "/", icon: "search", run: () => $("#filter").focus() });
   out.push({ group: "View", label: "Keyboard shortcuts", keys: "?", icon: "key", run: () => help(true) });
+  if (pending.size) out.push({ group: "Sign off", label: "Undo the last approve or merge", keys: "u", icon: "undo", run: undoLast });
+  const v = inView();
+  const need = v.filter((x) => x.status === "needs_approval"), ok = v.filter((x) => x.status === "approved");
+  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
+  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", icon: "check", off, run: () => schedule("queue", "queue", ok.map((x) => x.k)) });
   const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
   const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
   const cmds = out.filter((c) => hit(c.group + " " + c.label));
@@ -1172,7 +1192,7 @@ export function pageHtml(nonce: string, initial: unknown): string {
 </div>
 <div id="help" class="dialog small" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" hidden><div class="help-body" tabindex="-1">
 <h2>Keyboard shortcuts</h2><div id="help-keys"></div>
-<p class="why">Approve and merge wait ${UNDO_SECONDS} seconds before they're sent, with Undo.</p>
+</div><div class="dialog-foot"><p class="why">Approve and merge wait ${UNDO_SECONDS} seconds before they're sent, with Undo.</p>
 <button type="button" class="btn quiet" id="help-close">Close</button></div></div>
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <script type="application/json" id="initial">${scriptJson(initial)}</script>
