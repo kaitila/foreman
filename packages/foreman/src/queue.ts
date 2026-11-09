@@ -103,10 +103,15 @@ export async function readPr(run: Run | AsyncRun, cwd: string, pr: string): Prom
   return parsePr(await run(PR_VIEW(pr), cwd));
 }
 
-/** Reads a PR, and reads it again while GitHub is still working out whether it merges cleanly. */
-async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, tries: number, waitMs: number, sleep: (ms: number) => Promise<void>) {
+/**
+ * Reads a PR, and reads it again while GitHub is still working out whether it merges cleanly.
+ * The waits come out of one budget for the whole pass (`budget.left`), so a long queue right
+ * after main moved can't hold the pass for minutes: once it is spent, a PR is read once.
+ */
+async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, budget: { left: number }, waitMs: number, sleep: (ms: number) => Promise<void>) {
   let s = await readPr(run, cwd, pr);
-  for (let i = 0; s && s.mergeable === "UNKNOWN" && i < tries; i++) {
+  while (s && s.mergeable === "UNKNOWN" && budget.left > 0) {
+    budget.left--;
     await sleep(waitMs);
     s = await readPr(run, cwd, pr);
   }
@@ -140,9 +145,15 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
   const sleep = opts.sleep ?? defaultSleep;
   const tries = opts.mergeableRetries ?? 4;
   const waitMs = (opts.mergeableWaitSeconds ?? 3) * 1000;
-  const stillChecking = `GitHub was still working out whether it merges cleanly after ${Math.round((tries * waitMs) / 1000)} s (mergeable: UNKNOWN): run the queue again in a minute`;
+  const budget = { left: tries };
+  const stillChecking = "GitHub was still working out whether it merges cleanly (mergeable: UNKNOWN): run the queue again in a minute";
   const report: QueueEntry[] = [];
   const queue = approvedOldestFirst(f).filter((t) => opts.only === undefined || t.id === opts.only);
+  // Asking GitHub about a PR is what makes it work out mergeability: ask about every PR in the
+  // queue at once first, so they are being worked out together, not one after another.
+  if (queue.length > 1 && tries > 0) {
+    await Promise.all(queue.map((t) => f.fullPr(t.pr)).filter((p): p is string => !!p && GITHUB_PR.test(p)).map((p) => Promise.resolve(run(PR_VIEW(p), cwd)).catch(() => null)));
+  }
   for (const t of queue) {
     const entry = (action: QueueAction, reason: string) => {
       report.push({ id: t.id, pr: t.pr, action, reason });
@@ -158,7 +169,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", "its verdict recorded no commit: rework and verify again");
       continue;
     }
-    const first = await readDecided(run, cwd, pr, tries, waitMs, sleep);
+    const first = await readDecided(run, cwd, pr, budget, waitMs, sleep);
     if (!first) {
       entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
       continue;
@@ -195,7 +206,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // Settled: a check that starts late (a slow workflow, a re-run) must show up before we merge.
     await sleep(settleMs);
-    const second = await readDecided(run, cwd, pr, tries, waitMs, sleep);
+    const second = await readDecided(run, cwd, pr, budget, waitMs, sleep);
     if (!second) {
       entry("skipped", `couldn't read ${pr} again (is gh installed and logged in?)`);
       continue;

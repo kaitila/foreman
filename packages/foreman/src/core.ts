@@ -485,11 +485,6 @@ export class Foreman {
     });
   }
 
-  /**
-   * Send a submitted, verified or approved task back to work (T-0025): the PR is changing
-   * again, or a gap was found after the verdict. It must be claimed and verified anew.
-   * Its workers or a person may do this.
-   */
   /** Whether a person approved the task's current submission (an approval since its last submit). */
   personApproved(id: string): boolean {
     const evs = this.events(id);
@@ -498,6 +493,11 @@ export class Foreman {
     return evs.slice(i + 1).some((e) => e.type === "approved" && e.actorKind === "human");
   }
 
+  /**
+   * Send a submitted, verified or approved task back to work (T-0025): the PR is changing
+   * again, or a gap was found after the verdict. It must be claimed and verified anew.
+   * Its workers or a person may do this; once a person approved it, only a person (T-0094).
+   */
   rework(id: string, actor: Actor, reason: string): Task {
     return this.tx(() => {
       const t = this.get(id);

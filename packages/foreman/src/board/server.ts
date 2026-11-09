@@ -176,7 +176,8 @@ export function startBoard(opts: BoardOptions): Board {
     tasks: (() => {
       const byTask = new Map<string, Event[]>();
       for (const e of c.f.events()) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
-      return c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: approvalUndone(byTask.get(t.id) ?? []) }));
+      // An approved task is approved again, whatever happened before: nothing to flag.
+      return c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) }));
     })(),
     lastEvent: c.f.events().at(-1)?.id ?? 0,
     canApprove: token !== null,
@@ -272,6 +273,8 @@ export function startBoard(opts: BoardOptions): Board {
           const initial = {
             lanes: LANES,
             canApprove: token !== null,
+            // Who signs off here, so the page doesn't alarm the person about their own rework.
+            me: opts.approver?.name ?? null,
             projects: ctxs.map((c) => ({ name: c.name, ...state(c) })),
           };
           return new Response(pageHtml(nonce, initial), {

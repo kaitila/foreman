@@ -307,7 +307,7 @@ async function fire(key) {
   const p = pending.get(key);
   if (!p) return;
   pending.delete(key);
-  busy.set(key, { kind: p.kind, ids: p.ids, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? "Merging: waiting for checks to settle, then merging…" : "Running the queue: one pass, at most one merge…" });
+  busy.set(key, { kind: p.kind, ids: p.ids, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? (conflicting(p.ids[0]) ? "Sending back: checking the PR with GitHub…" : "Merging: waiting for checks to settle, then merging…") : "Running the queue: one pass, at most one merge…" });
   render();
   let out;
   if (p.kind === "approve") {
@@ -376,7 +376,9 @@ function toast(out) {
   close.addEventListener("click", () => t.remove());
   t.append(el("div", "out " + out.cls, out.text), close);
   box.append(t);
-  while (box.children.length > 4) box.firstChild.remove();
+  if (out.sticky) t.dataset.sticky = "1";
+  // Keep at most four, dropping the oldest that isn't meant to stay.
+  while (box.children.length > 4) (box.querySelector(".toast:not([data-sticky])") || box.firstChild).remove();
   // A sticky toast (an undone approval) stays until it is dismissed.
   if (!out.sticky) setTimeout(() => t.remove(), out.cls === "ok" ? 6000 : 14000);
 }
@@ -413,7 +415,7 @@ function actionArea(t, compact) {
   const a = nextAction(t, canAct(), !S.canApprove);
   if (compact && t.status === "approved" && prNumber(t.pr)) box.append(prLine(t));
   if (p) box.append(undoBar(pending.get(key) ? key : laneKey, p));
-  else if (busy.has(key)) { const b = busy.get(key); box.append(el("span", "busy", compact ? (b.kind === "approve" ? "Approving…" : "Merging…") : b.text)); }
+  else if (busy.has(key)) { const b = busy.get(key); box.append(el("span", "busy", compact ? (b.kind === "approve" ? "Approving…" : conflicting(key) ? "Sending back…" : "Merging…") : b.text)); }
   else if (a.kind === "approve" || a.kind === "merge") {
     // Merge is the strong button only when the PR looks mergeable; otherwise it reads as a try.
     const pb = prs.get(t.k) && prs.get(t.k).body;
@@ -422,7 +424,7 @@ function actionArea(t, compact) {
     const conflict = a.kind === "merge" && pb && pb.mergeable === "CONFLICTING";
     const b = el("button", "btn " + (strong ? a.kind : "quiet"), conflict ? "Send back " + prNumber(t.pr) : a.label);
     b.type = "button";
-    if (conflict) b.title = "Conflicts with main: this sends it back to its worker to merge main, then it is verified and approved again";
+    if (conflict) b.title = "Conflicts with main: this sends it back to its worker to merge main, then it is verified and approved again. If GitHub says it merges cleanly by then, it merges instead.";
     b.dataset.kbd = a.kind === "approve" ? "a" : "m";
     if (!compact) b.append(el("kbd", "", b.dataset.kbd));
     if (a.disabled) { b.disabled = true; b.title = "Off: " + a.disabled; }
@@ -1150,6 +1152,7 @@ function flagNewUndone() {
   for (const t of tasks) {
     if (!t.undone || undoneSeen.has(t.k + "@" + t.undone.at)) continue;
     undoneSeen.add(t.k + "@" + t.undone.at);
+    if (t.undone.byKind === "human" && S.me && t.undone.by === S.me) continue; // they did it themselves
     toast({ cls: "bad", sticky: !t.undone.conflict, text: label(t) + ": your approval was undone. " + undoneText(t.undone) + "." });
   }
 }
