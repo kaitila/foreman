@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lint, parseTokens, resolveStyles, type ResolvedDecl } from "@meta-repo/design-kit";
+import { lint, parseTokens, resolveStyles, type ResolvedDecl } from "@foreman-kit/design-kit";
 import { matchRoute } from "../src/server";
 import { assetRoutes, renderPage, UI_DIR } from "../src/server/routes/page";
 import { call } from "./helpers";

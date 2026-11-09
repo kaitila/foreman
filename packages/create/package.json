@@ -1,12 +1,12 @@
 {
-  "name": "@meta-repo/create",
+  "name": "@foreman-kit/create",
   "version": "0.1.0",
   "description": "Start a project from a preset, add the kit to an existing repo, and take the kit's updates without losing the project's changes",
   "license": "MIT",
   "type": "module",
-  "bin": { "meta-repo": "src/cli.ts" },
+  "bin": { "foreman-create": "src/cli.ts" },
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
-    "@meta-repo/agent-kit": "workspace:*"
+    "@foreman-kit/agent-kit": "workspace:*"
   }
 }

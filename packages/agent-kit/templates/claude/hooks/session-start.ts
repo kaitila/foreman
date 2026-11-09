@@ -2,6 +2,7 @@
 // Prints hookSpecificOutput.additionalContext. Prints nothing and exits 0 when there is no actor,
 // no task, no foreman, or anything goes wrong: a missing task must never stop a session.
 import { dirname, resolve } from "node:path";
+import { FOREMAN_INSTALLS } from "./scope";
 
 type Check = { id: string; kind: string; text: string };
 type Task = {
@@ -53,7 +54,7 @@ function foremanCmd(root: string): string[] | null {
     }
     return null;
   };
-  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? find("node_modules/@meta-repo/foreman/src/cli.ts");
+  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
 }
 
 /** The additionalContext to inject, or null for "say nothing". */

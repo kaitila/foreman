@@ -15,8 +15,8 @@ Each prints one line per file: `created`, `updated`, `merged`, `kept`, `deleted`
 ## create
 Makes a new project in an empty or missing folder:
 - **The preset's files** come from `presets/generate.ts`, with the name filled in (default: the folder's name).
-- **The meta-repo packages the preset uses** are packed into `.meta-repo/packages/<pkg>-<hash>.tgz`, and `package.json` points at them. The project needs nothing from this repo after that.
-- **foreman** is one of them (a devDependency). The preset also has `.mcp.json` with a `foreman` server (`bun node_modules/@meta-repo/foreman/src/cli.ts mcp`: the package's own file, never `bunx`, since npm has an unrelated `foreman`), `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` ([`templates/tasks-section.md`](templates/tasks-section.md)).
+- **The `@foreman-kit` packages the preset uses** are packed into `.meta-repo/packages/<pkg>-<hash>.tgz`, and `package.json` points at them. The project needs nothing from this repo after that.
+- **foreman** is one of them (a devDependency). The preset also has `.mcp.json` with a `foreman` server (`bun node_modules/@foreman-kit/foreman/src/cli.ts mcp`: the package's own file, never `bunx`, since npm has an unrelated `foreman`), `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` ([`templates/tasks-section.md`](templates/tasks-section.md)).
 - **The kit:** agent-kit's templates (`.claude/`), `foreman.json` (the paths that need a person's approval, `.mcp.json` among them) and a CI workflow that runs `bun run check` against Postgres.
 - **The record:** `.meta-repo/installed.json`.
 - **Then** it runs `bun install`, so the lockfile is in the first commit, and makes that commit on `main`. git needs a user name and email; it checks that before writing anything.
@@ -28,7 +28,7 @@ Adds the kit to a git repository and **never overwrites a file it has**:
 - **`docs/decisions/D0001-agent-kit.md`**, if the repo has no decision files yet. <!-- docs-check: elsewhere -->
 - **`foreman.json`**, if missing.
 - **foreman, if the repo has a `package.json`:**
-  - The package is vendored into `.meta-repo/packages/` and added as a devDependency. A repo that already depends on `@meta-repo/foreman` keeps its own. The entry is added as a text edit, so the rest of `package.json` (key order, line endings, inline arrays, a BOM) stays as it was; only if that edit doesn't parse is the file rewritten as JSON.
+  - The package is vendored into `.meta-repo/packages/` and added as a devDependency. A repo that already depends on `@foreman-kit/foreman` keeps its own. The entry is added as a text edit, so the rest of `package.json` (key order, line endings, inline arrays, a BOM) stays as it was; only if that edit doesn't parse is the file rewritten as JSON.
   - `.mcp.json` is created with the `foreman` server, or the server is merged into the one there and the file rewritten with its indent kept. Other servers, and a `foreman` server already there, are kept.
   - `.foreman/` is added to `.gitignore`.
   - The Tasks section is appended to `AGENTS.md` if it has no `## Tasks` heading.
@@ -40,7 +40,7 @@ Adds the kit to a git repository and **never overwrites a file it has**:
 A second `init` is refused; use `sync`.
 
 ## sync
-Brings the kit's files up to the meta-repo version it runs from. The kit's files are agent-kit's templates, `.claude/settings.json` and the vendored packages, foreman's included. Everything else `create` and `init` wrote is the project's from the start, and sync leaves it alone.
+Brings the kit's files up to the foreman version it runs from. The kit's files are agent-kit's templates, `.claude/settings.json` and the vendored packages, foreman's included. Everything else `create` and `init` wrote is the project's from the start, and sync leaves it alone.
 
 For each kit file it compares three versions: the hash recorded at install, the file now, and the kit's file now.
 - **The project didn't change it:** updated.

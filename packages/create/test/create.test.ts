@@ -1,4 +1,4 @@
-import { TEMPLATES } from "@meta-repo/agent-kit";
+import { SCOPE, TEMPLATES } from "@foreman-kit/agent-kit";
 import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +21,7 @@ for (const k of ["GIT_AUTHOR", "GIT_COMMITTER"]) {
   process.env[`${k}_EMAIL`] = "test@example.invalid";
 }
 
-const base = mkdtempSync(join(tmpdir(), "meta-repo-create-"));
+const base = mkdtempSync(join(tmpdir(), "foreman-create-"));
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 let n = 0;
 const fresh = (name = `app-${++n}`) => join(mkdtempSync(join(base, "d-")), name);
@@ -51,7 +51,7 @@ describe("create", () => {
     const pkg = JSON.parse(read(dir, "package.json"));
     expect(pkg.name).toBe("my-app");
     for (const dep of ["docs-check", "test-kit"]) {
-      const spec: string = pkg.devDependencies[`@meta-repo/${dep}`];
+      const spec: string = pkg.devDependencies[`@foreman-kit/${dep}`];
       expect(spec).toMatch(new RegExp(`^file:\\.meta-repo/packages/${dep}-[0-9a-f]{12}\\.tgz$`));
       expect(existsSync(join(dir, spec.slice(5)))).toBe(true);
     }
@@ -76,7 +76,7 @@ describe("create", () => {
     const dir = fresh("tasks-app");
     create(dir); // with bun install and the first commit, so the installed foreman is the one that runs
     const pkg = JSON.parse(read(dir, "package.json"));
-    const tarball = FOREMAN_TGZ.exec(pkg.devDependencies["@meta-repo/foreman"])?.[1];
+    const tarball = FOREMAN_TGZ.exec(pkg.devDependencies["@foreman-kit/foreman"])?.[1];
     expect(tarball).toBeDefined();
     expect(existsSync(join(dir, tarball!))).toBe(true);
     expect(readInstalled(dir)!.files[tarball!]).toBe(sha256(readFileSync(join(dir, tarball!))));
@@ -200,11 +200,11 @@ describe("init", () => {
 
     const out = read(dir, "package.json");
     const pkg = JSON.parse(out);
-    const tarball = FOREMAN_TGZ.exec(pkg.devDependencies["@meta-repo/foreman"])?.[1];
+    const tarball = FOREMAN_TGZ.exec(pkg.devDependencies["@foreman-kit/foreman"])?.[1];
     expect(tarball).toBeDefined();
     expect(existsSync(join(dir, tarball!))).toBe(true);
     // One line added, in the file's own indent; the rest of the text untouched.
-    expect(out).toBe(pkgText.replace('"devDependencies": {', `"devDependencies": {\n        "@meta-repo/foreman": "file:${tarball}",`));
+    expect(out).toBe(pkgText.replace('"devDependencies": {', `"devDependencies": {\n        "@foreman-kit/foreman": "file:${tarball}",`));
     expect(readInstalled(dir)!.files[tarball!]).toBe(sha256(readFileSync(join(dir, tarball!))));
 
     expect(JSON.parse(read(dir, ".mcp.json")).mcpServers).toEqual({ other: { type: "stdio", command: "other-server" }, foreman: FOREMAN_SERVER });
@@ -221,11 +221,11 @@ describe("init", () => {
     init(dir);
     for (const f of ["package.json", ".mcp.json", ".gitignore"]) expect(read(dir, f).replaceAll("\r\n", ""), f).not.toContain("\n");
     expect(read(dir, ".gitignore")).toBe("dist/\r\nnode_modules/\r\n.foreman/\r\n");
-    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/foreman"])![1];
-    expect(read(dir, "package.json")).toBe(`{\r\n  "name": "ours",\r\n  "devDependencies": {\r\n    "@meta-repo/foreman": "file:${tarball}"\r\n  }\r\n}\r\n`);
+    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/foreman"])![1];
+    expect(read(dir, "package.json")).toBe(`{\r\n  "name": "ours",\r\n  "devDependencies": {\r\n    "@foreman-kit/foreman": "file:${tarball}"\r\n  }\r\n}\r\n`);
     expect(JSON.parse(read(dir, ".mcp.json")).mcpServers.foreman).toEqual(FOREMAN_SERVER);
     // A CRLF .gitignore that already ignores it is kept.
-    const ignored = repo({ "package.json": '{ "dependencies": { "@meta-repo/foreman": "1.0.0" } }', ".gitignore": ".foreman/\r\n" });
+    const ignored = repo({ "package.json": '{ "dependencies": { "@foreman-kit/foreman": "1.0.0" } }', ".gitignore": ".foreman/\r\n" });
     init(ignored);
     expect(read(ignored, ".gitignore")).toBe(".foreman/\r\n");
   });
@@ -235,7 +235,7 @@ describe("init", () => {
     init(dir);
     const out = read(dir, "package.json");
     expect(out).toStartWith('﻿{\n  "name": "ours"');
-    expect(JSON.parse(out.slice(1)).devDependencies["@meta-repo/foreman"]).toMatch(FOREMAN_TGZ);
+    expect(JSON.parse(out.slice(1)).devDependencies["@foreman-kit/foreman"]).toMatch(FOREMAN_TGZ);
     expect(existsSync(join(dir, ".github/workflows/ci.yml"))).toBe(true); // its scripts were read too
   });
 
@@ -250,15 +250,15 @@ describe("init", () => {
     const changes = init(dir);
     expect(JSON.parse(read(dir, ".mcp.json"))).toEqual({ mcpServers: { foreman: FOREMAN_SERVER } });
     expect(read(dir, ".gitignore")).toBe(".foreman/\n");
-    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/foreman"])![1];
+    const tarball = FOREMAN_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/foreman"])![1];
     // No devDependencies and no nested line to copy the indent from: a block in two spaces.
-    expect(read(dir, "package.json")).toBe(`{ "name": "ours",\n  "devDependencies": {\n    "@meta-repo/foreman": "file:${tarball}"\n  }\n}`);
+    expect(read(dir, "package.json")).toBe(`{ "name": "ours",\n  "devDependencies": {\n    "@foreman-kit/foreman": "file:${tarball}"\n  }\n}`);
     for (const path of [".mcp.json", ".gitignore"]) expect(changes).toContainEqual(expect.objectContaining({ action: "created", path }));
   });
 
   test.each([".foreman", ".foreman/", "/.foreman/"])("keeps what's already there: a foreman dependency, a foreman server, %s ignored, a Tasks section", (entry) => {
     const mine = {
-      "package.json": JSON.stringify({ dependencies: { "@meta-repo/foreman": "1.2.3" } }),
+      "package.json": JSON.stringify({ dependencies: { "@foreman-kit/foreman": "1.2.3" } }),
       ".mcp.json": JSON.stringify({ mcpServers: { foreman: { command: "our-foreman" } } }),
       ".gitignore": `dist/\n${entry}\n`,
       "AGENTS.md": "# Ours\n\n## Tasks\nWe track work on paper.\n",
@@ -273,7 +273,7 @@ describe("init", () => {
 
   test("a foreman dependency in devDependencies or optionalDependencies is kept too", () => {
     for (const key of ["devDependencies", "optionalDependencies"]) {
-      const text = JSON.stringify({ [key]: { "@meta-repo/foreman": "file:../foreman" } });
+      const text = JSON.stringify({ [key]: { "@foreman-kit/foreman": "file:../foreman" } });
       const dir = repo({ "package.json": text });
       init(dir);
       expect(read(dir, "package.json"), key).toBe(text);
@@ -457,7 +457,7 @@ describe("sync", () => {
     expect(r.changes.map((c) => c.path).sort()).toEqual([current, "package.json"].sort());
     expect(existsSync(join(dir, old))).toBe(false);
     expect(existsSync(join(dir, current))).toBe(true);
-    expect(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/docs-check"]).toBe(`file:${current}`);
+    expect(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/docs-check"]).toBe(`file:${current}`);
     expect(Object.keys(readInstalled(dir)!.files)).toContain(current);
   });
 
@@ -481,7 +481,7 @@ describe("sync", () => {
     expect(r.changes.map((c) => c.path).sort()).toEqual([current, "package.json"].sort());
     expect(existsSync(join(dir, old))).toBe(false);
     expect(existsSync(join(dir, current))).toBe(true);
-    expect(JSON.parse(read(dir, "package.json")).devDependencies["@meta-repo/foreman"]).toBe(`file:${current}`);
+    expect(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/foreman"]).toBe(`file:${current}`);
     expect(readInstalled(dir)!.files[current]).toBe(sha256(readFileSync(join(dir, current))));
     expect(readInstalled(dir)!.files[old]).toBeUndefined();
   });
@@ -493,8 +493,8 @@ describe("sync", () => {
 
 describe("helpers", () => {
   test("addDevDependency adds one line as text, keeping order, indent and inline arrays", () => {
-    const dep = '"@meta-repo/foreman": "file:x.tgz"';
-    const add = (text: string) => addDevDependency(text, "@meta-repo/foreman", "file:x.tgz");
+    const dep = '"@foreman-kit/foreman": "file:x.tgz"';
+    const add = (text: string) => addDevDependency(text, "@foreman-kit/foreman", "file:x.tgz");
     // Into an existing block, first, in the file's indent.
     expect(add('{\n\t"files": ["a", "b"],\n\t"devDependencies": {\n\t\t"zod": "1"\n\t}\n}\n')).toBe(`{\n\t"files": ["a", "b"],\n\t"devDependencies": {\n\t\t${dep},\n\t\t"zod": "1"\n\t}\n}\n`);
     // Into an empty block.
@@ -510,27 +510,37 @@ describe("helpers", () => {
     expect(add('﻿{\n  "devDependencies": {\n    "zod": "1"\n  }\n}\n')).toBe(`﻿{\n  "devDependencies": {\n    ${dep},\n    "zod": "1"\n  }\n}\n`);
     // Every result parses and has the dependency.
     for (const t of ['{"devDependencies":{"a":"1"}}', '{ "a": 1 }', '﻿{\n  "a": 1\n}\n']) {
-      expect(JSON.parse(add(t).replace(/^﻿/, "")).devDependencies["@meta-repo/foreman"], t).toBe("file:x.tgz");
+      expect(JSON.parse(add(t).replace(/^﻿/, "")).devDependencies["@foreman-kit/foreman"], t).toBe("file:x.tgz");
     }
   });
 
   test("addDevDependency falls back to a JSON rewrite when the text edit wouldn't parse", () => {
     // A "devDependencies" key inside a string value fools the text edit.
     const text = '{\n  "description": "see \\"devDependencies\\": {} below",\n  "name": "a"\n}\n';
-    const out = addDevDependency(text, "@meta-repo/foreman", "file:x.tgz");
+    const out = addDevDependency(text, "@foreman-kit/foreman", "file:x.tgz");
     const pkg = JSON.parse(out);
-    expect(pkg.devDependencies).toEqual({ "@meta-repo/foreman": "file:x.tgz" });
+    expect(pkg.devDependencies).toEqual({ "@foreman-kit/foreman": "file:x.tgz" });
     expect(pkg.description).toBe('see "devDependencies": {} below');
     expect(pkg.name).toBe("a");
   });
 
   test("workspace deps are found and only our dep values are rewritten", () => {
-    const text = '{\n  "devDependencies": {\n    "@meta-repo/docs-check": "workspace:*",\n    "@meta-repo/other": "1.0.0",\n    "zod": "workspace:*"\n  }\n}\n';
+    const text = '{\n  "devDependencies": {\n    "@foreman-kit/docs-check": "workspace:*",\n    "@foreman-kit/other": "1.0.0",\n    "zod": "workspace:*"\n  }\n}\n';
     expect(workspaceDeps(text)).toEqual(["docs-check"]);
     const out = pointDep(text, "docs-check", ".meta-repo/packages/docs-check-abc123abc123.tgz");
     expect(out).toBe(text.replace('"workspace:*",', '"file:.meta-repo/packages/docs-check-abc123abc123.tgz",'));
     expect(pointDep(out, "docs-check", ".meta-repo/packages/docs-check-ffffffffffff.tgz")).toContain("docs-check-ffffffffffff.tgz");
     expect(pointDep(text, "other", "x.tgz")).toBe(text); // a version we didn't vendor is left alone
+  });
+
+  test("the scope comes from agent-kit's one constant, and a project made under the old scope still syncs", () => {
+    expect(SCOPE).toBe("@foreman-kit");
+    expect(FOREMAN_SERVER.args[0]).toBe(`node_modules/${SCOPE}/foreman/src/cli.ts`);
+    // Before D0026 the packages were @meta-repo/*: sync repoints that project's tarball and keeps its name.
+    const text = '{\n  "devDependencies": {\n    "@meta-repo/foreman": "file:.meta-repo/packages/foreman-000000000000.tgz",\n    "@meta-repo/docs-check": "workspace:*"\n  }\n}\n';
+    const out = pointDep(text, "foreman", ".meta-repo/packages/foreman-abc123abc123.tgz");
+    expect(out).toBe(text.replace("foreman-000000000000", "foreman-abc123abc123"));
+    expect(workspaceDeps(text)).toEqual([]); // a preset only takes packages from the workspace by the current scope
   });
 });
 

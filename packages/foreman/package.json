@@ -1,5 +1,5 @@
 {
-  "name": "@meta-repo/foreman",
+  "name": "@foreman-kit/foreman",
   "version": "0.1.0",
   "description": "Local task layer for AI coding agents working in parallel git worktrees",
   "license": "MIT",

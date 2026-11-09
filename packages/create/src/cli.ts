@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// meta-repo create | init | sync: start a project, add the kit to a repo, take the kit's updates.
+// foreman-create create | init | sync: start a project, add the kit to a repo, take the kit's updates.
 import { parseArgs } from "node:util";
 import { runKitCommand, USAGE } from "./commands";
 import { presets } from "./create";
@@ -30,6 +30,6 @@ try {
     dryRun: values["dry-run"],
   });
 } catch (e) {
-  console.error(`meta-repo: ${(e as Error).message}`);
+  console.error(`foreman-create: ${(e as Error).message}`);
   process.exit(1);
 }

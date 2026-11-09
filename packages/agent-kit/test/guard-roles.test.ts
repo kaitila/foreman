@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, type RoleRule, bashPatternMatches, checkCommand, decide, pathPatternMatches } from "../templates/claude/hooks/guard";
+import { SCOPE } from "../templates/claude/hooks/scope";
 
 const rules = (...xs: [string, string][]): RoleRule[] => xs.map(([role, rule]) => ({ role, rule }));
 const ctx = (roleRules: RoleRule[] | null, over: Partial<Context> = {}): Context => ({
@@ -221,8 +222,9 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
   });
   // A project made by create or init has foreman only as its installed package, and a
   // session's PATH has no node_modules/.bin: the hook must find the package there.
-  test("finds the project's installed @meta-repo/foreman when FOREMAN_BIN is unset and the PATH has none", () => {
-    const bin = join(tmp, "bin"); // bun alone: this machine's PATH may have a linked foreman next to it
+  // @meta-repo is foreman's old scope: a project not yet moved to the new one keeps working.
+  test.each([SCOPE, "@meta-repo"])("finds the project's installed %s/foreman when FOREMAN_BIN is unset and the PATH has none", (scope) => {
+    const bin = join(tmp, `bin-${scope.slice(1)}`); // bun alone: this machine's PATH may have a linked foreman next to it
     mkdirSync(bin, { recursive: true });
     symlinkSync(process.execPath, join(bin, "bun"));
     const env = { FOREMAN_BIN: "", PATH: `${bin}:/usr/bin:/bin` };
@@ -235,8 +237,8 @@ describe("end to end: hook + foreman policy + foreman.json", () => {
       writeFileSync(join(modules, ".bin/foreman"), "console.log('[]');\n");
       expect(run("ls", "worker-T-1", env).stderr).toContain("foreman isn't installed");
 
-      mkdirSync(join(modules, "@meta-repo"));
-      symlinkSync(join(repoRoot, "packages/foreman"), join(modules, "@meta-repo/foreman"));
+      mkdirSync(join(modules, scope));
+      symlinkSync(join(repoRoot, "packages/foreman"), join(modules, scope, "foreman"));
       expect(run("ls", "worker-T-1", env)).toEqual({ code: 0, stderr: "" });
       const r = run("ssh host true", "worker-T-1", env);
       expect(r.code).toBe(2);

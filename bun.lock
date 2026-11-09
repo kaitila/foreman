@@ -18,48 +18,48 @@
         "zod": "4.6.7",
       },
       "devDependencies": {
-        "@meta-repo/design-kit": "workspace:*",
-        "@meta-repo/docs-check": "workspace:*",
-        "@meta-repo/foreman": "workspace:*",
-        "@meta-repo/test-kit": "workspace:*",
+        "@foreman-kit/design-kit": "workspace:*",
+        "@foreman-kit/docs-check": "workspace:*",
+        "@foreman-kit/foreman": "workspace:*",
+        "@foreman-kit/test-kit": "workspace:*",
         "@types/bun": "1.3.5",
         "drizzle-kit": "0.31.11",
         "typescript": "5.9.3",
       },
     },
     "packages/agent-kit": {
-      "name": "@meta-repo/agent-kit",
+      "name": "@foreman-kit/agent-kit",
       "version": "0.1.0",
       "bin": {
         "agent-kit": "src/cli.ts",
       },
     },
     "packages/create": {
-      "name": "@meta-repo/create",
+      "name": "@foreman-kit/create",
       "version": "0.1.0",
       "bin": {
-        "meta-repo": "src/cli.ts",
+        "foreman-create": "src/cli.ts",
       },
       "dependencies": {
-        "@meta-repo/agent-kit": "workspace:*",
+        "@foreman-kit/agent-kit": "workspace:*",
       },
     },
     "packages/design-kit": {
-      "name": "@meta-repo/design-kit",
+      "name": "@foreman-kit/design-kit",
       "version": "0.1.0",
       "bin": {
         "design-kit": "src/cli.ts",
       },
     },
     "packages/docs-check": {
-      "name": "@meta-repo/docs-check",
+      "name": "@foreman-kit/docs-check",
       "version": "0.1.0",
       "bin": {
         "docs-check": "src/cli.ts",
       },
     },
     "packages/foreman": {
-      "name": "@meta-repo/foreman",
+      "name": "@foreman-kit/foreman",
       "version": "0.1.0",
       "bin": {
         "foreman": "src/cli.ts",
@@ -71,7 +71,7 @@
       },
     },
     "packages/test-kit": {
-      "name": "@meta-repo/test-kit",
+      "name": "@foreman-kit/test-kit",
       "version": "0.1.0",
       "bin": {
         "affected-tests": "src/affected-cli.ts",
@@ -143,19 +143,19 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
+    "@foreman-kit/agent-kit": ["@foreman-kit/agent-kit@workspace:packages/agent-kit"],
+
+    "@foreman-kit/create": ["@foreman-kit/create@workspace:packages/create"],
+
+    "@foreman-kit/design-kit": ["@foreman-kit/design-kit@workspace:packages/design-kit"],
+
+    "@foreman-kit/docs-check": ["@foreman-kit/docs-check@workspace:packages/docs-check"],
+
+    "@foreman-kit/foreman": ["@foreman-kit/foreman@workspace:packages/foreman"],
+
+    "@foreman-kit/test-kit": ["@foreman-kit/test-kit@workspace:packages/test-kit"],
+
     "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
-
-    "@meta-repo/agent-kit": ["@meta-repo/agent-kit@workspace:packages/agent-kit"],
-
-    "@meta-repo/create": ["@meta-repo/create@workspace:packages/create"],
-
-    "@meta-repo/design-kit": ["@meta-repo/design-kit@workspace:packages/design-kit"],
-
-    "@meta-repo/docs-check": ["@meta-repo/docs-check@workspace:packages/docs-check"],
-
-    "@meta-repo/foreman": ["@meta-repo/foreman@workspace:packages/foreman"],
-
-    "@meta-repo/test-kit": ["@meta-repo/test-kit@workspace:packages/test-kit"],
 
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.32.0", "", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-8BviX/hK4Gd2eL1KdTwm0gfl4d3wdoErW0Jd00h6nomUAtk6IJk5vwQJc6kfWtJTzN5OEV/lgIiJKI8fiDGAlA=="],
 
