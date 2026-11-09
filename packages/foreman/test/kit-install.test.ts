@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { install, mergeSettings, TEMPLATES, unmatchedOmit } from "../src/install";
+import { install, mergeSettings, TEMPLATES, unmatchedOmit } from "../src/kit/install";
 
 const dir = mkdtempSync(join(tmpdir(), "agent-kit-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

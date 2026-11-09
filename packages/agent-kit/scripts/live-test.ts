@@ -9,7 +9,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { install } from "../src/install";
+import { install } from "../../foreman/src/kit/install";
 
 const model = process.env.LIVE_TEST_MODEL ?? "claude-haiku-5-5";
 const FOREMAN = resolve(import.meta.dir, "..", "..", "foreman", "src", "cli.ts");

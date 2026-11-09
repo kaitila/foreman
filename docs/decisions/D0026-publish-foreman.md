@@ -6,7 +6,7 @@
 
 **Chosen:**
 - **The name.** The project and repository are named foreman. npm's `foreman` is an unrelated package, so the packages are published under the `@foreman-kit` scope:
-  - `@foreman-kit/foreman`: the CLI (`fm` and `foreman`), the MCP server and the board, plus everything `create`, `init` and `sync` need. That means `packages/create`'s code, agent-kit's templates and the presets ship inside it, and there are no relative imports across packages.
+  - `@foreman-kit/foreman`: the CLI (`fm` and `foreman`), the MCP server and the board, plus everything `create`, `init` and `sync` need. That means `packages/create`'s code, agent-kit's templates and the presets ship inside it, and there are no relative imports across packages. <!-- docs-check: removed -->
   - `@foreman-kit/docs-check`, `@foreman-kit/test-kit` and `@foreman-kit/design-kit`: the packages a project's own checks import.
   - The scope is set in one place in the code, so a different scope is a one-line change if `foreman-kit` can't be had.
 - **Install:** `bun add -g @foreman-kit/foreman` (or `npm i -g`; either way the CLI runs on bun, as before). `bun link` from a local checkout still works and needs no registry.

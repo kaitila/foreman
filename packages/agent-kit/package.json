@@ -1,9 +1,8 @@
 {
   "name": "@foreman-kit/agent-kit",
   "version": "0.1.0",
-  "description": "Agent guardrails and templates for Claude Code projects: settings baseline, hooks, subagents, skills",
+  "private": true,
+  "description": "The kit's guardrail baseline and templates for Claude Code projects: settings, hooks, subagents, skills. Shipped inside @foreman-kit/foreman (D0032)",
   "license": "MIT",
-  "type": "module",
-  "bin": { "agent-kit": "src/cli.ts" },
-  "exports": { ".": "./src/install.ts" }
+  "type": "module"
 }

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SCOPE } from "../src/install";
+import { SCOPE } from "../templates/claude/hooks/scope";
 
 const HOOK = join(import.meta.dir, "..", "templates/claude/hooks/session-start.ts");
 const FM = join(import.meta.dir, "..", "..", "foreman/src/cli.ts");

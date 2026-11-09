@@ -245,10 +245,7 @@ export async function main(argv: string[]): Promise<number | null> {
     return items.every((i) => i.ok) ? 0 : 1;
   }
   if (cmd === "create" || cmd === "init" || cmd === "sync") {
-    // The same code as packages/create's own CLI; this adds only the registry and sync --all.
-    const { runKitCommand } = await import("../../create/src/index").catch(() => {
-      throw new ForemanError("invalid", `fm ${cmd} needs the foreman checkout: run it from the globally linked fm (bun run link)`);
-    });
+    const { runKitCommand } = await import("./kit/index");
     const kit = { preset: o.preset, name: o.name, noInstall: o["no-install"], noGit: o["no-git"], dryRun: o["dry-run"] };
     if (args.length > 1) throw new ForemanError("invalid", `unexpected argument: ${args[1]}`);
     if (cmd === "sync" && o.all) {

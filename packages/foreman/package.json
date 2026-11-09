@@ -11,6 +11,18 @@
   "exports": {
     ".": "./src/core.ts"
   },
+  "files": [
+    "src",
+    "templates",
+    "kit",
+    "scripts/bundle-kit.ts",
+    "README.md",
+    "KIT.md"
+  ],
+  "scripts": {
+    "prepack": "bun scripts/bundle-kit.ts",
+    "postpack": "bun scripts/bundle-kit.ts --clean"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
     "zod": "4.6.7"

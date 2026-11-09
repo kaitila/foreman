@@ -126,7 +126,7 @@ jobs:
           GIT_AUTHOR_EMAIL: ci@example.invalid
           GIT_COMMITTER_NAME: ci
           GIT_COMMITTER_EMAIL: ci@example.invalid
-        run: bun packages/create/src/cli.ts create "$RUNNER_TEMP/new-app"
+        run: bun packages/foreman/src/cli.ts create "$RUNNER_TEMP/new-app"
       - name: Wait for Postgres
         run: |
           for i in $(seq 1 60); do docker exec pg pg_isready -U ci >/dev/null 2>&1 && exit 0; sleep 1; done
@@ -138,7 +138,7 @@ jobs:
           bun install --frozen-lockfile
           bun run check
           test -z "$(git status --porcelain)"
-          bun "$GITHUB_WORKSPACE/packages/create/src/cli.ts" sync
+          bun "$GITHUB_WORKSPACE/packages/foreman/src/cli.ts" sync
 
   secrets:
     runs-on: ubuntu-latest

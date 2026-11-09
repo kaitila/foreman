@@ -1,4 +1,4 @@
 {
   "extends": "../foreman/tsconfig.json",
-  "include": ["src", "test", "templates", "scripts"]
+  "include": ["test", "templates", "scripts"]
 }

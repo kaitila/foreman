@@ -1,11 +1,11 @@
-import { SCOPE, TEMPLATES } from "@foreman-kit/agent-kit";
+import { SCOPE, TEMPLATES } from "../src/kit/install";
 import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { addDevDependency } from "../src/create";
-import { create, init, sync } from "../src/index";
-import { FOREMAN_SERVER, kitFiles, ownTemplate, pointDep, RECORD, readInstalled, sha256, workspaceDeps } from "../src/kit";
+import { addDevDependency } from "../src/kit/create";
+import { create, init, sync } from "../src/kit/index";
+import { FOREMAN_SERVER, kitFiles, ownTemplate, pointDep, RECORD, readInstalled, sha256, workspaceDeps } from "../src/kit/kit";
 
 const TASKS = ownTemplate("tasks-section.md");
 const FOREMAN_TGZ = /^file:(\.meta-repo\/packages\/foreman-[0-9a-f]{12}\.tgz)$/;
@@ -533,8 +533,9 @@ describe("helpers", () => {
     expect(pointDep(text, "other", "x.tgz")).toBe(text); // a version we didn't vendor is left alone
   });
 
-  test("the scope comes from agent-kit's one constant, and a project made under the old scope still syncs", () => {
+  test("the scope comes from foreman's package name and matches the hooks' copy, and a project made under the old scope still syncs", async () => {
     expect(SCOPE).toBe("@foreman-kit");
+    expect(SCOPE).toBe((await import(join(TEMPLATES, "claude", "hooks", "scope.ts"))).SCOPE);
     expect(FOREMAN_SERVER.args[0]).toBe(`node_modules/${SCOPE}/foreman/src/cli.ts`);
     // Before D0026 the packages were @meta-repo/*: sync repoints that project's tarball and keeps its name.
     const text = '{\n  "devDependencies": {\n    "@meta-repo/foreman": "file:.meta-repo/packages/foreman-000000000000.tgz",\n    "@meta-repo/docs-check": "workspace:*"\n  }\n}\n';

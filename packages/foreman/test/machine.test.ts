@@ -23,7 +23,7 @@ function fm(args: string[], cwd: string, home: string) {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 
-describe("fm create, init, sync reach packages/create", () => {
+describe("fm create, init, sync", () => {
   test("create then sync, init, sync --all, with the registry", () => {
     const home = mkdtempSync(join(base, "home-"));
     const work = mkdtempSync(join(base, "w-"));
@@ -35,11 +35,8 @@ describe("fm create, init, sync reach packages/create", () => {
     expect(existsSync(join(app, "foreman.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(home, "projects.json"), "utf8")).projects).toContain(realpathSync(app));
 
-    // The package's own CLI gives the same text for a sync.
-    const own = Bun.spawnSync(["bun", join(import.meta.dir, "..", "..", "create", "src", "cli.ts"), "sync", app], { stdout: "pipe", stderr: "pipe" });
     const mine = fm(["sync", app], work, home);
     expect(mine.code).toBe(0);
-    expect(mine.out).toBe(own.stdout.toString());
     expect(mine.out).toContain("up to date");
 
     // init on an existing repo.

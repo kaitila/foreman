@@ -1,20 +1,28 @@
-# create
+# create, init and sync
 
-Start a project from a preset, add the kit to a repository that exists, and take the kit's updates later without losing the project's own changes ([D0018](../../docs/decisions/D0018-create-init-sync.md)). Both kinds of project get foreman ([D0020](../../docs/decisions/D0020-projects-get-foreman.md)).
+foreman's kit commands: start a project from a preset, add the kit to a repository that exists, and take the kit's updates later without losing the project's own changes ([D0018](../../docs/decisions/D0018-create-init-sync.md)). Both kinds of project get foreman ([D0020](../../docs/decisions/D0020-projects-get-foreman.md)).
 
 ```sh
-bun packages/create/src/cli.ts create <dir> [--preset bun-ts-postgres] [--name n] [--no-install] [--no-git]
-bun packages/create/src/cli.ts init [dir] [--name n]
-bun packages/create/src/cli.ts sync [dir] [--dry-run]
+fm create <dir> [--preset bun-ts-postgres] [--name n] [--no-install] [--no-git]
+fm init [dir] [--name n]
+fm sync [dir] [--dry-run]
 ```
 
-`fm create`, `fm init` and `fm sync` run this same code from anywhere ([D0025](../../docs/decisions/D0025-one-global-fm.md)).
+The code is in [`src/kit/`](src/kit/), and it runs the same from the checkout (`bun run link`) or from an installed package ([D0025](../../docs/decisions/D0025-one-global-fm.md), [D0032](../../docs/decisions/D0032-kit-ships-inside-foreman.md)).
+
+## Where the kit's files come from
+- **From the checkout,** agent-kit's templates and the presets are read where they're edited: `packages/agent-kit/templates/` and `presets/`.
+- **From an installed package,** they're in its own `kit/` folder. `bun pm pack` (and so a publish) runs `scripts/bundle-kit.ts` first, which copies agent-kit's templates to `kit/templates/` and writes each preset as `kit/presets/<name>.json`, one JSON object of its files: pack drops some file names, `.gitignore` and `bunfig.toml` among them. The script removes `kit/` again after packing. `src/kit/paths.ts` decides which of the two it is: a checkout is two folders up, with `packages/agent-kit/templates` and `presets` in it.
+- **The kit version** is this package's version in `package.json`, recorded as `source` in the project's record. No git commit is read.
+- **Vendored packages:** foreman packs itself from wherever it runs. docs-check, test-kit and design-kit are packed only from the checkout; an installed foreman can't, so `create` writes their version into `package.json` instead (`skipped  @foreman-kit/docs-check (not vendored ...)`), to be fetched from the registry once they're published.
+
+`test/installed.test.ts` packs foreman, installs the tarball globally into a temp prefix (`BUN_INSTALL`), and runs `fm help`, `fm init`, `fm sync` and `fm create` from there.
 
 Each prints one line per file: `created`, `updated`, `merged`, `kept`, `deleted`, `removed` or `skipped`, with the reason.
 
 ## create
 Makes a new project in an empty or missing folder:
-- **The preset's files** come from `presets/generate.ts`, with the name filled in (default: the folder's name).
+- **The preset's files** come from the preset generator (`src/kit/generate.ts`; `presets/generate.ts` is its CLI), with the name filled in (default: the folder's name).
 - **The `@foreman-kit` packages the preset uses** are packed into `.meta-repo/packages/<pkg>-<hash>.tgz`, and `package.json` points at them. The project needs nothing from this repo after that.
 - **foreman** is one of them (a devDependency). The preset also has `.mcp.json` with a `foreman` server (`bun node_modules/@foreman-kit/foreman/src/cli.ts mcp`: the package's own file, never `bunx`, since npm has an unrelated `foreman`), `.foreman/` in `.gitignore`, and a `## Tasks` section in `AGENTS.md` ([`templates/tasks-section.md`](templates/tasks-section.md)).
 - **The kit:** agent-kit's templates (`.claude/`), `foreman.json` (the paths that need a person's approval, `.mcp.json` among them) and a CI workflow that runs `bun run check` against Postgres.
