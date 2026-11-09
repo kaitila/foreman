@@ -2,7 +2,7 @@
 
 Last reviewed: 2026-10-31 (through D0018)
 
-Run on 2026-10-31 (T-0038, then T-0047). Decision: [D0018](../decisions/D0018-create-init-sync.md). Package: [`packages/create`](../../packages/create/README.md). <!-- docs-check: removed -->
+Run on 2026-10-31 (T-0038, then T-0047). Decision: [D0018](../decisions/D0018-create-init-sync.md). Package: [`packages/foreman/KIT.md`](../../packages/foreman/KIT.md). <!-- docs-check: removed -->
 
 **Check:** a fresh project and an existing repo both get set up and pass CI.
 
