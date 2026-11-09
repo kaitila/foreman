@@ -100,6 +100,8 @@ export const SHORTCUTS: [string, string, string][] = [
   ["v", "switch between list and board", "Go to"],
   ["a", "approve the task", "Act"],
   ["m", "merge the task", "Act"],
+  ["Shift A", "approve every waiting task in view", "Act"],
+  ["Shift M", "run the merge queue for the approved tasks in view", "Act"],
   ["u", "undo the last approve or merge", "Act"],
   ["p", "open the task's pull request", "Act"],
 ];
@@ -1010,8 +1012,8 @@ function commands(q) {
   if (pending.size) out.push({ group: "Sign off", label: "Undo the last approve or merge", keys: "u", icon: "undo", run: undoLast });
   const v = visible();
   const need = v.filter((x) => x.status === "needs_approval"), ok = v.filter((x) => x.status === "approved");
-  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (filter ? " that match the filter" : view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
-  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", icon: "check", off, run: () => schedule("queue", "queue", ok.map((x) => x.k)) });
+  if (need.length) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (filter ? " that match the filter" : view === "all" ? "" : " in " + view), keys: "Shift A", icon: "check", off, run: approveAll });
+  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", keys: "Shift M", icon: "check", off, run: runQueue });
   const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
   const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
   const cmds = out.filter((c) => hit(c.group + " " + c.label));
@@ -1236,10 +1238,28 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "g") gAt = now;
   else if (e.key === "v") setMode(mode === "list" ? "board" : "list");
   else if (e.key === "u") undoLast();
+  else if (e.key === "A") approveAll();
+  else if (e.key === "M") runQueue();
   else if (e.key === "p" && t) openPr(t);
   else if (e.key === "a" && t && nextAction(t, canAct(), !S.canApprove).kind === "approve") act(t, "approve");
   else if (e.key === "m" && t && nextAction(t, canAct(), !S.canApprove).kind === "merge") act(t, "merge");
 });
+// Shift A and Shift M: the group buttons' Approve all and Run queue, for whatever is in view,
+// through the same undo window. With nothing to do, or no token, they say so.
+function approveAll() {
+  const ids = visible().filter((t) => t.status === "needs_approval").map((t) => t.k).filter((k) => !inFlight(k));
+  if (!canAct()) toast({ cls: "skip", text: "Can't approve here: " + (S.canApprove ? "open the link fm serve printed" : "read-only board") + "." });
+  else if (pending.has("lane:approve") || busy.has("lane:approve")) toast({ cls: "skip", text: "Approve all is already on its way (u undoes it)." });
+  else if (!ids.length) toast({ cls: "skip", text: "Nothing here waits for approval." });
+  else schedule("lane:approve", "approve", ids);
+}
+function runQueue() {
+  const ids = visible().filter((t) => t.status === "approved").map((t) => t.k);
+  if (!canAct()) toast({ cls: "skip", text: "Can't merge here: " + (S.canApprove ? "open the link fm serve printed" : "read-only board") + "." });
+  else if (pending.has("queue") || busy.has("queue")) toast({ cls: "skip", text: "The merge queue is already on its way (u undoes it while it waits)." });
+  else if (!ids.length) toast({ cls: "skip", text: "Nothing here is approved to merge." });
+  else schedule("queue", "queue", ids);
+}
 // A key on a task that can't be acted on here says why, instead of doing nothing.
 function act(t, kind) {
   const a = nextAction(t, canAct(), !S.canApprove);

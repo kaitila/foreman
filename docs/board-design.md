@@ -91,10 +91,12 @@ One list, `SHORTCUTS` in `page.ts`, draws the `?` dialog; a test checks it again
 | `g 1` … `g 9` | go to that project (with several) |
 | `v` | switch between list and board |
 | `a`, `m` | approve, merge the open task, or the selected one if it is still on screen; on a task that can't be acted on here, a toast says why |
+| Shift `A` | Approve all: every task in view that needs approval (project and filter), through the undo window |
+| Shift `M` | Run the merge queue for the approved tasks in view, through the undo window |
 | `u` | undo the last approve or merge |
 | `p` | open the task's pull request |
 
-With the panel open, `j` and `k` keep moving and the panel follows. A task already waiting out its undo window or in a request, alone or in Approve all, is never scheduled twice. Keyboard focus stays on the selected task across re-renders. In the palette: ↑ ↓ (or Ctrl N / Ctrl P) move, Enter runs, Esc closes (in the colour step, Esc or Backspace on an empty input goes back). The palette offers, in this order: for the selected task, open or close, approve, merge, open the PR, copy the id; go to a view or project; a colour label for each project, the current task's project first; list or board, show or hide finished tasks, filter, shortcuts; Sign off: undo, Approve all (only the tasks the filter shows) and Run the merge queue; and every task, by id, title, status or project.
+With the panel open, `j` and `k` keep moving and the panel follows. A task already waiting out its undo window or in a request, alone or in Approve all, is never scheduled twice. Keyboard focus stays on the selected task across re-renders. In the palette: ↑ ↓ (or Ctrl N / Ctrl P) move, Enter runs, Esc closes (in the colour step, Esc or Backspace on an empty input goes back). The palette offers, in this order: for the selected task, open or close, approve, merge, open the PR, copy the id; go to a view or project; a colour label for each project, the current task's project first; list or board, show or hide finished tasks, filter, shortcuts; Sign off: undo, Approve all (Shift A; only the tasks the filter shows) and Run the merge queue (Shift M); and every task, by id, title, status or project.
 
 ## What is remembered
 In `localStorage`, per browser: List or Board, and which groups are folded (Done and Cancelled start folded). It is a convenience only; if storage is blocked the page uses the defaults. The token stays in `sessionStorage` (D0021). Colour labels are not kept in the browser: they live in the project registry, so every browser and `fm projects` show the same ones (D0028).
