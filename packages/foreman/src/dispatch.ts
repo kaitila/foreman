@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { loadConfig, pathsOverlap } from "./policy";
+import { removeFinishedSessions } from "./janitor";
 
 /** What the dispatcher needs back from a session. */
 export interface SessionResult {
@@ -215,6 +216,8 @@ export interface DispatchOptions {
   mode?: LaunchMode;
   /** Who reclaims dead leases. Default: "dispatcher" (agent). */
   actor?: Actor;
+  /** Removes finished tasks' sessions each tick (T-0099). Default: the janitor's removeFinishedSessions. */
+  cleanSessions?: (f: Foreman) => void;
   log?: (line: string) => void;
 }
 
@@ -282,6 +285,12 @@ export class Dispatcher {
   /** One pass: release dead leases, start verifiers, then workers, while slots are free. */
   tick(): void {
     this.f.reclaim(this.actor);
+    // Finished tasks' sessions leave the person's sessions list (T-0099). A convenience: never break a tick.
+    try {
+      (this.opts.cleanSessions ?? ((f: Foreman) => removeFinishedSessions(f, this.actor)))(this.f);
+    } catch {
+      /* tried again next tick */
+    }
     const free = () => this.running.size < this.max;
 
     // Finish work before starting more: submitted tasks get a verifier first.

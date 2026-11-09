@@ -541,6 +541,7 @@ export async function main(argv: string[]): Promise<number | null> {
         r.reclaimed.length ? `${would}reclaim ${r.reclaimed.join(", ")}` : "no expired claims",
         ...r.removed.map((x) => `${x.id}  ${would}remove ${x.worktree}${x.branchDeleted ? " (and its merged branch)" : ""}${x.portsReleased ? " (ports released)" : ""}`),
         ...r.kept.map((x) => `${x.id}  kept ${x.worktree}: ${x.reason}`),
+        ...r.sessions.map((x) => `${x.id}  ${would}remove ${x.sessions.length} finished session${x.sessions.length === 1 ? "" : "s"} (${x.sessions.join(", ")})`),
         ...r.stuck.map((x) => `${x.id}  stuck ${x.status} for ${x.hours}h${x.assignee ? ` @${x.assignee}` : ""}`),
       ];
       return out(r, lines.join("\n")), 0;

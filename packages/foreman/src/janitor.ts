@@ -19,10 +19,46 @@ export interface JanitorOptions {
   releasePorts?: (worktree: string) => Promise<boolean>;
 }
 
+/** A finished task's recorded background sessions not yet removed (lease_pinned minus sessions_removed). */
+export function sessionsToRemove(events: Event[]): string[] {
+  const all = new Set<string>(), removed = new Set<string>();
+  for (const e of events) {
+    if (e.type === "lease_pinned" && typeof e.data.session === "string") all.add(e.data.session);
+    if (e.type === "sessions_removed" && Array.isArray(e.data.sessions)) for (const s of e.data.sessions) removed.add(String(s));
+  }
+  return [...all].filter((id) => /^[0-9a-f]{6,}$/.test(id) && !removed.has(id));
+}
+
+/**
+ * Removes the background sessions of every done or cancelled task with `claude rm` (T-0099),
+ * whatever happened to its worktree, so they leave the person's sessions list. A session that
+ * is already gone counts as removed; one `claude rm` refuses for another reason is tried again
+ * next time. Each removal is recorded (sessions_removed), so a session is removed once.
+ * FOREMAN_KEEP_SESSIONS=1 turns it off. Under `bun test` it does nothing unless a runner is
+ * given, so a test never removes a real session.
+ */
+export function removeFinishedSessions(f: Foreman, actor: Actor, run?: Run, cwd = f.root ?? process.cwd()): { id: string; sessions: string[] }[] {
+  if (process.env.FOREMAN_KEEP_SESSIONS === "1") return [];
+  if (!run && process.env.NODE_ENV === "test") return [];
+  const exec = run ?? defaultRun;
+  const out: { id: string; sessions: string[] }[] = [];
+  for (const t of f.list({ status: ["done", "cancelled"] })) {
+    const ids = sessionsToRemove(f.events(t.id));
+    if (!ids.length) continue;
+    const gone = ids.filter((id) => exec(["claude", "rm", id], cwd) !== null || /no job matching/i.test(exec.lastError ?? ""));
+    if (!gone.length) continue;
+    f.sessionsRemoved(t.id, actor, gone);
+    out.push({ id: t.id, sessions: gone });
+  }
+  return out;
+}
+
 export interface JanitorReport {
   reclaimed: string[];
   /** sessions: the task's Claude Code background sessions removed with `claude rm` (D0022). */
   removed: { id: string; worktree: string; branchDeleted: boolean; portsReleased: boolean; sessions?: string[] }[];
+  /** Every finished task's sessions removed this run, whatever happened to its worktree (T-0099). */
+  sessions: { id: string; sessions: string[] }[];
   kept: { id: string; worktree: string; reason: string }[];
   stuck: { id: string; status: Status; since: number; hours: number; assignee: string | null }[];
 }
@@ -83,7 +119,7 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
   const root = real(opts.root ?? f.root ?? process.cwd());
   const now = (opts.now ?? Date.now)();
   const release = opts.releasePorts ?? testKitRelease;
-  const report: JanitorReport = { reclaimed: [], removed: [], kept: [], stuck: [] };
+  const report: JanitorReport = { reclaimed: [], removed: [], kept: [], stuck: [], sessions: [] };
 
   report.reclaimed = opts.dryRun
     ? f
@@ -135,10 +171,18 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
       );
       if (merged) branchDeleted = run(["git", "branch", "-D", t.branch], root) !== null;
     }
-    // Its background sessions (D0022) leave the person's `claude agents --all` with it.
-    const ids = new Set(f.events(t.id).flatMap((e) => (e.type === "lease_pinned" && typeof e.data.session === "string" ? [e.data.session] : [])));
-    const sessions = [...ids].filter((id) => /^[0-9a-f]+$/.test(id) && run(["claude", "rm", id], root) !== null);
-    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased, ...(sessions.length ? { sessions } : {}) });
+    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased });
+  }
+
+  // Their background sessions (D0022, T-0099) leave the person's `claude agents --all`, worktree or not.
+  if (!opts.dryRun) {
+    report.sessions = removeFinishedSessions(f, actor, run, root);
+    for (const r of report.removed) {
+      const s = report.sessions.find((x) => x.id === r.id);
+      if (s) r.sessions = s.sessions;
+    }
+  } else {
+    report.sessions = f.list({ status: ["done", "cancelled"] }).map((t) => ({ id: t.id, sessions: sessionsToRemove(f.events(t.id)) })).filter((x) => x.sessions.length);
   }
 
   const limit = (opts.stuckHours ?? 24) * 3_600_000;

@@ -38,6 +38,7 @@ They split the work by path: test-writer edits tests and is the only one that ru
 - A code bug from test-writer or a finding from reviewer: fix it, then send test-writer a message (by name, so it keeps its context) to rerun, until the tests pass.
 - Reviewer says "needs security-review", or you touched auth, sessions, secrets, CI or deploy files: run the `security-review` skill and fix what it confirms.
 - docs-writer says the code looks wrong: fix the code, or tell it to document the behaviour as intended.
+- Once a helper's report is folded in and you won't message it again, stop it (by name), so finished helpers don't crowd the person's sessions list.
 - Commit everything. `report_progress`.
 
 ## 5. Gate
