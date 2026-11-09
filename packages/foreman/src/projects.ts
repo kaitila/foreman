@@ -73,12 +73,18 @@ export function setColor(dir: string, color: LabelColor | null, file = registryP
   const colors = readColors(file);
   if (color) colors[dir] = color;
   else delete colors[dir];
-  writeRegistry(dirs.includes(dir) ? dirs : [...dirs, dir], file, colors);
+  // Clearing never registers a directory; setting one does, so the label has somewhere to live.
+  writeRegistry(color && !dirs.includes(dir) ? [...dirs, dir] : dirs, file, colors);
 }
 
-/** Finds a registered project by name or directory. */
+/**
+ * Finds a registered project by the name `fm projects` lists, or by any directory inside it
+ * (resolved to its repo root, as the registry stores it).
+ */
 export function findProject(nameOrDir: string, file = registryPath()): Project {
-  const hit = listProjects(file).find((p) => p.name === nameOrDir || p.dir === resolve(nameOrDir));
+  const root = projectRoot(nameOrDir);
+  const dir = "root" in root ? root.root : resolve(nameOrDir);
+  const hit = listProjects(file).find((p) => p.dir === dir) ?? listProjects(file).find((p) => p.name === nameOrDir);
   if (!hit) throw new ForemanError("not_found", `no registered project "${nameOrDir}" (fm projects lists them)`);
   return hit;
 }

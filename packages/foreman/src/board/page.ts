@@ -1131,8 +1131,8 @@ function runPal(i) {
   if (document.activeElement === document.body && sel && !palOpen && $("#help").hidden) select(sel, true);
 }
 function palKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); if (palMode) openPalette(); else closePalette(); }
-  else if (e.key === "Backspace" && palMode && !$("#palette-input").value) { e.preventDefault(); openPalette(); }
+  if (e.key === "Escape") { e.preventDefault(); if (palMode && palMode.color) openPalette(); else closePalette(); }
+  else if (e.key === "Backspace" && palMode && palMode.color && !$("#palette-input").value) { e.preventDefault(); openPalette(); }
   else if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) { e.preventDefault(); palIdx = Math.min(palItems.length - 1, palIdx + 1); markPal(); }
   else if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) { e.preventDefault(); palIdx = Math.max(0, palIdx - 1); markPal(); }
   else if (e.key === "Enter") { e.preventDefault(); runPal(palIdx); }
@@ -1150,8 +1150,15 @@ async function refresh() {
   render();
   if (openId) await openTask(openId);
 }
+let pollCount = 0;
 async function poll() {
   try {
+    if (++pollCount % 5 === 0) {
+      const ps = await get("/api/projects");
+      let changed = false;
+      for (const p of ps.projects) if (COLORS.has(p.name) && COLORS.get(p.name) !== (p.color || null)) { COLORS.set(p.name, p.color || null); changed = true; }
+      if (changed) render();
+    }
     const rs = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/events?since=" + (lastEvents.get(n) || 0)).then((r) => [n, r])));
     setLive(true);
     let changed = false;
@@ -1242,7 +1249,7 @@ function act(t, kind) {
 $("#filter").addEventListener("input", (e) => { filter = e.target.value.trim(); render(); });
 $("#help-open").addEventListener("click", () => help(true));
 $("#help-close").addEventListener("click", () => help(false));
-$("#cmdk").addEventListener("click", openPalette);
+$("#cmdk").addEventListener("click", () => openPalette());
 $("#menu").addEventListener("click", () => sideNav(!$(".app").classList.contains("nav-open")));
 $("#scrim").addEventListener("click", () => { if (palOpen) closePalette(); else if (!$("#help").hidden) help(false); else sideNav(false); });
 $("#palette-input").addEventListener("input", () => { palIdx = 0; drawPalette(); });
