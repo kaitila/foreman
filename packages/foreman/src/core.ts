@@ -78,6 +78,20 @@ export class ForemanError extends Error {
 
 export const UPGRADE = "bun add -g @foreman-kit/foreman@latest";
 
+const VERSION_PART = String.raw`v?\d+(?:\.(?:\d+|x|\*)){0,2}(?:-[0-9A-Za-z.-]+)?`;
+const COMPARATOR = new RegExp(`^(?:\\^|~|[<>]=?|=)?${VERSION_PART}$`);
+const HYPHEN = new RegExp(`^${VERSION_PART}\\s+-\\s+${VERSION_PART}$`);
+
+/** A semver range: `||`-separated sets, each a hyphen range or space-separated comparators like `>=0.2.0` or `^1.2`. */
+export function isVersionRange(range: string): boolean {
+  return range.split("||").every((set) => {
+    const t = set.trim();
+    if (!t) return false;
+    if (HYPHEN.test(t)) return true;
+    return t.split(/\s+/).every((c) => COMPARATOR.test(c));
+  });
+}
+
 /**
  * Refuses a repo whose foreman.json needs a newer foreman than this one (its `foreman` range, D0026),
  * naming the upgrade command. A repo with no range, or no foreman.json, is accepted.
@@ -86,13 +100,9 @@ export function checkVersion(root: string | null, version = VERSION, config: Con
   const range = config.foreman;
   if (range === undefined) return;
   if (typeof range !== "string" || !range.trim()) throw new ForemanError("invalid", `foreman.json "foreman" must be a version range like ">=0.2.0", got ${JSON.stringify(range)}`);
-  let ok: boolean;
-  try {
-    ok = Bun.semver.satisfies(version, range);
-  } catch {
-    throw new ForemanError("invalid", `foreman.json "foreman" is not a version range: ${JSON.stringify(range)}`);
-  }
-  if (!ok) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
+  // Bun.semver.satisfies accepts nonsense ("abc" is satisfied), so the range is checked first.
+  if (!isVersionRange(range)) throw new ForemanError("invalid", `foreman.json "foreman" is not a version range: ${JSON.stringify(range)}`);
+  if (!Bun.semver.satisfies(version, range)) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
 }
 
 export const DEFAULT_LEASE_MINUTES = 30;

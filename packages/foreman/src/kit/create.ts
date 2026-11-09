@@ -211,7 +211,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
   if (pieces.includes("docs")) addPiece(target, "docs", rec, opts, changes);
   addForeman(target, mcp, mcpText, changes);
   for (const p of pieces.filter((x) => x !== "docs")) addPiece(target, p, rec, opts, changes);
-  if (!pieces.length) changes.push({ action: "skipped", path: "pieces", note: `foreman only; add more with fm add <piece> (${PIECES.join(", ")})` });
+  if (!pieces.length) changes.push({ action: "skipped", path: "pieces", note: `foreman only; add more with fm init --with <piece> (${PIECES.join(", ")})` });
 
   writeInstalled(target, rec);
   changes.push({ action: "created", path: recordPath(target) });
