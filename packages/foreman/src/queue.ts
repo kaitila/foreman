@@ -19,6 +19,8 @@ export interface PrState {
   mergeable: string; // MERGEABLE, CONFLICTING or UNKNOWN
   isDraft?: boolean;
   checks: RollupItem[];
+  /** OPEN, MERGED or CLOSED. A merged PR reads mergeable UNKNOWN for good (T-0102). */
+  state?: string;
 }
 
 export type ChecksVerdict =
@@ -110,7 +112,7 @@ export async function readPr(run: Run | AsyncRun, cwd: string, pr: string): Prom
  */
 async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, budget: { left: number }, waitMs: number, sleep: (ms: number) => Promise<void>) {
   let s = await readPr(run, cwd, pr);
-  while (s && s.mergeable === "UNKNOWN" && budget.left > 0) {
+  while (s && s.mergeable === "UNKNOWN" && (s.state ?? "OPEN") === "OPEN" && budget.left > 0) {
     budget.left--;
     await sleep(waitMs);
     s = await readPr(run, cwd, pr);
@@ -118,14 +120,14 @@ async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, budget:
   return s;
 }
 
-export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup"];
+export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup,state"];
 
 export function parsePr(out: string | null): PrState | null {
   if (out === null) return null;
   try {
-    const j = JSON.parse(out) as { headRefOid?: string; mergeable?: string; isDraft?: boolean; statusCheckRollup?: RollupItem[] | null };
+    const j = JSON.parse(out) as { headRefOid?: string; mergeable?: string; isDraft?: boolean; statusCheckRollup?: RollupItem[] | null; state?: string };
     if (!j.headRefOid) return null;
-    return { headSha: j.headRefOid, mergeable: j.mergeable ?? "UNKNOWN", isDraft: j.isDraft === true, checks: j.statusCheckRollup ?? [] };
+    return { headSha: j.headRefOid, mergeable: j.mergeable ?? "UNKNOWN", isDraft: j.isDraft === true, checks: j.statusCheckRollup ?? [], state: j.state ?? "OPEN" };
   } catch {
     return null;
   }
@@ -172,6 +174,29 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     const first = await readDecided(run, cwd, pr, budget, waitMs, sleep);
     if (!first) {
       entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
+      continue;
+    }
+    // Merged some other way (by hand, on GitHub, or a merge that won a race): done if it is
+    // what was verified, a person's call if not. GitHub never decides mergeable for it (T-0102).
+    if (first.state === "MERGED") {
+      if (first.headSha !== verified) {
+        entry("skipped", `merged on GitHub at ${first.headSha.slice(0, 8)}, not the verified ${verified.slice(0, 8)}: a person decides`);
+        continue;
+      }
+      if (opts.dryRun) {
+        entry("would_merge", `already merged on GitHub at ${verified.slice(0, 8)}: would mark it done`);
+        continue;
+      }
+      try {
+        f.merged(t.id, actor);
+        entry("merged", `already merged on GitHub at ${verified.slice(0, 8)}`);
+      } catch (e) {
+        entry("error", e instanceof Error ? e.message : String(e));
+      }
+      continue;
+    }
+    if (first.state === "CLOSED") {
+      entry("skipped", "closed on GitHub without merging: reopen it, or rework the task");
       continue;
     }
     if (first.isDraft) {
