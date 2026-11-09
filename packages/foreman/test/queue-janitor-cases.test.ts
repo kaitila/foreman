@@ -108,7 +108,7 @@ function setupQueue() {
     expect(r.status).toBe("approved");
     return { id: t.id, pr, fake: prs.get(pr)! };
   };
-  const pass = (o: { dryRun?: boolean } = {}) => mergeQueuePass(f, queueActor, { run, cwd: "/repo", settleSeconds: 7, sleep, ...o });
+  const pass = (o: Partial<Parameters<typeof mergeQueuePass>[2]> = {}) => mergeQueuePass(f, queueActor, { run, cwd: "/repo", settleSeconds: 7, sleep, ...o });
   const merges = () => calls.filter((c) => c[1] === "pr" && c[2] === "merge");
   return { f, prs, calls, sleeps, run, sleep, approved, pass, merges, setPrInfoDown: (v: boolean) => (prInfoDown = v) };
 }
@@ -217,7 +217,8 @@ describe("merge queue (T-0033)", () => {
     ["a check going pending on the second read", [green(), { ...green(), checks: [ok("test"), running("lint")] }], "still running"],
     ["a check going red on the second read", [green(), { ...green(), checks: [ok("test"), ok("lint", "FAILURE")] }], "failing"],
     ["the head moving while checks settle", [green(), green("cccc3333dddd")], "moved while its checks settled"],
-    ["mergeability turning UNKNOWN on the second read", [green(), { ...green(), mergeable: "UNKNOWN" }], "no longer says it merges cleanly"],
+    ["mergeability staying UNKNOWN on the second read", [green(), { ...green(), mergeable: "UNKNOWN" }], "still working out whether it merges cleanly"],
+    ["mergeability turning CONFLICTING on the second read", [green(), { ...green(), mergeable: "CONFLICTING" }], "main moved while its checks settled, and it now conflicts"],
   ];
   for (const [what, views, reason] of refuses) {
     test(`refuses ${what}`, async () => {
@@ -229,6 +230,109 @@ describe("merge queue (T-0033)", () => {
       expect(q.f.get(t.id).status).toBe("approved");
     });
   }
+
+  describe("waits out GitHub's lazy mergeability (T-0094)", () => {
+    const unknown = (): PrState => ({ ...green(), mergeable: "UNKNOWN" });
+    const conflicting = (): PrState => ({ ...green(), mergeable: "CONFLICTING" });
+    const reads = (q: ReturnType<typeof setupQueue>) => q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup").length;
+
+    test("UNKNOWN on the first read, then MERGEABLE: re-read after the wait, then merged", async () => {
+      const q = setupQueue();
+      const t = q.approved([unknown(), green()]);
+      const r = await q.pass();
+      expect(r).toEqual([{ id: t.id, pr: t.pr, action: "merged", reason: expect.stringContaining("2 checks green") }]);
+      expect(q.sleeps).toEqual([3000, 7000]); // waited for GitHub, then settled
+      expect(reads(q)).toBe(3); // UNKNOWN, MERGEABLE, then the settled read
+    });
+
+    test("UNKNOWN, then CONFLICTING: sent back in the same pass", async () => {
+      const q = setupQueue();
+      const t = q.approved([unknown(), conflicting()]);
+      const r = await q.pass();
+      expect(r).toEqual([{ id: t.id, pr: t.pr, action: "sent_back", reason: expect.stringContaining("conflicts with main") }]);
+      expect(q.f.get(t.id).status).toBe("ready");
+      expect(q.merges()).toEqual([]);
+    });
+
+    test("always UNKNOWN: skipped with a run-again reason after 1 + retries reads", async () => {
+      const q = setupQueue();
+      const t = q.approved([unknown()]);
+      const r = await q.pass();
+      expect(r).toEqual([{
+        id: t.id, pr: t.pr, action: "skipped",
+        reason: "GitHub was still working out whether it merges cleanly (mergeable: UNKNOWN): run the queue again in a minute",
+      }]);
+      expect(reads(q)).toBe(5);
+      expect(q.sleeps).toEqual([3000, 3000, 3000, 3000]);
+      expect(q.f.get(t.id).status).toBe("approved");
+      expect(q.merges()).toEqual([]);
+    });
+
+    test("retries and wait are options", async () => {
+      const q = setupQueue();
+      q.approved([unknown()]);
+      const r = await q.pass({ mergeableRetries: 2, mergeableWaitSeconds: 5 });
+      expect(r[0]!.reason).toContain("still working out whether it merges cleanly");
+      expect(reads(q)).toBe(3);
+      expect(q.sleeps).toEqual([5000, 5000]);
+    });
+
+    test("UNKNOWN on the second read, then MERGEABLE: merged", async () => {
+      const q = setupQueue();
+      const t = q.approved([green(), unknown(), green()]);
+      const r = await q.pass();
+      expect(r).toEqual([{ id: t.id, pr: t.pr, action: "merged", reason: expect.stringContaining("2 checks green") }]);
+      expect(q.sleeps).toEqual([7000, 3000]);
+    });
+
+    test("mergeableRetries 0 keeps the one-read behaviour", async () => {
+      const q = setupQueue();
+      const t = q.approved([unknown(), green()]);
+      const r = await q.pass({ mergeableRetries: 0 });
+      expect(r).toEqual([{ id: t.id, pr: t.pr, action: "skipped", reason: expect.stringContaining("mergeable: UNKNOWN") }]);
+      expect(reads(q)).toBe(1);
+      expect(q.sleeps).toEqual([]);
+    });
+
+    test("the waits are one budget for the whole pass, not per PR", async () => {
+      const q = setupQueue();
+      const a = q.approved([unknown()]);
+      const b = q.approved([unknown()]);
+      const r = await q.pass();
+      expect(r.map((e) => [e.id, e.action])).toEqual([[a.id, "skipped"], [b.id, "skipped"]]);
+      expect(r[1]!.reason).toContain("still working out whether it merges cleanly");
+      expect(q.sleeps).toEqual([3000, 3000, 3000, 3000]); // all spent on the first; the second is read once
+      expect(reads(q)).toBe(2 + 5 + 1); // the up-front read of both, then 1 + 4 for a, 1 for b
+    });
+
+    test("with more than one PR, every PR is read up front, before the first is judged", async () => {
+      const q = setupQueue();
+      const a = q.approved();
+      const b = q.approved();
+      await q.pass();
+      const views = q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup").map((c) => c[3]);
+      expect(views.slice(0, 3)).toEqual([a.pr, b.pr, a.pr]);
+    });
+
+    test("no up-front read for a single PR, or with retries off", async () => {
+      const one = setupQueue();
+      one.approved();
+      await one.pass();
+      expect(reads(one)).toBe(2); // first read and settled read
+      const off = setupQueue();
+      off.approved();
+      off.approved();
+      await off.pass({ mergeableRetries: 0 });
+      expect(reads(off)).toBe(2); // only the merged one's two reads
+    });
+
+    test("one check reads as '1 check green'", async () => {
+      const q = setupQueue();
+      q.approved([green(SHA, ["test"])]);
+      const r = await q.pass();
+      expect(r[0]).toMatchObject({ action: "merged", reason: expect.stringContaining("1 check green at ") });
+    });
+  });
 
   test("refuses a PR whose head moved after the verdict (before the first read)", async () => {
     const q = setupQueue();
@@ -315,12 +419,21 @@ describe("merge queue (T-0033)", () => {
     expect(code(() => q.f.sendBackConflict(t.id, worker))).toBe("bad_status");
   });
 
-  test("the queue reports an error when foreman refuses the send-back", async () => {
+  test("a send-back that races GitHub is a skip, not an error (T-0094)", async () => {
     const q = setupQueue();
     // the queue's read says CONFLICTING, but GitHub has moved on by the time foreman checks
     const t = q.approved([{ ...green(), mergeable: "CONFLICTING" }, green()]);
     const r = await q.pass();
-    expect(r[0]).toMatchObject({ id: t.id, action: "error", reason: expect.stringContaining("not CONFLICTING") });
+    expect(r[0]).toMatchObject({ id: t.id, action: "skipped", reason: expect.stringMatching(/GitHub's answer changed while sending it back .*not CONFLICTING/) });
+    expect(q.f.get(t.id).status).toBe("approved");
+  });
+
+  test("the queue reports an error when foreman refuses the send-back for another reason", async () => {
+    const q = setupQueue();
+    const t = q.approved([{ ...green(), mergeable: "CONFLICTING" }]);
+    q.setPrInfoDown(true); // foreman can't look the PR up to confirm the conflict
+    const r = await q.pass();
+    expect(r[0]).toMatchObject({ id: t.id, action: "error" });
     expect(q.f.get(t.id).status).toBe("approved");
   });
 

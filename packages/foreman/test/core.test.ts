@@ -296,3 +296,77 @@ describe("the PR decides, not the reported branch (T-0016)", () => {
     expect(GITHUB_PR.test("https://github.com/acme/app/pull/7; rm x")).toBe(false);
   });
 });
+
+describe("a person's approval holds (T-0094)", () => {
+  /** A task walked to approved: a person signs off a "review" task, an "auto" one approves itself. */
+  function approvedTask(f: Foreman, risk: "review" | "auto") {
+    const t = task(f, { risk, ready: true });
+    f.claim(t.id, worker);
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
+    f.startVerify(t.id, verifier);
+    const v = f.recordVerify(t.id, verifier, [
+      { check: "c1", pass: true, evidence: "ok" },
+      { check: "c2", pass: true, evidence: "ok" },
+    ]);
+    if (risk === "review") {
+      expect(v.status).toBe("needs_approval");
+      f.approve(t.id, human);
+    }
+    expect(f.get(t.id).status).toBe("approved");
+    return t.id;
+  }
+
+  test("an agent can't rework a task a person approved; it stays approved with no rework event", () => {
+    const { f } = setup();
+    const id = approvedTask(f, "review");
+    expect(f.personApproved(id)).toBe(true);
+    let msg = "";
+    try {
+      f.rework(id, worker, "one more thing");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ForemanError);
+      expect((e as ForemanError).code).toBe("approved_by_person");
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain("discoveredFrom");
+    expect(f.get(id).status).toBe("approved");
+    expect(f.events(id).some((e) => e.type === "rework")).toBe(false);
+  });
+
+  test("a person can still rework a task they approved", () => {
+    const { f } = setup();
+    const id = approvedTask(f, "review");
+    expect(f.rework(id, human, "changed my mind").status).toBe("ready");
+    expect(f.events(id).at(-1)).toMatchObject({ type: "rework", actorKind: "human", data: { was: "approved" } });
+  });
+
+  test("an agent can still rework an auto-approved task (no person signed it off)", () => {
+    const { f } = setup();
+    const id = approvedTask(f, "auto");
+    expect(f.personApproved(id)).toBe(false);
+    expect(f.rework(id, worker, "found a gap").status).toBe("ready");
+  });
+
+  test("its worker can still rework a task waiting for a person's approval", () => {
+    const { f } = setup();
+    const t = task(f, { risk: "review", ready: true });
+    f.claim(t.id, worker);
+    f.submit(t.id, worker, { pr: "https://example.com/pull/1" });
+    f.startVerify(t.id, verifier);
+    f.recordVerify(t.id, verifier, [
+      { check: "c1", pass: true, evidence: "ok" },
+      { check: "c2", pass: true, evidence: "ok" },
+    ]);
+    expect(f.get(t.id).status).toBe("needs_approval");
+    expect(f.rework(t.id, worker, "found a gap").status).toBe("ready");
+  });
+
+  test("personApproved resets with a new submission", () => {
+    const { f } = setup();
+    const id = approvedTask(f, "review");
+    f.rework(id, human, "one more thing");
+    f.claim(id, worker);
+    f.submit(id, worker, { pr: "https://example.com/pull/1" });
+    expect(f.personApproved(id)).toBe(false);
+  });
+});

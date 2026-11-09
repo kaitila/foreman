@@ -95,6 +95,28 @@ export function card(t: Task) {
   return { id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, pr: t.pr, updatedAt: t.updatedAt };
 }
 
+/**
+ * A person's approval that was undone and not given again (T-0094): the last send-back of a
+ * task a person approved (an agent's or person's rework, or the merge queue's conflict send-back),
+ * unless a newer approval, merge or cancel came after it. null when there's nothing to flag.
+ */
+export function approvalUndone(events: Event[]) {
+  let undone: { by: string; byKind: string; at: number; reason: string; conflict: boolean } | null = null;
+  // Only a person's approval counts: an approval foreman gave by itself (risk auto) undone is no news to them.
+  let personApproved = false;
+  for (const e of events) {
+    if (e.type === "submitted") personApproved = false;
+    else if (e.type === "approved") {
+      undone = null;
+      personApproved = e.actorKind === "human";
+    } else if (e.type === "rework" && e.data.was === "approved") {
+      if (personApproved) undone = { by: e.actor, byKind: e.actorKind, at: e.at, reason: String(e.data.reason ?? ""), conflict: e.data.conflict === true };
+      personApproved = false;
+    } else if (e.type === "merged" || e.type === "cancelled") undone = null;
+  }
+  return undone;
+}
+
 /** Each acceptance check with the latest verdict recorded for it, if any. */
 export function checksWithVerdicts(t: Task, events: Event[]) {
   const latest = new Map<string, { pass: boolean; evidence: string; by: string; at: number }>();
@@ -156,13 +178,20 @@ export function startBoard(opts: BoardOptions): Board {
   const fail = (status: number, error: string, message: string) => json({ error, message }, status);
 
   const labels = opts.labels ?? { get: (dir: string) => readColors()[dir] ?? null, set: (dir: string, c: LabelColor | null) => setColor(dir, c) };
-  const state = (c: Ctx) => ({
-    color: labels.get(c.dir),
-    lanes: LANES,
-    tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id) })),
-    lastEvent: c.f.events().at(-1)?.id ?? 0,
-    canApprove: token !== null,
-  });
+  const state = (c: Ctx) => {
+    // The history is read once per request: grouped by task for the flags, and for the last id.
+    const evs = c.f.events();
+    const byTask = new Map<string, Event[]>();
+    for (const e of evs) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
+    return {
+      color: labels.get(c.dir),
+      lanes: LANES,
+      // An approved task is approved again, whatever happened before: nothing to flag.
+      tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) })),
+      lastEvent: evs.at(-1)?.id ?? 0,
+      canApprove: token !== null,
+    };
+  };
   const summary = (c: Ctx) => {
     const ts = c.f.list();
     return {
@@ -255,6 +284,8 @@ export function startBoard(opts: BoardOptions): Board {
           const initial = {
             lanes: LANES,
             canApprove: token !== null,
+            // Who signs off here, so the page doesn't alarm the person about their own rework.
+            me: opts.approver?.name ?? null,
             projects: ctxs.map((c) => ({ name: c.name, ...state(c) })),
           };
           return new Response(pageHtml(nonce, initial), {
