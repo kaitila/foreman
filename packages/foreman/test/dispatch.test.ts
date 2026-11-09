@@ -62,7 +62,7 @@ function setup(onLaunch?: (s: Session) => void) {
   const add = (title: string, paths: string[]) =>
     f.create({ title, acceptance: ["cmd: true"], paths, risk: "auto", ready: true }, human);
   const log: string[] = [];
-  const dispatcher = (o: { max?: number; once?: boolean } = {}) =>
+  const dispatcher = (o: { max?: number; once?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
     new Dispatcher(f, { ...o, launcher, worktrees, pollMs: 5, log: (l) => log.push(l) });
   return { f, sessions, alive, add, dispatcher, log, peak: () => peak, tick: (ms: number) => (clock += ms) };
 }
@@ -263,6 +263,53 @@ describe("dispatch", () => {
     const none = run({ fresh: true, ok: true });
     expect(none.ran).toBe(0);
     expect(none.prompt).toContain("install its dependencies first");
+  });
+
+  test("each tick cleans finished tasks' sessions once, after reclaim, before starting work (T-0099)", async () => {
+    const env = setup();
+    const t = env.add("a", ["src/a/**"]);
+    // A task held by a process that's gone: reclaim releases it before cleanSessions runs.
+    const held = env.add("held", ["docs/**"]);
+    const ghost: Actor = { name: "worker-ghost", kind: "agent" };
+    env.f.claim(held.id, ghost);
+    env.f.pinLease(held.id, ghost, 999_999);
+    const seen: { started: number; status: string; held: string }[] = [];
+    const d = env.dispatcher({
+      max: 1,
+      cleanSessions: (f) => seen.push({ started: env.sessions.length, status: f.get(t.id).status, held: f.get(held.id).status }),
+    });
+    d.tick();
+    expect(seen).toEqual([{ started: 0, status: "ready", held: "ready" }]);
+    expect(env.sessions).toHaveLength(1);
+    submit(env.f, env.sessions[0]!);
+    await flush();
+    d.tick();
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toMatchObject({ started: 1, status: "in_review" });
+  });
+
+  test("a cleanSessions that throws doesn't stop the tick: verifiers and workers still start", async () => {
+    const env = setup();
+    const a = env.add("a", ["src/a/**"]);
+    let calls = 0;
+    const d = env.dispatcher({
+      max: 3,
+      cleanSessions: () => {
+        calls++;
+        throw new Error("claude rm exploded");
+      },
+    });
+    expect(() => d.tick()).not.toThrow();
+    expect(env.sessions.map((s) => [s.opts.role, s.opts.taskId])).toEqual([["worker", a.id]]);
+    submit(env.f, env.sessions[0]!);
+    const b = env.add("b", ["src/b/**"]);
+    await flush();
+    expect(() => d.tick()).not.toThrow();
+    expect(env.sessions.slice(1).map((s) => [s.opts.role, s.opts.taskId])).toEqual([
+      ["verifier", a.id],
+      ["worker", b.id],
+    ]);
+    expect(calls).toBe(2);
   });
 
   test("--max must be at least 1", () => {
