@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { type Actor, type Event, Foreman, type Task } from "../src/core";
 import { branchFor, Dispatcher, launchModeFrom } from "../src/dispatch";
 import { toMarkdown } from "../src/export";
-import { janitor, removeFinishedSessions, sessionsToRemove } from "../src/janitor";
+import { janitor, removeFinishedSessions, SESSIONS_BACKOFF_MS, SESSIONS_PER_RUN, sessionsToRemove } from "../src/janitor";
 import {
   type AgentEntry,
   type BgCli,
@@ -431,32 +431,104 @@ describe("finished tasks' sessions leave the sessions list (T-0099)", () => {
     expect(env.removedEvents(d.id)).toHaveLength(1);
   });
 
-  test("a session already gone (No job matching) counts as removed; one claude rm refuses for another reason is tried again next time", () => {
+  test("a session already gone (No job matching) counts as removed; another failure ends the run and pauses removals for 10 minutes", () => {
     const env = setup();
     const d = env.done();
+    const later = env.done();
+    const laterIds = sessionsToRemove(env.f.events(later.id));
     const [first, second] = sessionsToRemove(env.f.events(d.id)) as [string, string];
     env.answers.set(first, `Error: No job matching "${first}"`);
     env.answers.set(second, "Error: session is running");
+    const t0 = 1_000_000_000;
 
-    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: d.id, sessions: [first] }]);
+    // first counts as removed; second fails, so the run stops there: the later task isn't tried.
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t0)).toEqual([{ id: d.id, sessions: [first] }]);
+    expect(env.rms()).toEqual([first, second]);
     expect(env.removedEvents(d.id).map((e) => e.data.sessions)).toEqual([[first]]);
+    expect(env.removedEvents(later.id)).toEqual([]);
     expect(sessionsToRemove(env.f.events(d.id))).toEqual([second]);
 
-    // Still running: nothing recorded, tried again.
+    // Paused: nothing runs until SESSIONS_BACKOFF_MS has passed.
     env.ran.length = 0;
-    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([]);
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t0 + SESSIONS_BACKOFF_MS - 1)).toEqual([]);
+    expect(env.ran).toEqual([]);
+    expect(SESSIONS_BACKOFF_MS).toBe(10 * 60_000);
+
+    // After the pause it's tried again; still failing, nothing recorded, paused again.
+    const t1 = t0 + SESSIONS_BACKOFF_MS;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t1)).toEqual([]);
     expect(env.rms()).toEqual([second]);
     expect(env.removedEvents(d.id)).toHaveLength(1);
-
-    // Stopped now: removed and recorded, and never tried again.
-    env.answers.delete(second);
     env.ran.length = 0;
-    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: d.id, sessions: [second] }]);
-    expect(env.rms()).toEqual([second]);
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t1 + 60_000)).toEqual([]);
+    expect(env.ran).toEqual([]);
+
+    // Stopped now: removed and recorded, the later task's go too, and none is tried again.
+    env.answers.delete(second);
+    const t2 = t1 + SESSIONS_BACKOFF_MS;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t2)).toEqual([
+      { id: d.id, sessions: [second] },
+      { id: later.id, sessions: laterIds },
+    ]);
     expect(env.removedEvents(d.id).map((e) => e.data.sessions)).toEqual([[first], [second]]);
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t2 + 1)).toEqual([]);
+    expect(env.ran).toEqual([]);
+  });
+
+  test("at most SESSIONS_PER_RUN (5) claude rm calls a run; the rest go on the next run", () => {
+    const env = setup();
+    const tasks = [env.done(), env.done(), env.done()]; // 6 sessions
+    expect(SESSIONS_PER_RUN).toBe(5);
+    const lastIds = sessionsToRemove(env.f.events(tasks[2]!.id)) as [string, string];
+    const first = removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(env.rms()).toHaveLength(5);
+    expect(first.map((r) => [r.id, r.sessions.length])).toEqual([
+      [tasks[0]!.id, 2],
+      [tasks[1]!.id, 2],
+      [tasks[2]!.id, 1],
+    ]);
+    env.ran.length = 0;
+    const second = removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(second).toEqual([{ id: tasks[2]!.id, sessions: [lastIds[1]] }]);
+    expect(env.rms()).toEqual([lastIds[1]]);
+    expect(tasks.every((t) => sessionsToRemove(env.f.events(t.id)).length === 0)).toBe(true);
     env.ran.length = 0;
     expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([]);
     expect(env.ran).toEqual([]);
+  });
+
+  test("the default runner runs claude rm without the parent session's variables", () => {
+    const env = setup();
+    const d = env.done();
+    const ids = sessionsToRemove(env.f.events(d.id));
+    const saved = { NODE_ENV: process.env.NODE_ENV, CLAUDECODE: process.env.CLAUDECODE, CLAUDE_JOB_DIR: process.env.CLAUDE_JOB_DIR };
+    const calls: { cmd: string[]; env: Record<string, string> }[] = [];
+    // No real process: the spy answers every spawn as a success.
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[], o: { env: Record<string, string> }) => {
+      calls.push({ cmd, env: o.env });
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as never);
+    try {
+      delete process.env.NODE_ENV;
+      process.env.CLAUDECODE = "1";
+      process.env.CLAUDE_JOB_DIR = "/tmp/job.example";
+      expect(removeFinishedSessions(env.f, janitorActor)).toHaveLength(1);
+    } finally {
+      spawn.mockRestore();
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    expect(String(process.env.NODE_ENV)).toBe("test"); // restored
+    expect(calls.map((c) => c.cmd)).toEqual(ids.map((id) => ["claude", "rm", id]));
+    expect(sessionsToRemove(env.f.events(d.id))).toEqual([]);
+    for (const c of calls) {
+      expect(c.env.CLAUDECODE).toBeUndefined();
+      expect(c.env.CLAUDE_JOB_DIR).toBeUndefined();
+      expect(c.env.PATH).toBe(process.env.PATH);
+    }
   });
 
   test("FOREMAN_KEEP_SESSIONS=1 keeps every session: no claude rm, no events", () => {
@@ -524,6 +596,45 @@ describe("finished tasks' sessions leave the sessions list (T-0099)", () => {
     expect(env.rms()).toEqual([]);
     expect(env.removedEvents(d.id)).toEqual([]);
     expect(env.removedEvents(c.id)).toEqual([]);
+  });
+
+  test("janitor --dry-run with FOREMAN_KEEP_SESSIONS=1 lists no sessions", async () => {
+    const env = setup();
+    env.done();
+    const before = process.env.FOREMAN_KEEP_SESSIONS;
+    process.env.FOREMAN_KEEP_SESSIONS = "1";
+    try {
+      const report = await janitor(env.f, janitorActor, { run: env.run, root: env.root, dryRun: true, releasePorts: async () => false });
+      expect(report.sessions).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env.FOREMAN_KEEP_SESSIONS;
+      else process.env.FOREMAN_KEEP_SESSIONS = before;
+    }
+    expect(env.rms()).toEqual([]);
+  });
+
+  test("janitor with no runner under bun test removes no sessions: no claude rm, no events", async () => {
+    expect(process.env.NODE_ENV).toBe("test");
+    const env = setup();
+    const d = env.done(); // its worktree is missing, so the janitor's only real command is `git worktree list`, in a temp dir
+    const real = Bun.spawnSync;
+    const claude: string[][] = [];
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[], o: object) => {
+      if (cmd[0] === "claude") {
+        claude.push(cmd);
+        throw new Error("spawned claude");
+      }
+      return real(cmd, o as never);
+    }) as never);
+    try {
+      const report = await janitor(env.f, janitorActor, { root: env.root, releasePorts: async () => false });
+      expect(report.sessions).toEqual([]);
+    } finally {
+      spawn.mockRestore();
+    }
+    expect(claude).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    expect(sessionsToRemove(env.f.events(d.id))).toHaveLength(2);
   });
 });
 
