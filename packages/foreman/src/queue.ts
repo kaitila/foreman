@@ -76,6 +76,13 @@ export interface QueueOptions {
   dryRun?: boolean;
   /** Only this task (the board's Merge button): the same rules, for one approved task. */
   only?: string;
+  /**
+   * GitHub works mergeability out lazily (after main moves it answers UNKNOWN for a few
+   * seconds): how many more times to read a PR that says UNKNOWN (default 4), and how long
+   * to wait between reads (default 3 seconds). T-0094.
+   */
+  mergeableRetries?: number;
+  mergeableWaitSeconds?: number;
 }
 
 export type QueueAction = "merged" | "would_merge" | "sent_back" | "would_send_back" | "skipped" | "error";
@@ -94,6 +101,16 @@ export function approvedOldestFirst(f: Foreman): Task[] {
 
 export async function readPr(run: Run | AsyncRun, cwd: string, pr: string): Promise<PrState | null> {
   return parsePr(await run(PR_VIEW(pr), cwd));
+}
+
+/** Reads a PR, and reads it again while GitHub is still working out whether it merges cleanly. */
+async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, tries: number, waitMs: number, sleep: (ms: number) => Promise<void>) {
+  let s = await readPr(run, cwd, pr);
+  for (let i = 0; s && s.mergeable === "UNKNOWN" && i < tries; i++) {
+    await sleep(waitMs);
+    s = await readPr(run, cwd, pr);
+  }
+  return s;
 }
 
 export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup"];
@@ -121,6 +138,9 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
   const cwd = opts.cwd ?? f.root ?? process.cwd();
   const settleMs = (opts.settleSeconds ?? 30) * 1000;
   const sleep = opts.sleep ?? defaultSleep;
+  const tries = opts.mergeableRetries ?? 4;
+  const waitMs = (opts.mergeableWaitSeconds ?? 3) * 1000;
+  const stillChecking = `GitHub was still working out whether it merges cleanly after ${Math.round((tries * waitMs) / 1000)} s (mergeable: UNKNOWN): run the queue again in a minute`;
   const report: QueueEntry[] = [];
   const queue = approvedOldestFirst(f).filter((t) => opts.only === undefined || t.id === opts.only);
   for (const t of queue) {
@@ -138,7 +158,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", "its verdict recorded no commit: rework and verify again");
       continue;
     }
-    const first = await readPr(run, cwd, pr);
+    const first = await readDecided(run, cwd, pr, tries, waitMs, sleep);
     if (!first) {
       entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
       continue;
@@ -165,7 +185,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       continue;
     }
     if (first.mergeable !== "MERGEABLE") {
-      entry("skipped", `GitHub hasn't worked out whether it merges cleanly yet (${first.mergeable})`);
+      entry("skipped", first.mergeable === "UNKNOWN" ? stillChecking : `GitHub doesn't say it merges cleanly (mergeable: ${first.mergeable})`);
       continue;
     }
     const v1 = judgeChecks(first.checks);
@@ -175,7 +195,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // Settled: a check that starts late (a slow workflow, a re-run) must show up before we merge.
     await sleep(settleMs);
-    const second = await readPr(run, cwd, pr);
+    const second = await readDecided(run, cwd, pr, tries, waitMs, sleep);
     if (!second) {
       entry("skipped", `couldn't read ${pr} again (is gh installed and logged in?)`);
       continue;
@@ -198,11 +218,16 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       continue;
     }
     if (second.mergeable !== "MERGEABLE") {
-      entry("skipped", `GitHub no longer says it merges cleanly (${second.mergeable})`);
+      entry(
+        "skipped",
+        second.mergeable === "UNKNOWN" ? stillChecking
+          : second.mergeable === "CONFLICTING" ? "main moved while its checks settled, and it now conflicts: the next pass sends it back"
+          : `GitHub no longer says it merges cleanly (mergeable: ${second.mergeable})`,
+      );
       continue;
     }
     if (opts.dryRun) {
-      entry("would_merge", `${v2.names.length} checks green at ${verified.slice(0, 8)}`);
+      entry("would_merge", `${v2.names.length} check${v2.names.length === 1 ? "" : "s"} green at ${verified.slice(0, 8)}`);
       return report;
     }
     // --match-head-commit: GitHub refuses if the head moved between our read and the merge.
@@ -220,7 +245,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     try {
       f.merged(t.id, actor);
-      entry("merged", `${v2.names.length} checks green at ${verified.slice(0, 8)}`);
+      entry("merged", `${v2.names.length} check${v2.names.length === 1 ? "" : "s"} green at ${verified.slice(0, 8)}`);
     } catch (e) {
       const msg = e instanceof ForemanError ? e.message : String(e);
       entry("error", `merged on GitHub, but foreman refused to mark it: ${msg}`);

@@ -92,6 +92,21 @@ export function card(t: Task) {
   return { id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, pr: t.pr, updatedAt: t.updatedAt };
 }
 
+/**
+ * A task's approval that was undone and not given again (T-0094): the last send-back of an
+ * approved task (an agent's or person's rework, or the merge queue's conflict send-back),
+ * unless a newer approval, merge or cancel came after it. null when there's nothing to flag.
+ */
+export function approvalUndone(events: Event[]) {
+  let undone: { by: string; byKind: string; at: number; reason: string; conflict: boolean } | null = null;
+  for (const e of events) {
+    if (e.type === "rework" && e.data.was === "approved") {
+      undone = { by: e.actor, byKind: e.actorKind, at: e.at, reason: String(e.data.reason ?? ""), conflict: e.data.conflict === true };
+    } else if (e.type === "approved" || e.type === "merged" || e.type === "cancelled") undone = null;
+  }
+  return undone;
+}
+
 /** Each acceptance check with the latest verdict recorded for it, if any. */
 export function checksWithVerdicts(t: Task, events: Event[]) {
   const latest = new Map<string, { pass: boolean; evidence: string; by: string; at: number }>();
@@ -151,7 +166,11 @@ export function startBoard(opts: BoardOptions): Board {
 
   const state = (c: Ctx) => ({
     lanes: LANES,
-    tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id) })),
+    tasks: (() => {
+      const byTask = new Map<string, Event[]>();
+      for (const e of c.f.events()) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
+      return c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: approvalUndone(byTask.get(t.id) ?? []) }));
+    })(),
     lastEvent: c.f.events().at(-1)?.id ?? 0,
     canApprove: token !== null,
   });

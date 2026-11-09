@@ -490,12 +490,27 @@ export class Foreman {
    * again, or a gap was found after the verdict. It must be claimed and verified anew.
    * Its workers or a person may do this.
    */
+  /** Whether a person approved the task's current submission (an approval since its last submit). */
+  personApproved(id: string): boolean {
+    const evs = this.events(id);
+    let i = evs.length - 1;
+    while (i >= 0 && evs[i]!.type !== "submitted") i--;
+    return evs.slice(i + 1).some((e) => e.type === "approved" && e.actorKind === "human");
+  }
+
   rework(id: string, actor: Actor, reason: string): Task {
     return this.tx(() => {
       const t = this.get(id);
       this.expect(t, ["in_review", "needs_approval", "approved"], "send back for rework");
       if (actor.kind !== "human" && !this.workers(id).has(actor.name)) {
         throw new ForemanError("not_worker", `only someone who worked on ${id}, or a person, can send it back`);
+      }
+      // A person's sign-off isn't undone behind their back (T-0094): new work after it is a new task.
+      if (actor.kind !== "human" && t.status === "approved" && this.personApproved(id)) {
+        throw new ForemanError(
+          "approved_by_person",
+          `${id} was approved by a person, so an agent can't send it back: file the new work as its own task (create_task with discoveredFrom ${id}), or ask the person to rework it`,
+        );
       }
       if (!reason.trim()) throw new ForemanError("invalid", "rework needs a reason");
       this.set(id, { status: "ready", assignee: null, lease_until: null });
