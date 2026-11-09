@@ -468,6 +468,8 @@ function liveDot() { const d = el("span", "live-dot"); d.title = "A session is r
 function bindItem(n, t) {
   n.dataset.id = t.k;
   n.tabIndex = sel === t.k ? 0 : -1;
+  // A group, not a button: rows and cards hold their own buttons and links.
+  n.setAttribute("role", "group");
   n.setAttribute("aria-label", t.id + " " + t.title + ", " + NAMES[t.status]);
   n.addEventListener("click", (e) => { if (e.target.closest("button, a")) return; select(t.k, false); openTask(t.k); });
   n.addEventListener("focus", () => { if (sel !== t.k) { sel = t.k; markSel(); } });
@@ -572,7 +574,10 @@ function renderList(box, shown, now) {
     tog.type = "button";
     tog.setAttribute("aria-expanded", String(!closed));
     tog.title = (closed ? "Show " : "Hide ") + NAMES[lane];
-    tog.append(icon("chev", "chev"), statusIcon(lane), el("h2", "group-name", NAMES[lane]), el("span", "group-count", ts.length));
+    const name = el("span", "group-name", NAMES[lane]);
+    name.setAttribute("role", "heading");
+    name.setAttribute("aria-level", "2");
+    tog.append(icon("chev", "chev"), statusIcon(lane), name, el("span", "group-count", ts.length));
     tog.addEventListener("click", () => toggleGroup(lane));
     const acts = el("div", "group-act");
     acts.append(...groupActions(lane, ts));
@@ -720,7 +725,11 @@ function sideNav(open) {
   syncScrim();
 }
 function syncScrim() {
-  $("#scrim").hidden = !(palOpen || !$("#help").hidden || $(".app").classList.contains("nav-open"));
+  const modal = palOpen || !$("#help").hidden;
+  $("#scrim").hidden = !(modal || $(".app").classList.contains("nav-open"));
+  // While a dialog is open, the page behind it can't take focus.
+  $(".app").inert = modal;
+  $("#detail").inert = modal;
 }
 
 function safeUrl(u) {
@@ -1013,7 +1022,7 @@ function drawPalette() {
   palIdx = Math.max(0, Math.min(palIdx, palItems.length - 1));
   const list = $("#palette-list");
   list.replaceChildren();
-  if (!palItems.length) { list.append(el("div", "pal-empty", "No commands or tasks match.")); return; }
+  if (!palItems.length) { list.append(el("div", "pal-empty", "No commands or tasks match.")); $("#palette-input").removeAttribute("aria-activedescendant"); return; }
   let group = null;
   palItems.forEach((c, i) => {
     if (c.group !== group) { group = c.group; list.append(el("div", "pal-group", group)); }
