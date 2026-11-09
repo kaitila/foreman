@@ -565,6 +565,7 @@ describe("refusing before anything is written", () => {
     expect(() => add(later, ["guardrails"])).toThrow("needs foreman >=999.0.0");
     expect(() => sync(later)).toThrow("needs foreman >=999.0.0");
     expect(() => sync(later, { dryRun: true })).toThrow("needs foreman >=999.0.0");
+    expect(JSON.parse(read(later, RECORD)).source).toBe(VERSION);
     expect(listing(later)).toEqual(set);
     expect(read(later, RECORD)).toBe(rec);
   });
@@ -600,7 +601,7 @@ describe("docs added after foreman alone", () => {
     expect(agents).toEndWith(TASKS);
     expect(count(agents, "## Tasks")).toBe(1);
     expect(agents.indexOf("## Rules")).toBeLessThan(agents.indexOf("## Tasks"));
-    expect(changes).toContainEqual(expect.objectContaining({ action: "merged", path: "AGENTS.md" }));
+    expect(changes).toContainEqual({ action: "merged", path: "AGENTS.md", note: "skeleton added above the Tasks section" });
     expect(read(dir, "CLAUDE.md")).toBe("@AGENTS.md\n");
   });
 
