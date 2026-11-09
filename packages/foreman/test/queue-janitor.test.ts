@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Actor, Foreman } from "../src/core";
 import { janitor } from "../src/janitor";
-import { DEFAULT_PROTECTED, type Policy } from "../src/policy";
+import { type AsyncRun, asyncRunner, DEFAULT_PROTECTED, type Policy } from "../src/policy";
 import { judgeChecks, mergeQueue, mergeQueuePass } from "../src/queue";
 import { openDb } from "../src/store";
 
@@ -259,5 +259,43 @@ describe("merge queue loop, two Foreman instances on one database file (T-0050)"
     expect(stale.second).toEqual([]); // the failure mode: a pinned snapshot hides the approval
     const r = await loopSeesLateApproval(true, true);
     expect(r.second.map((e) => [e.id, e.action])).toEqual([[r.ids[0]!, "would_merge"]]);
+  });
+});
+
+describe("async gh runner (T-0081)", () => {
+  test("a pass awaits an async runner: it merges, and a failed merge reports the runner's lastError", async () => {
+    const { f, gh, pass } = setup();
+    const a = approvedTask(f, gh, 71);
+    const run: AsyncRun = async (cmd) => gh.run(cmd);
+    expect(await pass({ run })).toEqual([expect.objectContaining({ id: a, action: "merged" })]);
+
+    const b = approvedTask(f, gh, 72);
+    const failing: AsyncRun = async (cmd) => {
+      await Bun.sleep(1);
+      if (cmd[2] === "merge") {
+        failing.lastError = "warning\nGraphQL: Base branch was modified";
+        return null;
+      }
+      return gh.run(cmd);
+    };
+    expect(await pass({ run: failing })).toEqual([
+      expect.objectContaining({ id: b, action: "error", reason: `gh pr merge failed for ${PR(72)}: GraphQL: Base branch was modified` }),
+    ]);
+    expect(f.get(b).status).toBe("approved");
+  });
+
+  test("asyncRunner: stdout on success; null and stderr in lastError on failure; null when the command is missing", async () => {
+    const run = asyncRunner();
+    expect(await run(["sh", "-c", "echo ' hi '"], tmpdir())).toBe("hi");
+    expect(run.lastError).toBeUndefined();
+    expect(await run(["sh", "-c", "echo out; echo boom >&2; exit 3"], tmpdir())).toBeNull();
+    expect(run.lastError).toBe("boom");
+    expect(await run(["no-such-command-t0081"], tmpdir())).toBeNull();
+    expect(run.lastError).toBeUndefined();
+    // Each runner keeps its own lastError.
+    const other = asyncRunner();
+    await other(["sh", "-c", "echo other >&2; exit 1"], tmpdir());
+    expect(other.lastError).toBe("other");
+    expect(run.lastError).toBeUndefined();
   });
 });

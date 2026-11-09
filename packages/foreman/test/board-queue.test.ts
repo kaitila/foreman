@@ -329,3 +329,60 @@ describe("stop()", () => {
     expect(passes).toBe(1);
   });
 });
+
+describe("a pass doesn't block the board (T-0081)", () => {
+  test("while a pass waits on a slow gh call, GET /api/tasks answers without waiting for it", async () => {
+    const gh = fakeGitHub();
+    const f = foreman(gh);
+    const id = approvedTask(f, gh, 61);
+    // An async gh that hangs on every call until released: a slow or hung GitHub.
+    const waiting: (() => void)[] = [];
+    const slowRun = (cmd: string[], cwd: string) =>
+      new Promise<string | null>((resolve) => waiting.push(() => resolve(gh.run(cmd, cwd))));
+    const passes: QueueEntry[][] = [];
+    const board = start({
+      foreman: f,
+      port: 0,
+      approver: null,
+      queue: { run: slowRun, settleSeconds: 0, sleep: () => Promise.resolve() },
+      autoQueue: { actor: queueActor, intervalMs: 10_000, onPass: (_p, e) => passes.push(e) },
+    });
+    expect(await until(() => waiting.length === 1)).toBe(true); // the pass is stuck on gh pr view
+    const t0 = Date.now();
+    const res = await fetch(`${board.url}/api/tasks`, { signal: AbortSignal.timeout(2000) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tasks: { id: string; status: string }[] };
+    expect(body.tasks.find((t) => t.id === id)?.status).toBe("approved");
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(passes).toEqual([]); // the pass is still waiting
+    // Let GitHub answer every call: the pass goes on and merges.
+    while (passes.length === 0) {
+      waiting.splice(0).forEach((r) => r());
+      await Bun.sleep(5);
+    }
+    expect(passes[0]).toEqual([expect.objectContaining({ id, action: "merged" })]);
+    expect(f.get(id).status).toBe("done");
+  });
+
+  test("the Run queue button: the board answers while its pass waits on gh", async () => {
+    const gh = fakeGitHub();
+    const f = foreman(gh);
+    const id = approvedTask(f, gh, 62);
+    const waiting: (() => void)[] = [];
+    const slowRun = (cmd: string[], cwd: string) =>
+      new Promise<string | null>((resolve) => waiting.push(() => resolve(gh.run(cmd, cwd))));
+    const board = start({ foreman: f, port: 0, approver: human, queue: { run: slowRun, settleSeconds: 0, sleep: () => Promise.resolve() } });
+    const click = fetch(`${board.url}/api/queue/run`, { method: "POST", headers: { "x-foreman-token": board.token! } });
+    expect(await until(() => waiting.length === 1)).toBe(true);
+    const res = await fetch(`${board.url}/api/tasks`, { signal: AbortSignal.timeout(2000) });
+    expect(res.status).toBe(200);
+    let done = false;
+    void click.then(() => (done = true));
+    while (!done) {
+      waiting.splice(0).forEach((r) => r());
+      await Bun.sleep(5);
+    }
+    expect((await click).status).toBe(200);
+    expect(f.get(id).status).toBe("done");
+  });
+});

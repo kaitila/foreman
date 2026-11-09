@@ -2,7 +2,7 @@
 // whose checks have settled green at the commit that was verified. gh goes through an
 // injectable runner, so tests need no network.
 import { type Actor, Foreman, ForemanError, type Task } from "./core";
-import { defaultRun, GITHUB_PR, type Run } from "./policy";
+import { type AsyncRun, asyncRunner, GITHUB_PR, type Run } from "./policy";
 
 /** One check on the PR's head, as `gh pr view --json statusCheckRollup` reports it. */
 interface RollupItem {
@@ -62,8 +62,11 @@ export function judgeChecks(checks: RollupItem[]): ChecksVerdict {
 }
 
 export interface QueueOptions {
-  /** Runs gh (default: the real one). */
-  run?: Run;
+  /**
+   * Runs gh (default: the real one, run asynchronously so a board serving requests isn't
+   * blocked while a pass waits on GitHub). A synchronous runner works too.
+   */
+  run?: Run | AsyncRun;
   /** Where gh runs: the repository root (default: foreman's root). */
   cwd?: string;
   /** Minimum time between the two reads of a PR's checks (default 30). */
@@ -89,8 +92,8 @@ export function approvedOldestFirst(f: Foreman): Task[] {
   return f.list({ status: ["approved"] }).sort((a, b) => a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
 }
 
-export function readPr(run: Run, cwd: string, pr: string): PrState | null {
-  return parsePr(run(PR_VIEW(pr), cwd));
+export async function readPr(run: Run | AsyncRun, cwd: string, pr: string): Promise<PrState | null> {
+  return parsePr(await run(PR_VIEW(pr), cwd));
 }
 
 export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup"];
@@ -114,7 +117,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * merge: main has moved, so every other PR's state is read again on the next pass.
  */
 export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOptions = {}): Promise<QueueEntry[]> {
-  const run = opts.run ?? defaultRun;
+  const run = opts.run ?? asyncRunner();
   const cwd = opts.cwd ?? f.root ?? process.cwd();
   const settleMs = (opts.settleSeconds ?? 30) * 1000;
   const sleep = opts.sleep ?? defaultSleep;
@@ -135,7 +138,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", "its verdict recorded no commit: rework and verify again");
       continue;
     }
-    const first = readPr(run, cwd, pr);
+    const first = await readPr(run, cwd, pr);
     if (!first) {
       entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
       continue;
@@ -172,7 +175,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // Settled: a check that starts late (a slow workflow, a re-run) must show up before we merge.
     await sleep(settleMs);
-    const second = readPr(run, cwd, pr);
+    const second = await readPr(run, cwd, pr);
     if (!second) {
       entry("skipped", `couldn't read ${pr} again (is gh installed and logged in?)`);
       continue;
@@ -203,12 +206,12 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       return report;
     }
     // --match-head-commit: GitHub refuses if the head moved between our read and the merge.
-    const out = run(["gh", "pr", "merge", pr, "--merge", "--delete-branch", "--match-head-commit", verified], cwd);
+    const out = await run(["gh", "pr", "merge", pr, "--merge", "--delete-branch", "--match-head-commit", verified], cwd);
     const mergeError = out === null ? run.lastError : undefined;
     if (out === null) {
       // gh can fail after the merge itself (deleting a local branch a worktree holds):
       // ask GitHub whether it merged before calling it a failure.
-      const state = run(["gh", "pr", "view", pr, "--json", "state", "--jq", ".state"], cwd);
+      const state = await run(["gh", "pr", "view", pr, "--json", "state", "--jq", ".state"], cwd);
       if (state !== "MERGED") {
         const why = mergeError?.split("\n").map((l) => l.trim()).filter(Boolean).pop();
         entry("error", `gh pr merge failed for ${pr}${why ? `: ${why}` : ""}`);
