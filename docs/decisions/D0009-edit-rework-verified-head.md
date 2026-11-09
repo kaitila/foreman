@@ -1,6 +1,6 @@
 # D0009. Tasks can be edited before work and sent back after review; what merges must be what was verified (2026-10-30)
 
-**Status:** Active
+**Status:** Amended by D0031
 
 **Context:** Three gaps the verifiers kept running into:
 - Task paths turned out too narrow while working, and there was no way to change a task (T-0009).

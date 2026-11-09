@@ -1,0 +1,18 @@
+# D0031. An agent can't undo a person's approval, the merge queue waits out GitHub's UNKNOWN, and the board flags both (2026-11-09)
+
+**Status:** Active
+
+**Context:** Two surprises in one afternoon. An agent reworked T-0089 a minute after the person approved it, to add a feature they had just asked for in the same PR. That reset the approval, and the board showed the task as Claimed with no sign of why. Then Run queue skipped both approved PRs because GitHub said `mergeable: UNKNOWN`: GitHub works mergeability out lazily after main moves and answers UNKNOWN for a few seconds. The board showed the skips in green and kept that text after the cards had changed. Amends [D0009](D0009-edit-rework-verified-head.md) (who may rework) and [D0012](D0012-merge-queue-conflict-send-back.md) (what the queue skips).
+
+**Chosen:**
+- **An agent can't rework a task a person approved.** If the task is `approved` and a person's `approved` event came after its last submit, an agent's `rework` gets `approved_by_person`. The error says to file the new work as its own task (`create_task` with `discoveredFrom`) or ask the person. A person can still rework it, and agents can still rework auto-approved tasks and anything not yet approved.
+- **The merge queue reads an UNKNOWN PR again.** On both of its reads ([D0012](D0012-merge-queue-conflict-send-back.md)), a PR GitHub calls `UNKNOWN` is read up to 4 more times, 3 seconds apart (`QueueOptions.mergeableRetries`, `mergeableWaitSeconds`). One that turns out to conflict on the first read is sent back in the same pass. One still UNKNOWN is skipped with a reason that says to run the queue again in a minute.
+- **The board flags an undone approval.** A task whose approval was undone (any rework of an approved task, the queue's conflict send-back included) carries `undone` in `/api/tasks`: who, when, why. The page shows a red **Approval undone** tag on its row or card and a "Your approval was undone" note in its panel. When it happens while the board is open, a toast says so and stays until dismissed; a conflict send-back's toast leaves on its own, since the queue's notice already reports it. The flag clears on a new approval, a merge or a cancel.
+- **The board shows a queue pass as a notice that tells the truth.** It sits at the top of the list (in the Approved column on the board), green only if something merged, amber if nothing did, red if anything failed. Each PR's outcome is listed in its own words, and the notice clears itself once a task it names changes status. An UNKNOWN PR reads "GitHub is checking if it merges", and a conflicting PR's button reads **Send back #n**, because that is what it does ([D0021](D0021-board-one-click-sign-off.md)).
+
+**Why:**
+- A person's sign-off is the one human gate ([D0008](D0008-risk-from-paths.md)). An agent undoing it, even with good intent, defeats the gate without the person seeing it. New work after a sign-off is a new task, which costs one more PR and keeps the approved one mergeable.
+- GitHub's lazy mergeability makes a single read unreliable right after main moves, which is exactly when the queue reads (after its own last merge). A few seconds of waiting turns most of those skips into merges.
+- The board is how the person sees what happened. A skip shown in green reads as a merge, and a result that outlives the cards it describes is wrong by the time it's read. Red means something was undone or failed, nothing else.
+
+**Revisit if:** GitHub exposes mergeability synchronously (then one read is enough), or people want agents to amend an approved PR with their explicit consent (then the refusal needs a way to give it).
