@@ -55,6 +55,20 @@ describe("buildLaunch", () => {
     }
   });
 
+  test("bg mode: foreman's variables reach the session through settings, never the spawn env (T-0100)", () => {
+    // `claude --bg` may start Claude Code's background service, which keeps its env for every later session.
+    const baseEnv = { PATH: "/bin", FOREMAN_ACTOR: "verifier-T-0089", FOREMAN_AGENT: "1", FOREMAN_DB: "/x.db" };
+    const { cmd, env } = buildLaunch(base({ role: "worker", taskId: "T-0042", mode: "bg", baseEnv }));
+    expect(cmd.slice(0, 2)).toEqual(["claude", "--bg"]);
+    expect(Object.keys(env).filter((k) => k.startsWith("FOREMAN_"))).toEqual([]);
+    expect(env.PATH).toBe("/bin");
+    const settings = JSON.parse(flag(cmd, "--settings")!);
+    expect(settings.env.FOREMAN_ACTOR).toBe("worker-T-0042");
+    expect(settings.env.FOREMAN_BIN).toStartWith("bun ");
+    // Print mode's process ends with its session, and needs the env.
+    expect(buildLaunch(base({ role: "worker", taskId: "T-0042", baseEnv })).env.FOREMAN_ACTOR).toBe("worker-T-0042");
+  });
+
   test("overrides for turns and budget", () => {
     const { cmd } = buildLaunch(base({ maxTurns: 7, maxBudgetUsd: 0.25 }));
     expect(flag(cmd, "--max-turns")).toBe("7");

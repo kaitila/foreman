@@ -241,7 +241,10 @@ export function buildLaunch(opts: LaunchOptions): LaunchSpec {
       "--", opts.prompt,
     ];
     // The person's own config dir (D0022): that is where `claude agents` looks.
-    return { cmd, env };
+    // No FOREMAN_* in the spawn env: when `claude --bg` starts Claude Code's background
+    // service, the service keeps this env for every later session, the person's own too
+    // (T-0100). Settings carry foreman's variables to this session alone.
+    return { cmd, env: withoutForeman(env) };
   }
 
   const settings = { claudeMdExcludes: ancestorClaudeMds(root) };
@@ -572,11 +575,19 @@ async function runCmd(cmd: string[], o: { cwd?: string; env?: Record<string, str
   return { code, stdout, stderr };
 }
 
-/** The caller's env minus a parent session's variables, so `claude` doesn't think it is nested. */
+/** An env without foreman's own variables (FOREMAN_ACTOR, FOREMAN_AGENT, ...). */
+export function withoutForeman(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("FOREMAN_")));
+}
+
+/**
+ * The caller's env minus a parent session's variables, so `claude` doesn't think it is nested,
+ * and minus foreman's, which Claude Code's background service would keep (T-0100).
+ */
 function callerEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !STRIPPED_ENV.includes(k)) env[k] = v;
-  return env;
+  return withoutForeman(env);
 }
 
 /**
