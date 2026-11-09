@@ -13,13 +13,13 @@ Talk to foreman through its MCP tools (`claim_task`, `report_progress`, `submit_
 
 ## 1. Claim and isolate
 - `claim_task` (a given id, or the next ready one). If the claim is refused, stop and say why.
-- Read the task (`show_task`): its spec, its acceptance checks, its `paths`. The checks are what you'll be judged on, so read them before you write code.
+- Read the task (`show_task`): its spec, its acceptance checks, its `paths`. If it names a `plan:`, read that too (`show_plan`): the goal and the steps around yours say what this task is for and what comes after it. The checks are what you'll be judged on, so read them before you write code.
 - Work in your own git worktree, branched from the latest `origin/main`. If the project gives each worktree its own database or ports, use them.
 - `report_progress` with the branch and worktree. Foreman needs the branch to find your PR's changes.
 
 ## 2. Write the code
 - Read the doc for the area you're changing, and the decisions it cites, before you change it.
-- Stay inside the task's `paths`; the guard hook refuses edits outside them. Work you find that's outside them is a new task: `create_task` with `discoveredFrom` set to this one. Search `list_tasks` first so it isn't a duplicate.
+- Stay inside the task's `paths`; the guard hook refuses edits outside them. Work you find that's outside them is a new task: `create_task` with `discoveredFrom` set to this one, and with `plan` and `step` when your task is in a plan and the new work belongs to it. Search `list_tasks` first so it isn't a duplicate.
 - A mechanical change across many files (a rename, an import move): make it with one scripted edit (`sed`, `perl` or a short script), then read the diff. Don't edit file by file.
 - While you work, run the typecheck and the area's tests, not the full check: that runs once, in step 5.
 - Typecheck, then commit, so any agents in step 3 see a stable diff. `report_progress` with one line.

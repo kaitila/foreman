@@ -13,6 +13,7 @@ import {
 } from "./core";
 import { hasLiveSession, printLogs } from "./activity";
 import { toMarkdown } from "./export";
+import { parseStep, planLine, planText, Plans } from "./plans";
 import { janitor } from "./janitor";
 import { listProjects, recordProject } from "./projects";
 import { mergeQueue, type QueueEntry } from "./queue";
@@ -43,7 +44,7 @@ Projects
 
 Tasks
   add <title> [--spec md] [--check "cmd: bun test"]... [--path glob]... [--risk auto|review|human]
-              [--parent T-1] [--blocked-by T-2]... [--from T-3] [--ready]
+              [--parent T-1] [--blocked-by T-2]... [--from T-3] [--plan P-1 --step n] [--ready]
   ready-up <id>                 draft -> ready (needs at least one check)
   list [--status s]... [--mine]  (* marks a task with a live session)
   next                          ready tasks whose blockers are done
@@ -58,6 +59,16 @@ Tasks
   intake <request> [--ready] [--model m] [--budget usd]
                                 a read-only session files the request as tasks (spec, checks, paths),
                                 skipping what the board already has; drafts unless --ready; prints the ids
+
+Plans (ordered steps, each with a check; progress comes from the steps' tasks)
+  plan new <title> --step "title :: check"... [--goal md]
+  plan list                     every plan with steps and tasks done, active first
+  plan show <P>                 the goal, then each step: its check, state and tasks
+  plan step <P> "title :: check"   add a step at the end
+  plan edit <P> [--title t] [--goal md]
+  plan add <T> <P> <step>       put a task in a step (moves it from any other plan)
+  plan remove <T>               take a task out of its plan
+  plan cancel <P> --reason text
 
 Working (worker)
   claim [id] [--lease min]      claim a task, or the next ready one
@@ -182,6 +193,9 @@ export async function main(argv: string[]): Promise<number | null> {
       all: { type: "boolean" },
       "no-link": { type: "boolean" },
       follow: { type: "boolean", short: "f" },
+      goal: { type: "string" },
+      plan: { type: "string" },
+      step: { type: "string", multiple: true },
     },
   });
   const [cmd, ...args] = positionals;
@@ -391,7 +405,10 @@ export async function main(argv: string[]): Promise<number | null> {
       // No --risk: core picks it from the paths (D0008). Don't default to "review" here.
       const risk = o.risk as Task["risk"] | undefined;
       if (risk !== undefined && !["auto", "review", "human"].includes(risk)) throw new ForemanError("invalid", `bad risk ${risk}`);
-      const t = f.create(
+      if ((o.plan === undefined) !== (o.step === undefined)) throw new ForemanError("invalid", "--plan and --step go together");
+      if (o.step && o.step.length > 1) throw new ForemanError("invalid", "a task goes in one step");
+      const placement = o.plan ? { plan: o.plan, step: num(o.step![0], 0, "--step") } : null;
+      const t = new Plans(f).createTask(
         {
           title: args.join(" "),
           spec: o.spec,
@@ -403,6 +420,7 @@ export async function main(argv: string[]): Promise<number | null> {
           discoveredFrom: o.from,
           ready: o.ready,
         },
+        placement,
         me,
       );
       return one(t), 0;
@@ -421,7 +439,52 @@ export async function main(argv: string[]): Promise<number | null> {
     case "show": {
       const t = f.get(need(0, "task id"));
       const ev = f.events(t.id);
-      return out({ ...t, events: ev }, toMarkdown(t, ev)), 0;
+      const placed = new Plans(f).placement(t.id);
+      return out({ ...t, plan: placed, events: ev }, toMarkdown(t, ev, placed)), 0;
+    }
+    case "plan": {
+      const plans = new Plans(f);
+      const [sub, ...rest] = args;
+      const at = (i: number, what: string) => {
+        const v = rest[i];
+        if (!v) throw new ForemanError("invalid", `missing ${what}`);
+        return v;
+      };
+      const shown = (id: string) => {
+        const p = plans.get(id);
+        return out(p, planText(p)), 0;
+      };
+      switch (sub) {
+        case "new": {
+          const p = plans.create({ title: rest.join(" "), goal: o.goal, steps: (o.step ?? []).map(parseStep) }, me);
+          return out(p, planText(p)), 0;
+        }
+        case undefined:
+        case "list": {
+          const ps = plans.list();
+          return out(ps, ps.map(planLine).join("\n") || "no plans"), 0;
+        }
+        case "show":
+          return shown(at(0, "plan id"));
+        case "step":
+          plans.edit(at(0, "plan id"), me, { addSteps: [parseStep(rest.slice(1).join(" ") || at(1, '"title :: check"'))] });
+          return shown(rest[0]!);
+        case "edit":
+          plans.edit(at(0, "plan id"), me, { title: o.title, goal: o.goal });
+          return shown(rest[0]!);
+        case "add":
+          plans.add(at(0, "task id"), at(1, "plan id"), num(at(2, "step number"), 0, "step"), me);
+          return shown(rest[1]!);
+        case "remove": {
+          const was = plans.remove(at(0, "task id"), me);
+          return out(was, `${rest[0]} left ${was.plan} (step ${was.step})`), 0;
+        }
+        case "cancel":
+          plans.cancel(at(0, "plan id"), me, o.reason ?? "");
+          return shown(rest[0]!);
+        default:
+          throw new ForemanError("invalid", `fm plan [new | list | show | step | edit | add | remove | cancel], got "${sub}"`);
+      }
     }
     case "logs": {
       const role = o.role as string | undefined;
@@ -560,7 +623,7 @@ export async function main(argv: string[]): Promise<number | null> {
       const dir = o.out ?? join(f.root ?? ".", "docs", "tasks");
       mkdirSync(dir, { recursive: true });
       const file = join(dir, `${t.id}.md`);
-      writeFileSync(file, toMarkdown(t, f.events(t.id)));
+      writeFileSync(file, toMarkdown(t, f.events(t.id), new Plans(f).placement(t.id)));
       return out({ file }, file), 0;
     }
     default:

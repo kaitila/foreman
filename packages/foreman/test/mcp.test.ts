@@ -85,3 +85,56 @@ test("servers started by the same parent act as the same actor, so a restarted o
     rmSync(d, { recursive: true, force: true });
   }
 });
+
+test("plans over MCP: create, file a task into a step, show progress, move and cancel", async () => {
+  const d = mkdtempSync(join(tmpdir(), "foreman-mcp-plans-"));
+  Bun.spawnSync(["git", "init", "-q", d]);
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(
+    new StdioClientTransport({
+      command: "bun",
+      args: [CLI, "mcp"],
+      cwd: d,
+      env: { ...(process.env as Record<string, string>), FOREMAN_DB: "", FOREMAN_ACTOR: "planner" },
+    }),
+  );
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const r = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+    return { error: r.isError === true, text: r.content[0]!.text };
+  };
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["create_plan", "list_plans", "show_plan", "edit_plan", "plan_task"]));
+
+    const plan = JSON.parse(
+      (await call("create_plan", {
+        title: "Publish",
+        goal: "Ship it.",
+        steps: [{ title: "Rename", check: "renamed" }, { title: "Release", check: "on npm" }],
+      })).text,
+    );
+    expect(plan.id).toBe("P-0001");
+    const t = JSON.parse((await call("create_task", { title: "Rename it", acceptance: ["cmd: true"], plan: "P-0001", step: 1 })).text);
+    expect((await call("create_task", { title: "half", plan: "P-0001" })).text).toStartWith("invalid:");
+    expect((await call("create_task", { title: "bad step", plan: "P-0001", step: 7 })).error).toBe(true);
+
+    const shown: string = JSON.parse((await call("show_plan", { id: "P-0001" })).text);
+    expect(shown).toContain("○ 1. Rename  [waiting]");
+    expect(shown).toContain(`${t.id}  draft`);
+    expect(shown).toContain("- 2. Release  [empty]");
+    expect(JSON.parse((await call("show_task", { id: t.id })).text)).toContain("plan: P-0001\nplan_step: 1");
+
+    await call("plan_task", { task: t.id, plan: "P-0001", step: 2 });
+    const edited = JSON.parse((await call("edit_plan", { id: "P-0001", addSteps: [{ title: "Announce", check: "posted" }] })).text);
+    expect(edited.steps.map((s: { state: string }) => s.state)).toEqual(["empty", "waiting", "empty"]);
+    expect(JSON.parse((await call("list_plans")).text)[0]).toMatchObject({ id: "P-0001", progress: { steps: 3, tasks: 1 } });
+    expect(JSON.parse((await call("plan_task", { task: t.id, remove: true })).text)).toEqual({ plan: "P-0001", step: 2 });
+    // A blank cancel reason refuses the whole call: the title doesn't change on its own.
+    expect((await call("edit_plan", { id: "P-0001", title: "Renamed", cancel: "  " })).text).toStartWith("invalid:");
+    expect(JSON.parse((await call("show_plan", { id: "P-0001" })).text)).toContain("Publish");
+    expect(JSON.parse((await call("edit_plan", { id: "P-0001", cancel: "not now" })).text).state).toBe("cancelled");
+  } finally {
+    await client.close();
+    rmSync(d, { recursive: true, force: true });
+  }
+}, 20_000);

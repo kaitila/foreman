@@ -71,6 +71,28 @@ fm serve --queue                   # the board, plus the merge queue every 60 s 
 
 Every command takes `--json`.
 
+## Plans
+
+A plan ties several tasks into one piece of work ([D0033](../../docs/decisions/D0033-plans.md)). It has a title, a goal and **ordered steps, each with a check**: the statement that says the step is done. Each task sits in at most one plan, at one step; tasks that can run side by side share a step.
+
+```sh
+fm plan new "Publish foreman" --goal "Ship it to npm" \
+  --step "Rename :: every package is @foreman-kit/*" --step "Release :: a v* tag publishes"
+fm add "Release workflow" --check "cmd: bun run check" --plan P-0001 --step 2 --ready
+fm plan add T-0084 P-0001 1        # put an existing task in step 1 (moves it from any other plan)
+fm plan show P-0001                # the goal, then each step: its check, state and tasks
+fm plan list                       # every plan: steps and tasks done, active first
+fm plan step P-0001 "First release :: on npm"   # add a step at the end
+fm plan remove T-0084              # take a task out of its plan
+fm plan cancel P-0001 --reason "..."
+```
+
+- **Progress is never stored.** It comes from the tasks' statuses each time a plan is read. A step is `empty` with no tasks (or only cancelled ones), `waiting` while its tasks are draft or ready, `in_progress` once one is claimed or further, and `done` when every task that isn't cancelled is done. The plan is done when every step is. Adding a step reopens it. Cancelling is the one state set by hand.
+- **History:** `plan_created`, `plan_edited` and `plan_cancelled` events, and `planned` and `unplanned` on the task itself. `fm show` and `show_task` name a task's plan and step.
+- **MCP:** `create_plan`, `list_plans`, `show_plan`, `edit_plan` (title, goal, add steps, cancel), `plan_task` (add to a step, or `remove`), and `create_task` takes `plan` and `step`. A bad plan or step refuses the whole `create_task`: nothing is filed.
+- **Who:** a person, or a session they run, shapes plans. A dispatched worker, verifier or intake session (an agent whose actor is `worker-…`, `verifier-…` or `intake-…`) is refused `not_allowed` by the plans core, from the CLI as from MCP, and gets `create_plan`, `edit_plan` and `plan_task` in `--disallowedTools` too. It can still file a task it found into a plan with `create_task --plan --step`.
+- **Storage:** three tables, `plans`, `plan_steps` and `plan_tasks`, added the additive way, so the schema version doesn't move and an older foreman on the same database ignores them.
+
 ## Merge queue and janitor
 
 Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janitor`.
