@@ -33,7 +33,7 @@ Deny rules always beat allow rules, in any settings file. `settings.local.json` 
 
 These rules are the first layer, not a security boundary: Claude Code's docs say so, and the [live test](../../docs/research/R4-guardrails-tested.md) confirmed it.
 
-**`templates/claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH, then `packages/foreman` or the installed package, in the project and then the main checkout). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
+**`templates/claude/hooks/session-start.ts`** is the SessionStart hook. When `FOREMAN_ACTOR` is set and that actor holds a task, it injects the task's id, title, spec, acceptance checks and paths as session context, so the session knows its task without being told. It finds foreman like the guard does (`FOREMAN_BIN`, `foreman` on the PATH if it is foreman, then `packages/foreman` or the installed package, in the project and then the main checkout). With no actor, no task, no foreman or any error it prints nothing and exits 0: it never blocks a session.
 
 **`templates/claude/hooks/guard.ts`** is the PreToolUse guard, wired in by the settings file. It needs Bun.
 - **It parses each command**, so it catches what text rules miss:
@@ -46,10 +46,10 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 - **Task paths:** when the agent has `FOREMAN_ACTOR` set and holds a claimed foreman task with `paths`, writes outside those paths are refused.
   - This covers the edit tools and shell writes: `>`/`>>` redirects, `tee`, `cp`, `mv`, `install`, `ln`, `touch` and `sed -i`.
   - `docs/tasks/**`, where tasks are exported, is always allowed, and so are files outside the repo.
-  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH, then `packages/foreman/src/cli.ts`, then the installed package's own file, `node_modules/@foreman-kit/foreman/src/cli.ts` (or `@meta-repo/foreman`, foreman's old name, for a project not yet moved).
+  - It finds foreman through `$FOREMAN_BIN`, then `foreman` on the PATH if it is foreman (see below), then `packages/foreman/src/cli.ts`, then the installed package's own file, `node_modules/@foreman-kit/foreman/src/cli.ts` (or `@meta-repo/foreman`, foreman's old name, for a project not yet moved).
     - The scope, `@foreman-kit`, is set once in `templates/claude/hooks/scope.ts`; `create`, `init` and `sync` take it from there too (through agent-kit's `SCOPE`). A project gets that file next to the hooks.
     - Those two are looked for in the project root, then in the main checkout, since a worktree the dispatcher just made has no `node_modules` yet.
-    - Not `node_modules/.bin/foreman`: any dependency can ship a bin named `foreman`, and the last one linked wins, so a fake one could drop the path limits and role rules. A session's PATH doesn't include `node_modules/.bin` either, and on pnpm or Windows its entries are shell shims.
+    - Not `node_modules/.bin/foreman`: any dependency can ship a bin named `foreman`, and the last one linked wins, so a fake one could drop the path limits and role rules. A session started from a package script or with direnv has `node_modules/.bin` first on its PATH, so a `foreman` on the PATH counts only if it isn't in a `node_modules/.bin` folder and its real file is foreman's own CLI (`trustedOnPath` in `scope.ts`, [D0035](../../docs/decisions/D0035-modular-init.md)).
     - The dispatcher sets `FOREMAN_BIN` to the main checkout's foreman in every session it launches, so a task editing its own worktree's foreman can't lock itself out. When foreman can't run, the refusal names the command and its error.
   - **With `FOREMAN_ACTOR` set but foreman unreachable**, writes in the repo are blocked with a reason, instead of quietly going unchecked.
   - **Known limits:** writes made by scripts and interpreters (`bun -e`, `python -c`, a build tool) aren't traced, and neither is `cd x && ...`. The verifier's changed-paths check is the backstop.
