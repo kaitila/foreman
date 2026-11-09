@@ -8,6 +8,7 @@
 // The look comes from two files next to this one: tokens.css (every raw value) and board.css
 // (components, tokens only; `design-kit lint` checks it). Design notes: docs/board-design.md.
 import { readFileSync } from "node:fs";
+import { LABEL_COLORS } from "../projects";
 
 /** JSON safe to put inside a <script> element. */
 export function scriptJson(value: unknown): string {
@@ -99,6 +100,8 @@ export const SHORTCUTS: [string, string, string][] = [
   ["v", "switch between list and board", "Go to"],
   ["a", "approve the task", "Act"],
   ["m", "merge the task", "Act"],
+  ["Shift A", "approve every waiting task in view", "Act"],
+  ["Shift M", "run the merge queue for the approved tasks in view", "Act"],
   ["u", "undo the last approve or merge", "Act"],
   ["p", "open the task's pull request", "Act"],
 ];
@@ -115,6 +118,7 @@ ${nextAction.toString()}
 ${ago.toString()}
 const UNDO_MS = ${UNDO_SECONDS * 1000};
 const SHORTCUTS = ${JSON.stringify(SHORTCUTS)};
+const LABELS = ${JSON.stringify(LABEL_COLORS)};
 const S = JSON.parse(document.getElementById("initial").textContent);
 const KEY = "foreman-board-token";
 const PREFS = "foreman-board-prefs";
@@ -129,6 +133,8 @@ const YOURS = (t) => t.status === "needs_approval" || t.status === "approved";
 // Tasks of every project, merged. t.k (project/id) is the key: ids repeat across projects.
 const PROJECTS = (S.projects || [{ name: "", tasks: S.tasks || [], lastEvent: S.lastEvent || 0 }]).map((p) => p.name);
 const multi = PROJECTS.length > 1;
+// Each project's colour label (T-0089), or null.
+const COLORS = new Map((S.projects || []).map((p) => [p.name, p.color || null]));
 const lastEvents = new Map((S.projects || [{ name: "", lastEvent: S.lastEvent || 0 }]).map((p) => [p.name, p.lastEvent]));
 const tag = (name, ts) => ts.map((t) => ({ ...t, project: name, k: name + "/" + t.id }));
 let tasks = (S.projects || [{ name: "", tasks: S.tasks || [] }]).flatMap((p) => tag(p.name, p.tasks));
@@ -211,6 +217,21 @@ function statusIcon(s) {
 }
 const RISK = { auto: "Auto", review: "Review risk", human: "Human only" };
 const riskTag = (r) => { const e = el("span", "tag " + r, RISK[r] || r); e.title = "Risk: " + r; return e; };
+// A project's colour label as a dot; an unlabelled project gets a hollow one where it stands alone.
+function labelDot(project, hollow) {
+  const c = COLORS.get(project);
+  if (!c && !hollow) return null;
+  const d = el("span", "label-dot " + (c ? "label-" + c : "none"));
+  d.title = c ? project + ": " + c : project + ": no colour label";
+  return d;
+}
+function projChip(project) {
+  const c = el("span", "proj");
+  const d = labelDot(project, false);
+  if (d) c.append(d);
+  c.append(document.createTextNode(project));
+  return c;
+}
 function avatar(name) {
   const a = el("span", "avatar" + (name ? "" : " none"), name ? name.replace(/^[^a-z0-9]+/i, "").charAt(0) || "?" : "");
   a.title = name ? name : "Unassigned";
@@ -509,14 +530,14 @@ function bindItem(n, t) {
   n.addEventListener("focus", () => { if (sel !== t.k) { sel = t.k; markSel(); } });
 }
 function row(t, now) {
-  const r = el("div", "row" + (sel === t.k ? " sel" : ""));
+  const r = el("div", "row" + (sel === t.k ? " sel" : "") + (openId === t.k ? " open" : ""));
   bindItem(r, t);
   const main = el("div", "main-line");
   const title = el("span", "title", t.title);
   title.title = t.title;
   const sub = el("div", "sub");
   sub.append(el("span", "", t.id));
-  if (multi && view === "all") sub.append(el("span", "", t.project));
+  if (multi && view === "all") sub.append(projChip(t.project));
   if (t.risk !== "auto") sub.append(riskTag(t.risk));
   if (t.assignee) sub.append(el("span", "", t.assignee));
   sub.append(when(t, now));
@@ -527,7 +548,7 @@ function row(t, now) {
   const side = el("div", "side");
   const slot = (cls, ...kids) => { const s = el("span", "slot " + cls); s.append(...kids.filter(Boolean)); side.append(s); };
   slot("s-live", t.live ? liveDot() : null);
-  if (multi && view === "all") slot("s-proj", el("span", "proj", t.project));
+  if (multi && view === "all") slot("s-proj", projChip(t.project));
   slot("s-tag", t.risk !== "auto" ? riskTag(t.risk) : null);
   const act = actionArea(t, true);
   slot("s-act", act);
@@ -538,11 +559,11 @@ function row(t, now) {
   return r;
 }
 function card(t, now) {
-  const c = el("article", "card" + (sel === t.k ? " sel" : ""));
+  const c = el("article", "card" + (sel === t.k ? " sel" : "") + (openId === t.k ? " open" : ""));
   bindItem(c, t);
   const top = el("div", "card-top");
   top.append(el("span", "id", t.id));
-  if (multi && view === "all") top.append(el("span", "proj", t.project));
+  if (multi && view === "all") top.append(projChip(t.project));
   top.append(when(t, now));
   const meta = el("div", "card-meta");
   const flag = undoneTag(t);
@@ -562,6 +583,7 @@ function markSel() {
   for (const c of document.querySelectorAll("#content .row, #content .card")) {
     const on = c.dataset.id === sel;
     c.classList.toggle("sel", on);
+    c.classList.toggle("open", c.dataset.id === openId);
     c.tabIndex = on ? 0 : -1;
   }
 }
@@ -746,7 +768,8 @@ function nav() {
     return b;
   };
   $("#views").replaceChildren(mkView(true, "Needs you", "inbox", yours, true), mkView(false, "All tasks", "tasks", scoped.length, false));
-  $("#scope").textContent = multi ? (view === "all" ? "" : view + " / ") : (PROJECTS[0] ? PROJECTS[0] + " / " : "");
+  const scopeName = multi ? (view === "all" ? null : view) : PROJECTS[0] || null;
+  $("#scope").replaceChildren(...(scopeName ? [labelDot(scopeName, false), document.createTextNode(scopeName + " / ")].filter(Boolean) : []));
   $("#title-text").textContent = inbox ? "Needs you" : "All tasks";
   document.title = (yours ? "(" + yours + ") " : "") + (inbox ? "Needs you" : "All tasks") + " · foreman";
   for (const s of document.querySelectorAll(".seg button")) {
@@ -755,24 +778,34 @@ function nav() {
     s.setAttribute("aria-pressed", String(on));
   }
   const box = $("#projects");
-  box.hidden = !multi;
-  if (!multi) return;
+  box.hidden = !PROJECTS[0];
+  if (box.hidden) return;
   const mk = (value, name) => {
     const ts = value === "all" ? tasks : tasks.filter((t) => t.project === value);
     const n = ts.filter(YOURS).length;
-    const b = el("button", "nav-item" + (view === value ? " on" : ""));
+    const b = el("button", "nav-item" + (view === value || !multi ? " on" : ""));
     b.type = "button";
     b.dataset.project = value;
-    b.setAttribute("aria-pressed", String(view === value));
-    b.append(icon(value === "all" ? "layers" : "folder"), el("span", "name", name));
+    b.setAttribute("aria-pressed", String(view === value || !multi));
+    b.append(value === "all" ? icon("layers") : el("span", "label-slot"), el("span", "name", name));
     const i = PROJECTS.indexOf(value);
     b.title = value === "all" ? "Every project" : name + (i < 9 ? " (g " + (i + 1) + ")" : "");
     if (n) { const d = el("span", "attn-dot"); d.title = n + " waiting for you"; b.append(d); }
     b.append(el("span", "count", ts.length));
-    b.addEventListener("click", () => setView(value));
-    return b;
+    b.addEventListener("click", () => { if (multi) setView(value); });
+    if (value === "all") return b;
+    // The dot is its own button, beside the row's: it opens the colour picker for this project.
+    const row = el("div", "nav-row");
+    const pick = el("button", "label-btn");
+    pick.type = "button";
+    pick.setAttribute("aria-label", "Colour label for " + name);
+    pick.title = "Colour label for " + name;
+    pick.append(labelDot(name, true));
+    pick.addEventListener("click", (e) => { e.stopPropagation(); openPalette({ color: name }); });
+    row.append(b, pick);
+    return row;
   };
-  box.replaceChildren(el("div", "nav-label", "Projects"), mk("all", "All projects"), ...PROJECTS.map((n) => mk(n, n)));
+  box.replaceChildren(el("div", "nav-label", multi ? "Projects" : "Project"), ...(multi ? [mk("all", "All projects")] : []), ...PROJECTS.map((n) => mk(n, n)));
 }
 function setView(value) {
   view = value;
@@ -847,7 +880,7 @@ function prop(dl, name, ...value) {
 function panelBar(k, status) {
   const bar = el("div", "panel-bar");
   const crumb = el("div", "crumb");
-  if (multi) crumb.append(el("span", "", k.project), el("span", "sep", "/"));
+  if (multi) { const pn = el("span", "crumb-proj"); const d = labelDot(k.project, false); if (d) pn.append(d); pn.append(document.createTextNode(k.project)); crumb.append(pn, el("span", "sep", "/")); }
   crumb.append(statusIcon(status), el("span", "id", k.id));
   const btn = (ic, lbl, fn) => { const b = el("button", "icon-btn"); b.type = "button"; b.setAttribute("aria-label", lbl); b.title = lbl; b.append(icon(ic)); b.addEventListener("click", fn); return b; };
   bar.append(crumb, btn("up", "Previous task (k)", () => move(-1)), btn("down", "Next task (j)", () => move(1)), btn("close", "Close (Esc)", closeTask));
@@ -859,6 +892,7 @@ async function openTask(id) {
   const k = byKey(id);
   if (!k) return;
   setHash(hashFor(k));
+  markSel();
   const p = $("#detail");
   // Show what the list already knows at once; the rest fills in when the request answers.
   if (p.hidden || p.dataset.id !== id) {
@@ -908,7 +942,7 @@ async function openTask(id) {
   const upd = el("span", "", ago(t.updatedAt, Date.now()));
   upd.title = new Date(t.updatedAt).toLocaleString();
   prop(dl, "Updated", upd);
-  if (multi) prop(dl, "Project", el("span", "", k.project));
+  if (multi) prop(dl, "Project", labelDot(k.project, false), el("span", "", k.project));
   body.append(dl);
   const slot = el("div", "detail-act");
   slot.id = "detail-act";
@@ -987,6 +1021,7 @@ function closeTask() {
   p.hidden = true;
   p.dataset.id = "";
   $(".app").classList.remove("panel-open");
+  markSel();
   setHash(scopeHash());
   if (sel) select(sel, true);
 }
@@ -1012,13 +1047,21 @@ function help(show) {
 })();
 
 // The command palette: every action, view and task, found by typing.
-let palOpen = false, palIdx = 0, palItems = [];
+let palOpen = false, palIdx = 0, palItems = [], palMode = null; // palMode: { color: project } picks a label
 // The task the keys act on: the open one, else the selection while it's still on screen.
 function current() {
   if (openId) return byKey(openId);
   return sel && order().some((t) => t.k === sel) ? byKey(sel) : null;
 }
+function colorCommands(project, q) {
+  const now = COLORS.get(project);
+  const items = LABELS.map((c) => ({ group: "Colour label for " + project, label: c.charAt(0).toUpperCase() + c.slice(1) + (c === now ? " (current)" : ""), swatch: c, run: () => setLabel(project, c) }));
+  items.push({ group: "Colour label for " + project, label: "No colour" + (now ? "" : " (current)"), swatch: "none", run: () => setLabel(project, "none") });
+  const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
+  return items.filter((c) => words.every((w) => c.label.toLowerCase().includes(w)));
+}
 function commands(q) {
+  if (palMode && palMode.color) return colorCommands(palMode.color, q);
   const t = current(), out = [];
   const off = canAct() ? null : S.canApprove ? "open the link fm serve printed" : "read-only board";
   if (t) {
@@ -1034,7 +1077,11 @@ function commands(q) {
   out.push({ group: "Go to", label: "All tasks", keys: "g a", icon: "tasks", run: () => setInbox(false) });
   if (multi) {
     out.push({ group: "Go to", label: "All projects", icon: "layers", run: () => setView("all") });
-    PROJECTS.forEach((n, i) => out.push({ group: "Go to", label: "Project " + n, keys: i < 9 ? "g " + (i + 1) : "", icon: "folder", run: () => setView(n) }));
+    PROJECTS.forEach((n, i) => out.push({ group: "Go to", label: "Project " + n, keys: i < 9 ? "g " + (i + 1) : "", swatch: COLORS.get(n) || "none", run: () => setView(n) }));
+  }
+  const labelFirst = t ? t.project : view !== "all" ? view : null;
+  for (const n of [labelFirst, ...PROJECTS.filter((x) => x !== labelFirst)].filter((x) => x !== null && x !== undefined)) {
+    out.push({ group: "Projects", label: "Colour label for " + n + "…", swatch: COLORS.get(n) || "none", keep: true, run: () => openPalette({ color: n }) });
   }
   out.push({ group: "View", label: mode === "list" ? "Show as board" : "Show as list", keys: "v", icon: mode === "list" ? "board" : "list", run: () => setMode(mode === "list" ? "board" : "list") });
   const fin = collapsed.has("done") && collapsed.has("cancelled");
@@ -1044,8 +1091,8 @@ function commands(q) {
   if (pending.size) out.push({ group: "Sign off", label: "Undo the last approve or merge", keys: "u", icon: "undo", run: undoLast });
   const v = visible();
   const need = v.filter((x) => x.status === "needs_approval"), ok = v.filter((x) => x.status === "approved");
-  if (need.length > 1) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (filter ? " that match the filter" : view === "all" ? "" : " in " + view), icon: "check", off, run: () => schedule("lane:approve", "approve", need.map((x) => x.k)) });
-  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", icon: "check", off, run: () => schedule("queue", "queue", ok.map((x) => x.k)) });
+  if (need.length) out.push({ group: "Sign off", label: "Approve all " + need.length + " waiting" + (filter ? " that match the filter" : view === "all" ? "" : " in " + view), keys: "Shift A", icon: "check", off, run: approveAll });
+  if (ok.length) out.push({ group: "Sign off", label: "Run the merge queue (" + ok.length + " approved)", keys: "Shift M", icon: "check", off, run: runQueue });
   const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
   const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
   const cmds = out.filter((c) => hit(c.group + " " + c.label));
@@ -1071,26 +1118,49 @@ function copy(text) {
   (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
     .then(() => toast({ cls: "ok", text: "Copied " + text + "." }), () => toast({ cls: "bad", text: "Couldn't copy " + text + "." }));
 }
-function openPalette() {
-  if (palOpen) return;
+// Sets a project's colour label. Like the other writes it needs the token; it changes nothing
+// about the work, so it goes at once, without the undo window.
+async function setLabel(project, color) {
+  if (!canAct()) { toast({ cls: "skip", text: "Off: " + (S.canApprove ? "open the link fm serve printed" : "read-only board") + "." }); return; }
+  const r = await post(proj(project) + "/color/" + encodeURIComponent(color));
+  if (!r.ok) { toast({ cls: "bad", text: "Couldn't label " + project + ": " + (r.body.message || "refused") }); return; }
+  COLORS.set(project, r.body.color || null);
+  render();
+  if (openId) openTask(openId);
+}
+function openPalette(mode) {
+  palMode = mode || null;
+  // The colour step opens on the project's current colour.
+  const startIdx = () => (palMode && palMode.color ? Math.max(0, LABELS.indexOf(COLORS.get(palMode.color) || "none") < 0 ? LABELS.length : LABELS.indexOf(COLORS.get(palMode.color))) : 0);
+  if (palOpen) { $("#palette-input").value = ""; palIdx = startIdx(); paletteCtx(); drawPalette(); markPal(); $("#palette-input").focus(); return; }
   palOpen = true;
   $("#help").hidden = true;
   sideNav(false);
-  const t = current();
-  const ctx = $("#palette-ctx");
-  ctx.replaceChildren();
-  if (t) { const c = el("span", "chip"); c.append(statusIcon(t.status), document.createTextNode(t.id + "  " + t.title)); ctx.append(c); }
-  ctx.hidden = !t;
+  paletteCtx();
   $("#palette").hidden = false;
   const input = $("#palette-input");
   input.value = "";
-  palIdx = 0;
+  palIdx = startIdx();
   drawPalette();
   syncScrim();
   input.focus();
 }
+function paletteCtx() {
+  const t = current();
+  const ctx = $("#palette-ctx");
+  ctx.replaceChildren();
+  const input = $("#palette-input");
+  if (palMode && palMode.color) {
+    input.placeholder = "Pick a colour for " + palMode.color + "…";
+  } else {
+    if (t) { const c = el("span", "chip"); c.append(statusIcon(t.status), document.createTextNode(t.id + "  " + t.title)); ctx.append(c); }
+    input.placeholder = "Type a command or search tasks…";
+  }
+  ctx.hidden = !ctx.childNodes.length;
+}
 function closePalette(refocus) {
   palOpen = false;
+  palMode = null;
   $("#palette").hidden = true;
   syncScrim();
   if (document.activeElement === $("#palette-input")) $("#palette-input").blur();
@@ -1111,7 +1181,8 @@ function drawPalette() {
     it.setAttribute("aria-selected", String(i === palIdx));
     if (c.off) { it.setAttribute("aria-disabled", "true"); it.title = "Off: " + c.off; }
     const lead = el("span", "lead");
-    lead.append(c.status ? statusIcon(c.status) : icon(c.icon || "tasks"));
+    if (c.swatch) { const d = el("span", "label-dot " + (c.swatch === "none" ? "none" : "label-" + c.swatch)); lead.append(d); }
+    else lead.append(c.status ? statusIcon(c.status) : icon(c.icon || "tasks"));
     const hint = el("span", "hint");
     if (c.sub) hint.append(el("span", "", c.sub));
     if (c.keys) hint.append(kbds(c.keys));
@@ -1135,12 +1206,14 @@ function runPal(i) {
   const c = palItems[i];
   if (!c) return;
   if (c.off) { toast({ cls: "skip", text: "Off: " + c.off + "." }); return; }
+  if (c.keep) { c.run(); return; } // opens a second step of the palette
   closePalette(false);
   c.run();
   if (document.activeElement === document.body && sel && !palOpen && $("#help").hidden) select(sel, true);
 }
 function palKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+  if (e.key === "Escape") { e.preventDefault(); if (palMode && palMode.color) openPalette(); else closePalette(); }
+  else if (e.key === "Backspace" && palMode && palMode.color && !$("#palette-input").value) { e.preventDefault(); openPalette(); }
   else if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) { e.preventDefault(); palIdx = Math.min(palItems.length - 1, palIdx + 1); markPal(); }
   else if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) { e.preventDefault(); palIdx = Math.max(0, palIdx - 1); markPal(); }
   else if (e.key === "Enter") { e.preventDefault(); runPal(palIdx); }
@@ -1163,13 +1236,21 @@ async function refresh() {
   for (const [n, s] of all) {
     lastEvents.set(n, Math.max(lastEvents.get(n) || 0, s.lastEvent));
     tasks.push(...tag(n, s.tasks));
+    COLORS.set(n, s.color || null);
     S.canApprove = s.canApprove;
   }
   render();
   if (openId) await openTask(openId);
 }
+let pollCount = 0;
 async function poll() {
   try {
+    if (++pollCount % 5 === 0) {
+      const ps = await get("/api/projects");
+      let changed = false;
+      for (const p of ps.projects) if (COLORS.has(p.name) && COLORS.get(p.name) !== (p.color || null)) { COLORS.set(p.name, p.color || null); changed = true; }
+      if (changed) render();
+    }
     const rs = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/events?since=" + (lastEvents.get(n) || 0)).then((r) => [n, r])));
     setLive(true);
     let changed = false;
@@ -1247,10 +1328,28 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "g") gAt = now;
   else if (e.key === "v") setMode(mode === "list" ? "board" : "list");
   else if (e.key === "u") undoLast();
+  else if (e.key === "A") approveAll();
+  else if (e.key === "M") runQueue();
   else if (e.key === "p" && t) openPr(t);
   else if (e.key === "a" && t && nextAction(t, canAct(), !S.canApprove).kind === "approve") act(t, "approve");
   else if (e.key === "m" && t && nextAction(t, canAct(), !S.canApprove).kind === "merge") act(t, "merge");
 });
+// Shift A and Shift M: the group buttons' Approve all and Run queue, for whatever is in view,
+// through the same undo window. With nothing to do, or no token, they say so.
+function approveAll() {
+  const ids = visible().filter((t) => t.status === "needs_approval").map((t) => t.k).filter((k) => !inFlight(k));
+  if (!canAct()) toast({ cls: "skip", text: "Can't approve here: " + (S.canApprove ? "open the link fm serve printed" : "read-only board") + "." });
+  else if (pending.has("lane:approve") || busy.has("lane:approve")) toast({ cls: "skip", text: "Approve all is already on its way (u undoes it)." });
+  else if (!ids.length) toast({ cls: "skip", text: "Nothing here waits for approval." });
+  else schedule("lane:approve", "approve", ids);
+}
+function runQueue() {
+  const ids = visible().filter((t) => t.status === "approved").map((t) => t.k);
+  if (!canAct()) toast({ cls: "skip", text: "Can't merge here: " + (S.canApprove ? "open the link fm serve printed" : "read-only board") + "." });
+  else if (pending.has("queue") || busy.has("queue")) toast({ cls: "skip", text: "The merge queue is already on its way (u undoes it while it waits)." });
+  else if (!ids.length) toast({ cls: "skip", text: "Nothing here is approved to merge." });
+  else schedule("queue", "queue", ids);
+}
 // A key on a task that can't be acted on here says why, instead of doing nothing.
 function act(t, kind) {
   const a = nextAction(t, canAct(), !S.canApprove);
@@ -1260,7 +1359,7 @@ function act(t, kind) {
 $("#filter").addEventListener("input", (e) => { filter = e.target.value.trim(); render(); });
 $("#help-open").addEventListener("click", () => help(true));
 $("#help-close").addEventListener("click", () => help(false));
-$("#cmdk").addEventListener("click", openPalette);
+$("#cmdk").addEventListener("click", () => openPalette());
 $("#menu").addEventListener("click", () => sideNav(!$(".app").classList.contains("nav-open")));
 $("#scrim").addEventListener("click", () => { if (palOpen) closePalette(); else if (!$("#help").hidden) help(false); else sideNav(false); });
 $("#palette-input").addEventListener("input", () => { palIdx = 0; drawPalette(); });

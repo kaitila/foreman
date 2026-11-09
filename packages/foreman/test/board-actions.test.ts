@@ -309,6 +309,8 @@ describe("the page", () => {
       v: ['e.key === "v"'],
       a: ['e.key === "a"'],
       m: ['e.key === "m"'],
+      "Shift A": ['e.key === "A"', "approveAll()"],
+      "Shift M": ['e.key === "M"', "runQueue()"],
       u: ['e.key === "u"'],
       p: ['e.key === "p"'],
     };
