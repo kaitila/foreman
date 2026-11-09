@@ -1,6 +1,6 @@
 # D0023. The kit's .claude files live under templates/claude/, and this repo runs them in place (2026-11-05)
 
-**Status:** Active
+**Status:** Amended by D0030
 
 **Context:** Claude Code treats any path with a `.claude/` segment as a sensitive file and refuses an unattended session's edits to it, in `acceptEdits` and `dontAsk` alike. A probe in a scratch repo outside `~/.claude`, with Haiku in `acceptEdits`, edited a file at kit/claude/hooks/ and one at src/ but was refused one at .claude/hooks/, one at .claude/skills/ and one at pkg/templates/.claude/hooks/. So dispatched workers couldn't change agent-kit's guard, skills or agents: T-0057 stopped one rename short. The person chose to move the sources rather than mark such tasks human-only or finish them by hand.
 
