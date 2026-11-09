@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Actor, Foreman, type Task } from "../src/core";
 import { branchFor, Dispatcher, gitWorktree, type Launcher, type SessionResult } from "../src/dispatch";
-import { buildLaunch, type LaunchOptions } from "../src/launch";
+import { actorFor, buildLaunch, type LaunchOptions } from "../src/launch";
 import { DEFAULT_PROTECTED, type Policy } from "../src/policy";
 import { openDb } from "../src/store";
 
@@ -43,7 +43,7 @@ function setup(onLaunch?: (s: Session) => void) {
       const s: Session = {
         opts,
         pid,
-        actor: { name: buildLaunch({ ...opts, repoRoot: dir, configDir: dir }).env.FOREMAN_ACTOR!, kind: "agent" },
+        actor: { name: actorFor(opts.role, opts.taskId), kind: "agent" },
         end(r = OK) {
           alive.delete(pid);
           running--;

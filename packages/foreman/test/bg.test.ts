@@ -49,7 +49,9 @@ describe("buildLaunch in background mode", () => {
     const settings = JSON.parse(flag(cmd, "--settings")!);
     expect(settings.autoMemoryEnabled).toBe(false);
     // A --bg session doesn't inherit the environment: foreman's variables ride in settings.
-    expect(settings.env).toEqual({ FOREMAN_AGENT: "1", FOREMAN_ACTOR: "worker-T-7", FOREMAN_BIN: env.FOREMAN_BIN });
+    expect(settings.env).toEqual({ FOREMAN_AGENT: "1", FOREMAN_ACTOR: "worker-T-7", FOREMAN_BIN: expect.stringMatching(/^bun /) });
+    // ...and only there: Claude Code's background service would keep a spawn env's for every later session (T-0100).
+    expect(Object.keys(env).filter((k) => k.startsWith("FOREMAN_"))).toEqual([]);
     // The person's own config dir, so the session shows in their `claude agents`.
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(env.CLAUDECODE).toBeUndefined();
@@ -62,7 +64,7 @@ describe("buildLaunch in background mode", () => {
     const want = `bun ${join(main, "packages/foreman/src/cli.ts")}`;
     for (const role of ["worker", "verifier"] as const) {
       const bg = buildLaunch({ ...base, role, policyRoot: main, baseEnv: { FOREMAN_BIN: "stale" } });
-      expect(bg.env.FOREMAN_BIN).toBe(want);
+      expect(bg.env.FOREMAN_BIN).toBeUndefined();
       expect(JSON.parse(flag(bg.cmd, "--settings")!).env.FOREMAN_BIN).toBe(want);
       const pr = buildLaunch({ ...base, role, policyRoot: main, mode: "print", configDir: repo });
       expect(pr.env.FOREMAN_BIN).toBe(want);
