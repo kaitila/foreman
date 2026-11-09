@@ -162,6 +162,23 @@ describe("judgeChecks", () => {
 // ---------------------------------------------------------------- the queue
 
 describe("merge queue (T-0033)", () => {
+  test("a task sent back or cancelled while its checks settle is not merged (T-0101)", async () => {
+    for (const change of ["rework", "cancel"] as const) {
+      const q = setupQueue();
+      const a = q.approved();
+      // The person acts during the settle wait, after the queue's first read.
+      const sleep = async (ms: number) => {
+        q.sleeps.push(ms);
+        if (ms === 7000) change === "rework" ? q.f.rework(a.id, human, "not this one") : q.f.cancel(a.id, human, "dropped");
+      };
+      const r = await q.pass({ sleep });
+      expect(r).toEqual([{ id: a.id, pr: a.pr, action: "skipped", reason: expect.stringContaining(`no longer approved (now ${change === "rework" ? "ready" : "cancelled"})`) }]);
+      expect(q.merges()).toEqual([]);
+      expect(a.fake.merged).toBeUndefined();
+      expect(q.f.get(a.id).status).toBe(change === "rework" ? "ready" : "cancelled");
+    }
+  });
+
   test("one merge per pass, oldest approval first; the next merges on the next pass", async () => {
     const q = setupQueue();
     const first = q.approved();
