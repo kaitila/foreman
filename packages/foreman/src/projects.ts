@@ -50,7 +50,7 @@ export function readRegistry(file = registryPath()): string[] {
 export function readColors(file = registryPath()): Record<string, LabelColor> {
   const c = readFile(file).colors;
   const out: Record<string, LabelColor> = {};
-  if (c && typeof c === "object") for (const [dir, v] of Object.entries(c)) if (isLabelColor(v)) out[dir] = v;
+  if (c && typeof c === "object" && !Array.isArray(c)) for (const [dir, v] of Object.entries(c)) if (isLabelColor(v)) out[dir] = v;
   return out;
 }
 
