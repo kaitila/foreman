@@ -1,6 +1,6 @@
 # D0001. Research first, then template; SQLite-backed task layer (2026-10-30)
 
-**Status:** Active
+**Status:** Amended by D0026
 
 **Chosen:**
 - Build by following [the research plan](../research-plan.md): eight research tracks (R1–R8) and gated steps (M0–M8).
