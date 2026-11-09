@@ -2,8 +2,9 @@
 // The CLI and the MCP server are thin layers over this; nothing here knows
 // which agent tool is calling (D0005).
 import type { Database } from "bun:sqlite";
-import { gitPolicy, highestOnDisk, isProtected, mayTouchProtected, type Policy, prRepo } from "./policy";
+import { type Config, gitPolicy, loadConfig, highestOnDisk, isProtected, mayTouchProtected, type Policy, prRepo } from "./policy";
 import { dbPath, openDb, repoRoot } from "./store";
+import { VERSION } from "./kit/paths";
 
 export type Risk = "auto" | "review" | "human";
 export type Status =
@@ -73,6 +74,25 @@ export class ForemanError extends Error {
   ) {
     super(message);
   }
+}
+
+export const UPGRADE = "bun add -g @foreman-kit/foreman@latest";
+
+/**
+ * Refuses a repo whose foreman.json needs a newer foreman than this one (its `foreman` range, D0026),
+ * naming the upgrade command. A repo with no range, or no foreman.json, is accepted.
+ */
+export function checkVersion(root: string | null, version = VERSION, config: Config = loadConfig(root)): void {
+  const range = config.foreman;
+  if (range === undefined) return;
+  if (typeof range !== "string" || !range.trim()) throw new ForemanError("invalid", `foreman.json "foreman" must be a version range like ">=0.2.0", got ${JSON.stringify(range)}`);
+  let ok: boolean;
+  try {
+    ok = Bun.semver.satisfies(version, range);
+  } catch {
+    throw new ForemanError("invalid", `foreman.json "foreman" is not a version range: ${JSON.stringify(range)}`);
+  }
+  if (!ok) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
 }
 
 export const DEFAULT_LEASE_MINUTES = 30;
@@ -184,6 +204,7 @@ export class Foreman {
 
   static open(cwd = process.cwd()): Foreman {
     const root = repoRoot(cwd);
+    checkVersion(root);
     return new Foreman(openDb(dbPath(cwd)), root, Date.now, gitPolicy(root));
   }
 

@@ -36,8 +36,12 @@ Projects
                                 in Claude Code), link fm unless --no-link, print what is missing and
                                 the command that fixes it; --json for scripts
   create <dir> [--preset p] [--name n] [--no-install] [--no-git]
-                                a new project from a preset, with the kit, foreman.json, CI, first commit
-  init [dir] [--name n]         add the kit to an existing repository; never overwrites a file
+                                a new project from a preset, with every kit piece, foreman.json, CI, first commit
+  init [dir] [--with p,q | --all] [--name n]
+                                set up foreman in any git repository, plus the kit pieces chosen: docs,
+                                guardrails, skills, ci, test-kit, design. In a terminal it asks; with no
+                                terminal and no flags, foreman only. In a repo that has foreman, adds
+                                the pieces chosen. Never overwrites a file
   sync [dir] [--dry-run]        update the kit's files to this version; keeps what the project changed
   sync --all [--dry-run]        every project fm has seen (create, init, sync, setup record them), one
                                 result per project
@@ -187,6 +191,7 @@ export async function main(argv: string[]): Promise<number | null> {
       actor: { type: "string" },
       role: { type: "string" },
       preset: { type: "string" },
+      with: { type: "string" },
       name: { type: "string" },
       "no-install": { type: "boolean" },
       "no-git": { type: "boolean" },
@@ -246,7 +251,18 @@ export async function main(argv: string[]): Promise<number | null> {
   }
   if (cmd === "create" || cmd === "init" || cmd === "sync") {
     const { runKitCommand } = await import("./kit/index");
-    const kit = { preset: o.preset, name: o.name, noInstall: o["no-install"], noGit: o["no-git"], dryRun: o["dry-run"] };
+    // init asks which pieces to add only when a person is at a terminal (D0026).
+    const terminal = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    const kit = {
+      preset: o.preset,
+      name: o.name,
+      noInstall: o["no-install"],
+      noGit: o["no-git"],
+      dryRun: o["dry-run"],
+      with: o.with,
+      all: cmd === "init" ? o.all : undefined,
+      ask: cmd === "init" && terminal ? (q: string) => prompt(q) : undefined,
+    };
     if (args.length > 1) throw new ForemanError("invalid", `unexpected argument: ${args[1]}`);
     if (cmd === "sync" && o.all) {
       if (args.length) throw new ForemanError("invalid", "sync --all takes no directory");
@@ -328,7 +344,18 @@ export async function main(argv: string[]): Promise<number | null> {
     // An agent that starts the board would read the token from its own output: no approving
     // then. Like `approve`, a person means an interactive terminal too (not a pipe or a log).
     const person = me.kind === "human" && process.stdin.isTTY === true && process.stdout.isTTY === true;
-    const projects = named.map((p) => ({ name: p.name, dir: p.dir, foreman: Foreman.open(p.dir) }));
+    // A project that needs a newer fm is left off the board, with the reason, rather than stopping it (D0026).
+    const projects = named.flatMap((p) => {
+      try {
+        return [{ name: p.name, dir: p.dir, foreman: Foreman.open(p.dir) }];
+      } catch (e) {
+        if (e instanceof ForemanError && e.code === "too_old" && named.length > 1) {
+          console.error(`skipped ${p.name}: ${e.message}`);
+          return [];
+        }
+        throw e;
+      }
+    });
     let board;
     try {
       // --queue: the merge queue runs in this process too, as `fm merge-queue` would.
