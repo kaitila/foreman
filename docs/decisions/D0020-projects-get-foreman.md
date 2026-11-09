@@ -1,6 +1,6 @@
 # D0020. Projects get foreman from the kit as a vendored devDependency, and the MCP server and hooks run the package's own file (2026-11-05)
 
-**Status:** Active
+**Status:** Amended by D0026
 
 **Context:** Projects made with `create` or `init` ([D0018](D0018-create-init-sync.md)) got agent-kit's skills and hooks but not foreman itself: no package, no MCP server, no Tasks section in `AGENTS.md`. Agents there never filed or claimed tasks. Amends D0018.
 

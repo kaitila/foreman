@@ -5,7 +5,7 @@
 This project is a starter for codebases where most of the code is written by AI coding agents. It grew out of a private, ~95% agent-written production app ("gamma" below: Bun, TypeScript, Drizzle/Postgres, React/Vite). That app's setup works well from "code written" to "PR merged", but it has no task record before work starts, no sign-off after merge, guardrails that exist only as prompts, and decision numbers that clash across parallel PRs.
 
 Constraints:
-1. **Open source** (MIT), usable by anyone, with no dependency on any hosted service.
+1. **Open source** (MIT), usable by anyone, with no dependency on any hosted service at runtime. A package registry is only an install channel ([D0026](decisions/D0026-publish-foreman.md)).
 2. **The task layer is custom and modular**, not tied to an external tracker.
 3. **Agents run locally** through Claude Code, possibly on a VPS. Other agent tools (Codex) come later ([D0005](decisions/D0005-claude-code-only-for-now.md)); keep agent-specific code behind one adapter. No cloud orchestration required.
 4. **Stack:** an agnostic core (the agent layer) plus one reference stack (Bun/TS/Postgres).
@@ -95,9 +95,10 @@ meta-repo/                          (MIT, public)
 | M6 | Foreman dispatcher, verifier, janitor, web UI | R5 + R6 checks pass |
 | M7 | `create` / `init` / `sync` + design kit | R1 + R8 checks pass |
 | M8 | Private pilot: gamma adopts agent-kit + foreman (not in the public repo) | Gamma ships 5 real tasks through foreman |
+| M9 | Publish and rename ([D0026](decisions/D0026-publish-foreman.md)): `@foreman-kit/*` packages released from a tag, the project named foreman, `fm init` sets up foreman alone with the kit as opt-in pieces, sync by version | On a machine with no checkout: `bun add -g @foreman-kit/foreman`; `fm init` in a repo without `package.json` gives a working `foreman` MCP server and task flow; `fm create` makes a project whose CI installs the kit packages by version and passes; `fm sync` moves an M7-era project off its tarballs |
 
 ## Verification
 
 - Each track's check is run, and its result goes into `docs/research/R<n>.md`. Nothing is marked done on a claim alone.
 - `examples/demo-app` is the permanent end-to-end test. CI regenerates it from the preset and runs its full suite.
-- The final check is a fresh machine: `bunx create-<name> my-app`, then `foreman serve`. Give intake a one-paragraph feature idea, and it should reach a merged, verified PR using Claude Code workers, with only approval clicks from a human.
+- The final check is a fresh machine: `bun add -g @foreman-kit/foreman`, `fm create my-app`, then `fm serve`. Give intake a one-paragraph feature idea, and it should reach a merged, verified PR using Claude Code workers, with only approval clicks from a human.
