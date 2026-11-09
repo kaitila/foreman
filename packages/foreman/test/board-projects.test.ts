@@ -180,6 +180,10 @@ describe("two repos on one board", () => {
     // The client: a button per project plus All projects, a project tag on cards in the All view, a filter on project names.
     expect(html).toContain('mk("all", "All projects")');
     expect(html).toContain("projChip(t.project)");
+    // Colours set elsewhere (fm projects color) reach an open page: it rereads /api/projects now and then.
+    expect(html).toContain('get("/api/projects")');
+    // The search button opens the plain palette, not a colour step (a click event isn't a mode).
+    expect(html).toContain('$("#cmdk").addEventListener("click", () => openPalette())');
     expect(html).toContain("t.project + \" \" + t.id");
     expect(html).toContain("#p=");
     expect(html).toContain("Filter by project");
@@ -323,6 +327,9 @@ describe("colour labels", () => {
     setColor("/p/one", null, file);
     expect(readColors(file)).toEqual({ "/p/two": "green" });
     expect(readRegistry(file)).toEqual(["/p/one", "/p/two"]); // clearing keeps the project
+    // Clearing a directory that isn't registered doesn't register it.
+    setColor("/p/three", null, file);
+    expect(readRegistry(file)).toEqual(["/p/one", "/p/two"]);
     setColor("/p/two", null, file);
     // With no colours left the file is the plain list again.
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ projects: ["/p/one", "/p/two"] });
@@ -356,14 +363,24 @@ describe("colour labels", () => {
     expect(findProject("/f/site", file)).toEqual({ name: "site", dir: "/f/site" });
     expect(() => findProject("nope", file)).toThrow(/no registered project "nope"/);
   });
+
+  test("findProject from a subfolder finds its repo", () => {
+    const d = repo("find-sub");
+    mkdirSync(join(d, "src", "deep"), { recursive: true });
+    write({ projects: [d] });
+    expect(findProject(join(d, "src", "deep"), file)).toEqual({ name: "find-sub", dir: d });
+    expect(findProject(d, file)).toEqual({ name: "find-sub", dir: d });
+    expect(findProject("find-sub", file)).toEqual({ name: "find-sub", dir: d });
+  });
 });
 
 describe("fm projects color", () => {
   const CLI = join(import.meta.dir, "../src/cli.ts");
   const file = join(tmp, "cli-colors", "projects.json");
-  const fm = (...args: string[]) => {
+  const fm = (...args: string[]) => fmIn(tmp, ...args);
+  const fmIn = (cwd: string, ...args: string[]) => {
     const r = Bun.spawnSync(["bun", CLI, "projects", ...args], {
-      cwd: tmp,
+      cwd,
       env: { ...process.env, NODE_ENV: "test", FOREMAN_PROJECTS_FILE: file },
       stdin: "ignore",
     });
@@ -396,6 +413,19 @@ describe("fm projects color", () => {
     expect(r.out).toContain("app: no colour label");
     expect(readColors(file)).toEqual({ "/cli/site": "teal" });
     expect(JSON.parse(fm("--json").out)[0].color).toBeNull();
+  });
+
+  test("color . from a subfolder labels the repo it is in", () => {
+    const d = repo("cli-sub");
+    const sub = join(d, "lib");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(file, JSON.stringify({ projects: ["/cli/app", "/cli/site", d], colors: { "/cli/site": "teal" } }));
+    const r = fmIn(sub, "color", ".", "gray");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("cli-sub: gray");
+    expect(readColors(file)).toEqual({ "/cli/site": "teal", [d]: "gray" });
+    expect(fmIn(sub, "color", ".", "none").code).toBe(0);
+    writeFileSync(file, JSON.stringify({ projects: ["/cli/app", "/cli/site"], colors: { "/cli/site": "teal" } }));
   });
 
   test("an unknown colour fails and lists the colours; nothing changes", () => {
