@@ -290,16 +290,67 @@ describe("the page", () => {
     expect(html).toContain('id="filter"');
   });
 
+  test("every key the ? list shows has a handler, Mod+K opens the palette, and the dialogs are there", () => {
+    const html = pageHtml("n0nce", { lanes: [], tasks: [], lastEvent: 0, canApprove: false });
+    // What each listed key needs in the keydown handler. A new shortcut without an entry here fails.
+    const handlers: Record<string, string[]> = {
+      "Mod K": ["(e.metaKey || e.ctrlKey)", 'e.key === "k"'],
+      "/": ['e.key === "/"'],
+      "?": ['e.key === "?"'],
+      Esc: ['e.key === "Escape"'],
+      "j / ↓": ['e.key === "j"', 'e.key === "ArrowDown"'],
+      "k / ↑": ['e.key === "k"', 'e.key === "ArrowUp"'],
+      "h / ←": ['e.key === "h"', 'e.key === "ArrowLeft"'],
+      "l / →": ['e.key === "l"', 'e.key === "ArrowRight"'],
+      "Enter / o": ['e.key === "Enter"', 'e.key === "o"'],
+      "g n": ['e.key === "g"', 'e.key === "n"'],
+      "g a": ['e.key === "g"', 'e.key === "a"'],
+      "g 1": ['e.key === "g"', "/^[1-9]$/.test(e.key)"],
+      v: ['e.key === "v"'],
+      a: ['e.key === "a"'],
+      m: ['e.key === "m"'],
+      u: ['e.key === "u"'],
+      p: ['e.key === "p"'],
+    };
+    expect(SHORTCUTS.map(([k]) => k).sort()).toEqual(Object.keys(handlers).sort());
+    for (const [k, what, group] of SHORTCUTS) {
+      expect(what.length).toBeGreaterThan(0);
+      expect(["General", "Move", "Go to", "Act"]).toContain(group);
+      for (const h of handlers[k]!) expect(html).toContain(h);
+    }
+    // The ? dialog is drawn from the same list the server exports.
+    expect(html).toContain(JSON.stringify(SHORTCUTS));
+    for (const id of ["filter", "projects", "palette", "help", "detail"]) expect(html).toContain(`id="${id}"`);
+  });
+
+  test("approve, merge and run queue still wait out the undo window and send the token (D0021)", () => {
+    const html = pageHtml("n0nce", { lanes: [], tasks: [], lastEvent: 0, canApprove: true });
+    expect(html).toContain("const UNDO_MS = 5000;");
+    expect(html).toContain("setTimeout(() => fire(key), UNDO_MS)");
+    expect(html).toContain('"x-foreman-token": token');
+    expect(html).toContain("sessionStorage.setItem(KEY, token)");
+    expect(html).toContain("history.replaceState");
+    for (const s of ['"Approve all "', '"Run queue"', '"Merge " + n', '"btn " + (strong ? a.kind : "quiet")']) expect(html).toContain(s);
+  });
+
+  test("the list view groups by status in a fixed order and remembers its prefs", () => {
+    const html = pageHtml("n0nce", { lanes: [], tasks: [], lastEvent: 0, canApprove: false });
+    const order = ["needs_approval", "approved", "verifying", "in_review", "in_progress", "claimed", "ready", "draft", "done", "cancelled"];
+    expect(html).toContain(`const LIST_ORDER = ${JSON.stringify(order).replace(/,/g, ", ")}`);
+    expect(html).toContain('const PREFS = "foreman-board-prefs"');
+  });
+
   test("styled scroll bars, light and dark colours, lanes that snap, no external assets", () => {
     const html = pageHtml("n0nce", { lanes: [], tasks: [], lastEvent: 0, canApprove: false });
-    expect(html).toContain("scrollbar-width:thin");
-    expect(html).toContain("scrollbar-color:var(--thumb) transparent");
-    expect(html).toContain("::-webkit-scrollbar{");
-    expect(html).toContain("::-webkit-scrollbar-thumb{");
-    expect(html).toContain("main:hover::-webkit-scrollbar-thumb");
-    expect(html).toContain("scroll-snap-type:x");
-    expect(html).toMatch(/:root\{--paper:#[0-9a-f]{6}/);
-    expect(html).toMatch(/@media \(prefers-color-scheme:dark\)\{:root\{--paper:#[0-9a-f]{6}/);
+    expect(html).toContain("scrollbar-width: thin");
+    expect(html).toContain("scrollbar-color: var(--color-thumb) transparent");
+    expect(html).toContain("::-webkit-scrollbar {");
+    expect(html).toContain("::-webkit-scrollbar-thumb {");
+    expect(html).toContain("scroll-snap-type: x");
+    // The tokens and the components are inlined in the nonce'd style: one :root of tokens, a dark override.
+    expect(html).toMatch(/<style nonce="n0nce">[^]*:root \{[^}]*--color-bg: #[0-9a-f]{6}/);
+    expect(html).toMatch(/@media \(prefers-color-scheme: dark\) \{\s*:root \{[^}]*--color-bg: #[0-9a-f]{6}/);
+    expect(html).not.toContain("--paper");
     expect(html).not.toMatch(/(src|href)="https?:/);
     expect(html).not.toContain("@import");
     expect(html).not.toContain("url(http");

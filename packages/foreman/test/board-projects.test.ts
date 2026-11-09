@@ -155,8 +155,8 @@ describe("two repos on one board", () => {
     const initial = JSON.parse(/<script type="application\/json" id="initial">(.*?)<\/script>/s.exec(html)![1]!.replace(/\\u003c/g, "<"));
     expect(initial.projects.map((p: { name: string }) => p.name)).toEqual(["alpha", "beta"]);
     expect(initial.projects.flatMap((p: { tasks: unknown[] }) => p.tasks)).toHaveLength(4);
-    // The client: a button per project plus All, a project tag on cards in the All view, a filter on project names.
-    expect(html).toContain('mk("all", "All")');
+    // The client: a button per project plus All projects, a project tag on cards in the All view, a filter on project names.
+    expect(html).toContain('mk("all", "All projects")');
     expect(html).toContain('el("span", "proj", t.project)');
     expect(html).toContain("t.project + \" \" + t.id");
     expect(html).toContain("#p=");
