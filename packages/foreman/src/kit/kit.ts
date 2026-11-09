@@ -1,14 +1,12 @@
 // What create, init and sync share: the kit's files, the record of what was installed
 // (.meta-repo/installed.json, D0018), and the kit's packages a preset app vendors.
-import { SCOPE, TEMPLATES, templateFiles, templateSettings } from "@foreman-kit/agent-kit";
+import { SCOPE, TEMPLATES, templateFiles, templateSettings } from "./install";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { OWN_TEMPLATES, packageDir, VERSION } from "./paths";
 
-/** The foreman checkout this package runs from. */
-export const META_ROOT = join(import.meta.dir, "..", "..", "..");
-export const PRESETS = join(META_ROOT, "presets");
-export const OWN_TEMPLATES = join(import.meta.dir, "..", "templates");
+export { CHECKOUT, OWN_TEMPLATES, PRESETS } from "./paths";
 export const RECORD = join(".meta-repo", "installed.json");
 /** Vendored kit packages, as tarballs named by content hash (D0018). */
 export const VENDOR = ".meta-repo/packages";
@@ -38,12 +36,8 @@ export interface Change {
 
 export const sha256 = (data: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
 
-/** e.g. "0.1.0+8f3610f": this package's version and, in a git checkout, its commit. */
-export function source(): string {
-  const { version } = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string };
-  const git = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: META_ROOT, stdout: "pipe", stderr: "ignore" });
-  return git.exitCode === 0 ? `${version}+${git.stdout.toString().trim()}` : version;
-}
+/** The kit version a project's files come from: this package's version (D0032). */
+export const source = (): string => VERSION;
 
 export function readInstalled(dir: string): Installed | null {
   const file = join(dir, RECORD);
@@ -107,16 +101,19 @@ export function matchingKitFiles(dir: string, templates = TEMPLATES): Record<str
   return out;
 }
 
+/** Can this copy of foreman vendor `<scope>/<pkg>`? foreman itself always; the others only from the checkout. */
+export const canPack = (pkg: string) => packageDir(pkg) !== null;
+
 /** `bun pm pack` a kit package: its tarball, named `<pkg>-<hash>.tgz` so a new version gets a new path. */
 export function pack(pkg: string): { path: string; data: Uint8Array } {
-  const cwd = join(META_ROOT, "packages", pkg);
-  if (!existsSync(join(cwd, "package.json"))) throw new Error(`no ${SCOPE} package "${pkg}" to vendor`);
+  const cwd = packageDir(pkg);
+  if (!cwd) throw new Error(`can't vendor ${SCOPE}/${pkg}: this foreman isn't run from its checkout, and only the checkout has the other kit packages`);
   const out = mkdtempSync(join(tmpdir(), "foreman-pack-"));
   try {
     const p = Bun.spawnSync(["bun", "pm", "pack", "--destination", out, "--quiet"], { cwd, stdout: "pipe", stderr: "pipe" });
-    if (p.exitCode !== 0) throw new Error(`bun pm pack failed in packages/${pkg}: ${p.stderr.toString()}`);
+    if (p.exitCode !== 0) throw new Error(`bun pm pack failed in ${cwd}: ${p.stderr.toString()}`);
     const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
-    if (!tgz) throw new Error(`bun pm pack wrote no tarball for packages/${pkg}`);
+    if (!tgz) throw new Error(`bun pm pack wrote no tarball for ${cwd}`);
     const data = readFileSync(join(out, tgz));
     return { path: `${VENDOR}/${pkg}-${sha256(data).slice(0, 12)}.tgz`, data };
   } finally {
@@ -149,6 +146,15 @@ export function pointDep(packageJson: string, pkg: string, tarball: string): str
   const scopes = `(?:${scopeRe(SCOPE)}|${scopeRe(OLD_SCOPE)})`;
   const re = new RegExp(`("${scopes}/${pkg}"\\s*:\\s*)"(workspace:[^"]*|file:\\.meta-repo/packages/${pkg}-[0-9a-f]+\\.tgz)"`, "g");
   return packageJson.replace(re, `$1"file:${tarball}"`);
+}
+
+/**
+ * Point `<scope>/<pkg>` at a version from the registry instead of the workspace, for a kit package
+ * this copy can't vendor. Only a `workspace:` spec is rewritten.
+ */
+export function versionDep(packageJson: string, pkg: string, version: string): string {
+  const re = new RegExp(`("${scopeRe(SCOPE)}/${pkg}"\\s*:\\s*)"workspace:[^"]*"`, "g");
+  return packageJson.replace(re, `$1"${version}"`);
 }
 
 /** Vendored package name from a tarball path under VENDOR. */

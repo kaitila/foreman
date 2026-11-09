@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { TEMPLATES } from "../src/install";
+const TEMPLATES = join(import.meta.dir, "..", "templates");
 
 const files = [...new Bun.Glob("**/*").scanSync({ cwd: TEMPLATES, dot: true, onlyFiles: true })].sort();
 const prose = files.filter((f) => f.endsWith(".md"));

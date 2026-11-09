@@ -1,16 +1,18 @@
 // create: a new project from a preset. init: the kit added to a repository that exists.
 // Both never overwrite a file the project has (settings.json is merged, D0014), and both
 // record what they installed in .meta-repo/installed.json so sync can update it later (D0018).
-import { install, type InstallResult, SCOPE } from "@foreman-kit/agent-kit";
+import { install, type InstallResult, SCOPE } from "./install";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { generate, NAME } from "../../../presets/generate";
+import { generate, NAME } from "./generate";
 import {
+  canPack,
   type Change,
   FOREMAN_SERVER,
   matchingKitFiles,
   matchingKitHooks,
   MCP,
+  OWN_TEMPLATES,
   ownTemplate,
   pack,
   pointDep,
@@ -21,6 +23,7 @@ import {
   source,
   write,
   writeInstalled,
+  versionDep,
   writeOnce,
   workspaceDeps,
 } from "./kit";
@@ -45,6 +48,7 @@ function fromInstall(r: InstallResult): Change[] {
     ...r.merged.map((path): Change => ({ action: "merged", path, note: "permission rules added" })),
     ...r.kept.map((path): Change => ({ action: "kept", path, note: "already there" })),
     ...r.omitted.map((rule): Change => ({ action: "skipped", path: rule, note: "listed in .claude/agent-kit.json" })),
+    ...r.unmatchedOmit.map((e): Change => ({ action: "kept", path: ".claude/agent-kit.json", note: `warning: omit entry "${e}" matches no baseline rule or hook command` })),
   ];
 }
 
@@ -55,11 +59,18 @@ function run(cmd: string[], cwd: string) {
   return p.stdout.toString();
 }
 
+/** Each preset by name: its folder in the checkout, or its `<name>.json` in a packed foreman. */
+function presetSources(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of readdirSync(PRESETS, { withFileTypes: true })) {
+    if (e.isDirectory() && existsSync(join(PRESETS, e.name, "package.json"))) out.set(e.name, join(PRESETS, e.name));
+    else if (e.isFile() && e.name.endsWith(".json")) out.set(e.name.slice(0, -5), join(PRESETS, e.name));
+  }
+  return out;
+}
+
 export function presets(): string[] {
-  return readdirSync(PRESETS, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && existsSync(join(PRESETS, e.name, "package.json")))
-    .map((e) => e.name)
-    .sort();
+  return [...presetSources().keys()].sort();
 }
 
 export function create(dir: string, opts: CreateOptions = {}): Change[] {
@@ -70,16 +81,22 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
   if (!NAME.test(name)) throw new Error(`name must be lower-case letters, digits and dashes, starting with a letter: "${name}" (pass --name)`);
   if (existsSync(target) && readdirSync(target).length) throw new Error(`${dir} is not empty (use init to add the kit to a repository)`);
   // Checked before anything is written, so a missing identity doesn't leave a half-made project.
-  if (opts.git !== false && Bun.spawnSync(["git", "var", "GIT_AUTHOR_IDENT"], { cwd: PRESETS, env: { ...process.env }, stdout: "ignore", stderr: "ignore" }).exitCode !== 0) {
+  if (opts.git !== false && Bun.spawnSync(["git", "var", "GIT_AUTHOR_IDENT"], { cwd: OWN_TEMPLATES, env: { ...process.env }, stdout: "ignore", stderr: "ignore" }).exitCode !== 0) {
     throw new Error("git has no user.name/user.email for the first commit (set them, or pass --no-git)");
   }
 
   const changes: Change[] = [];
-  const files = generate(join(PRESETS, preset), name);
+  const files = generate(presetSources().get(preset)!, name);
   // The preset takes the kit's packages from the workspace; outside it they're vendored (D0018).
   const vendored: Record<string, string> = {};
   let pkgJson = files.get("package.json")!;
   for (const pkg of workspaceDeps(pkgJson)) {
+    if (!canPack(pkg)) {
+      // An installed foreman has only itself to vendor; the rest come from the registry (D0032).
+      pkgJson = versionDep(pkgJson, pkg, source());
+      changes.push({ action: "skipped", path: `${SCOPE}/${pkg}`, note: `not vendored (no foreman checkout): package.json takes ${source()} from the registry` });
+      continue;
+    }
     const { path, data } = pack(pkg);
     write(target, path, data);
     vendored[path] = sha256(data);

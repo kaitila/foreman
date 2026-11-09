@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "check": "bun run typecheck && bun run docs:check && bun run board:design && bun run test && bun run demo:check",
-    "typecheck": "tsc --noEmit -p packages/foreman && tsc --noEmit -p packages/agent-kit && tsc --noEmit -p packages/test-kit && tsc --noEmit -p packages/docs-check && tsc --noEmit -p packages/create && tsc --noEmit -p packages/design-kit && tsc --noEmit -p presets",
+    "typecheck": "tsc --noEmit -p packages/foreman && tsc --noEmit -p packages/agent-kit && tsc --noEmit -p packages/test-kit && tsc --noEmit -p packages/docs-check && tsc --noEmit -p packages/design-kit && tsc --noEmit -p presets",
     "test": "bun test ./packages ./presets/test",
     "demo:check": "bun run --cwd examples/demo-app check",
     "demo:generate": "bun presets/generate.ts bun-ts-postgres examples/demo-app --force",

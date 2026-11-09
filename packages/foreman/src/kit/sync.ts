@@ -1,7 +1,7 @@
 // sync: bring a project's kit files up to the foreman version this runs from (D0018).
 // Three-way per file: the hash recorded at install, the file now, and the kit's file now.
 // A file the project changed or deleted is never overwritten or restored.
-import { mergeSettings, OMIT_FILE, readOmit, SCOPE, TEMPLATES, templateSettings } from "@foreman-kit/agent-kit";
+import { mergeSettings, OMIT_FILE, readOmit, SCOPE, TEMPLATES, templateSettings } from "./install";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {

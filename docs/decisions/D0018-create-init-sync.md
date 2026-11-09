@@ -1,6 +1,6 @@
 # D0018. Projects vendor the meta-repo packages as tarballs, and sync updates only kit files, by a recorded hash (2026-10-31)
 
-**Status:** Amended by D0020, D0026
+**Status:** Amended by D0020, D0026, D0032
 
 **Context:** M7 (track R1) needs three commands: `create` starts a project from a preset, `init` adds the kit to a repository that exists, and `sync` takes the kit's later updates. The preset's `package.json` takes `@meta-repo/docs-check` and `@meta-repo/test-kit` from the workspace, which a project outside this repo doesn't have, and the packages aren't published anywhere.
 
