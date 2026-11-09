@@ -328,7 +328,7 @@ async function fire(key) {
   const p = pending.get(key);
   if (!p) return;
   pending.delete(key);
-  busy.set(key, { kind: p.kind, ids: p.ids, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? "Merging: waiting for checks to settle, then merging…" : "Running the queue: one pass, at most one merge…" });
+  busy.set(key, { kind: p.kind, ids: p.ids, text: p.kind === "approve" ? "Approving…" : p.kind === "merge" ? (conflicting(p.ids[0]) ? "Sending back: checking the PR with GitHub…" : "Merging: waiting for checks to settle, then merging…") : "Running the queue: one pass, at most one merge…" });
   render();
   let out;
   if (p.kind === "approve") {
@@ -347,14 +347,13 @@ async function fire(key) {
   } else {
     // Each project's queue in turn, so merges in one repo never overlap and never touch another.
     const names = [...new Set(p.ids.map((k) => (byKey(k) || {}).project).filter((n) => n !== undefined))];
-    const lines = [];
-    let bad = false;
+    const entries = [], failures = [];
     for (const n of names) {
       const r = await post(proj(n) + "/queue/run", key);
-      if (!r.ok) { bad = true; lines.push((multi ? n + ": " : "") + (r.body.message || "refused")); continue; }
-      for (const e of r.body.entries) lines.push((multi ? n + " " : "") + e.id + " " + e.action.replace(/_/g, " ") + ": " + e.reason);
+      if (!r.ok) { failures.push((multi ? n + ": " : "") + (r.body.message || "refused")); continue; }
+      for (const e of r.body.entries) entries.push({ k: n + "/" + e.id, project: n, id: e.id, action: e.action, reason: e.reason });
     }
-    out = { cls: bad ? "bad" : "ok", text: lines.length ? lines.join("\\n") : "Nothing approved." };
+    out = queueSummary(entries, failures);
   }
   busy.delete(key);
   results.set(key, { ...out, at: Date.now() });
@@ -362,6 +361,22 @@ async function fire(key) {
   toast({ cls: out.cls, text: (one ? label(one) + ": " : "") + out.text });
   prs.clear();
   await refresh().catch(() => render());
+  // The queue's notice stays until a task it names changes (merged, sent back, approved again):
+  // remember each one's status as it is now, after the pass.
+  const r = results.get(key);
+  if (r && r.entries) { r.snap = Object.fromEntries(r.entries.map((e) => [e.k, (byKey(e.k) || {}).status])); render(); }
+}
+// What a queue pass did, for its notice and its toast. A pass that merged nothing is never "ok".
+const ACTION = { merged: "Merged", sent_back: "Sent back", skipped: "Skipped", error: "Error", would_merge: "Would merge", would_send_back: "Would send back" };
+function queueSummary(entries, failures) {
+  const of = (a) => entries.filter((e) => e.action === a);
+  const merged = of("merged"), back = of("sent_back"), skipped = of("skipped"), errors = of("error");
+  const parts = [merged.length ? "Merged " + merged.map((e) => label(e)).join(", ") : entries.length ? "Nothing merged" : failures.length ? "The queue didn't run" : "Nothing was approved"];
+  if (back.length) parts.push(back.length + " sent back");
+  if (skipped.length) parts.push(skipped.length + " skipped");
+  if (errors.length + failures.length) parts.push(errors.length + failures.length + " failed");
+  const cls = errors.length || failures.length ? "bad" : merged.length ? "ok" : "skip";
+  return { cls, text: parts.join(" · "), entries, failures, snap: null };
 }
 function entryOut(e) {
   if (!e) return { cls: "skip", text: "Skipped: no longer approved." };
@@ -382,8 +397,11 @@ function toast(out) {
   close.addEventListener("click", () => t.remove());
   t.append(el("div", "out " + out.cls, out.text), close);
   box.append(t);
-  while (box.children.length > 4) box.firstChild.remove();
-  setTimeout(() => t.remove(), out.cls === "ok" ? 6000 : 14000);
+  if (out.sticky) t.dataset.sticky = "1";
+  // Keep at most four, dropping the oldest that isn't meant to stay.
+  while (box.children.length > 4) (box.querySelector(".toast:not([data-sticky])") || box.firstChild).remove();
+  // A sticky toast (an undone approval) stays until it is dismissed.
+  if (!out.sticky) setTimeout(() => t.remove(), out.cls === "ok" ? 6000 : 14000);
 }
 
 // The PR state shown for approved tasks, read through the board (which caches it).
@@ -400,6 +418,7 @@ function prLine(t) {
   let cls = b.checks.kind, text;
   if (b.mergeable === "CONFLICTING") { cls = "red"; text = "Conflicts with main"; }
   else if (!b.atVerified) { cls = "red"; text = "Moved since verified"; }
+  else if (b.mergeable === "UNKNOWN") { cls = "pending"; text = "GitHub is checking if it merges"; }
   else if (b.checks.kind === "green") text = b.mergeable === "MERGEABLE" ? "Checks green" : "Checks green, " + b.mergeable.toLowerCase();
   else if (b.checks.kind === "pending") text = "Checks pending";
   else text = "Checks red";
@@ -417,13 +436,16 @@ function actionArea(t, compact) {
   const a = nextAction(t, canAct(), !S.canApprove);
   if (compact && t.status === "approved" && prNumber(t.pr)) box.append(prLine(t));
   if (p) box.append(undoBar(pending.get(key) ? key : laneKey, p));
-  else if (busy.has(key)) { const b = busy.get(key); box.append(el("span", "busy", compact ? (b.kind === "approve" ? "Approving…" : "Merging…") : b.text)); }
+  else if (busy.has(key)) { const b = busy.get(key); box.append(el("span", "busy", compact ? (b.kind === "approve" ? "Approving…" : conflicting(key) ? "Sending back…" : "Merging…") : b.text)); }
   else if (a.kind === "approve" || a.kind === "merge") {
     // Merge is the strong button only when the PR looks mergeable; otherwise it reads as a try.
     const pb = prs.get(t.k) && prs.get(t.k).body;
     const strong = a.kind === "approve" || (pb && pb.readable && pb.atVerified && pb.checks.kind === "green" && pb.mergeable === "MERGEABLE");
-    const b = el("button", "btn " + (strong ? a.kind : "quiet"), a.label);
+    // A PR that conflicts isn't merged: the queue sends it back to its worker, so the button says so.
+    const conflict = a.kind === "merge" && pb && pb.mergeable === "CONFLICTING";
+    const b = el("button", "btn " + (strong ? a.kind : "quiet"), conflict ? "Send back " + prNumber(t.pr) : a.label);
     b.type = "button";
+    if (conflict) b.title = "Conflicts with main: this sends it back to its worker to merge main, then it is verified and approved again. If GitHub says it merges cleanly by then, it merges instead.";
     b.dataset.kbd = a.kind === "approve" ? "a" : "m";
     if (!compact) b.append(el("kbd", "", b.dataset.kbd));
     if (a.disabled) { b.disabled = true; b.title = "Off: " + a.disabled; }
@@ -442,7 +464,7 @@ function undoBar(key, p) {
   fill.style.animationDuration = UNDO_MS + "ms";
   fill.style.animationDelay = -(UNDO_MS - Math.max(0, p.until - Date.now())) + "ms";
   const what = p.kind === "approve" ? (p.ids.length > 1 ? "Approving " + p.ids.length : "Approving")
-    : p.kind === "merge" ? "Merging " + (prNumber((byKey(p.ids[0]) || {}).pr) || (byKey(p.ids[0]) || { id: p.ids[0] }).id) : "Running the queue";
+    : p.kind === "merge" ? (conflicting(p.ids[0]) ? "Sending back " : "Merging ") + (prNumber((byKey(p.ids[0]) || {}).pr) || (byKey(p.ids[0]) || { id: p.ids[0] }).id) : "Running the queue";
   const b = el("button", "", "Undo");
   b.type = "button";
   b.title = "Undo (u)";
@@ -454,6 +476,7 @@ function undoBar(key, p) {
   bar.append(fill, left, b);
   return bar;
 }
+function conflicting(k) { const p = prs.get(k); return !!(p && p.body && p.body.mergeable === "CONFLICTING"); }
 function tick(s) { s.textContent = s.dataset.what + " in " + Math.max(1, Math.ceil((Number(s.dataset.until) - Date.now()) / 1000)) + " s"; }
 setInterval(() => { for (const s of document.querySelectorAll(".undo span[data-until]")) tick(s); }, 250);
 
@@ -485,6 +508,17 @@ function prLink(t) {
   a.addEventListener("click", (e) => e.stopPropagation());
   return a;
 }
+// A person's approval that was undone (T-0094): sent back after they approved it.
+function undoneText(u) {
+  const who = u.conflict ? "the merge queue (it conflicts with main)" : u.by + (u.byKind === "agent" ? " (an agent)" : "");
+  return "Approved, then sent back by " + who + " " + ago(u.at, Date.now()) + (u.reason && !u.conflict ? ": " + u.reason : "");
+}
+function undoneTag(t) {
+  if (!t.undone) return null;
+  const f = el("span", "flag", "Approval undone");
+  f.title = undoneText(t.undone);
+  return f;
+}
 function liveDot() { const d = el("span", "live-dot"); d.title = "A session is running"; return d; }
 function bindItem(n, t) {
   n.dataset.id = t.k;
@@ -507,7 +541,9 @@ function row(t, now) {
   if (t.risk !== "auto") sub.append(riskTag(t.risk));
   if (t.assignee) sub.append(el("span", "", t.assignee));
   sub.append(when(t, now));
-  main.append(title, sub);
+  const flag = undoneTag(t);
+  if (flag) { const line = el("span", "title-line"); line.append(title, flag); main.append(line, sub); }
+  else main.append(title, sub);
   // Fixed slots, so each column lines up from row to row; an empty slot keeps its width.
   const side = el("div", "side");
   const slot = (cls, ...kids) => { const s = el("span", "slot " + cls); s.append(...kids.filter(Boolean)); side.append(s); };
@@ -530,6 +566,8 @@ function card(t, now) {
   if (multi && view === "all") top.append(projChip(t.project));
   top.append(when(t, now));
   const meta = el("div", "card-meta");
+  const flag = undoneTag(t);
+  if (flag) meta.append(flag);
   if (t.risk !== "auto") meta.append(riskTag(t.risk));
   const pr = t.status === "approved" && prNumber(t.pr) ? null : prLink(t);
   if (pr) meta.append(pr);
@@ -577,12 +615,44 @@ function queueOut(cls) {
   const o = el("div", cls);
   if (p) o.append(undoBar("queue", p));
   else if (busy.has("queue")) o.append(el("div", "busy", busy.get("queue").text));
-  if (r) o.append(el("div", "out " + r.cls, r.text));
+  else if (r) o.append(queueNotice(r));
   return o;
+}
+// The queue's result as a notice: a summary in the outcome's colour, then each PR in its own words.
+function queueNotice(r) {
+  const n = el("section", "qnote " + r.cls);
+  n.setAttribute("aria-label", "Merge queue result");
+  const head = el("div", "qnote-head");
+  const t = el("time", "ago", ago(r.at, Date.now()));
+  t.title = new Date(r.at).toLocaleString();
+  const again = laneButton("queue", "queue", "Run again", inView().filter((x) => x.status === "approved").map((x) => x.k));
+  again.title = "Run the merge queue again (Shift M)";
+  const close = el("button", "icon-btn");
+  close.type = "button";
+  close.setAttribute("aria-label", "Dismiss");
+  close.title = "Dismiss";
+  close.append(icon("close"));
+  close.addEventListener("click", (e) => { e.stopPropagation(); results.delete("queue"); render(); });
+  head.append(el("strong", "", "Merge queue: " + r.text), t, again, close);
+  n.append(head);
+  const ul = el("ul", "qnote-list");
+  for (const e of r.entries || []) {
+    const li = el("li");
+    li.append(el("span", "qa " + e.action, ACTION[e.action] || e.action), el("span", "id", (multi ? e.project + " " : "") + e.id), el("span", "qr", e.reason));
+    ul.append(li);
+  }
+  for (const f of r.failures || []) { const li = el("li"); li.append(el("span", "qa error", "Failed"), el("span", "qr", f)); ul.append(li); }
+  if (ul.childNodes.length) n.append(ul);
+  const left = inView().filter((x) => x.status === "approved").length;
+  if ((r.entries || []).some((e) => e.action === "merged") && left) n.append(el("p", "why", "A pass merges at most one PR, so main is re-read before the next. " + left + " still approved: run it again for the next."));
+  return n;
 }
 
 function renderList(box, shown, now) {
   const wrap = el("div", "list" + (shown.some(YOURS) ? " with-act" : ""));
+  // In the list the queue's notice sits on top, so it stays in sight even when Approved empties.
+  const q = queueOut("list-out");
+  if (q) wrap.append(q);
   for (const lane of LIST_ORDER) {
     const ts = shown.filter((t) => t.status === lane);
     // Empty groups are left out, except the two that wait for the person in Needs you.
@@ -605,7 +675,7 @@ function renderList(box, shown, now) {
     acts.append(...groupActions(lane, ts));
     head.append(tog, acts);
     g.append(head);
-    if (lane === "approved") { const o = queueOut("group-out"); if (o) g.append(o); }
+
     if (!closed) {
       if (!ts.length) g.append(el("div", "group-note", EMPTY[lane]));
       for (const t of ts) g.append(row(t, now));
@@ -659,6 +729,8 @@ function restoreFocus(f) {
 }
 function render() {
   const box = $("#content"), now = Date.now();
+  const qr = results.get("queue");
+  if (qr && qr.snap && qr.entries.some((e) => (byKey(e.k) || {}).status !== qr.snap[e.k])) results.delete("queue");
   const fk = focusKey();
   const b = box.querySelector(".board");
   const scroll = { top: box.scrollTop, x: b ? b.scrollLeft : 0, lanes: new Map([...box.querySelectorAll(".lane")].map((l) => [l.dataset.lane, l.querySelector(".cards").scrollTop])) };
@@ -850,6 +922,13 @@ async function openTask(id) {
   const keepScroll = old ? old.scrollTop : 0;
   const body = el("div", "panel-body");
   body.append(el("h2", "panel-title", t.title));
+  if (k.undone) {
+    const u = k.undone, n = el("div", "flag-note");
+    n.setAttribute("role", "note");
+    n.append(el("strong", "", "Your approval was undone"), el("p", "", undoneText(u) + "."),
+      el("p", "", u.conflict ? "Its worker merges main; then it is verified and comes back to you for approval." : "Whatever changed is verified again, then it comes back to you for approval."));
+    body.append(n);
+  }
   const dl = el("dl", "props");
   prop(dl, "Status", statusIcon(t.status), el("span", "", NAMES[t.status]));
   prop(dl, "Risk", riskTag(t.risk));
@@ -1140,9 +1219,20 @@ function palKey(e) {
   else if (e.key === "Enter") { e.preventDefault(); runPal(palIdx); }
 }
 
+// Each undone approval seen so far, so a new one raises a toast once (not again on every refresh).
+const undoneSeen = new Set(tasks.filter((t) => t.undone).map((t) => t.k + "@" + t.undone.at));
+function flagNewUndone() {
+  for (const t of tasks) {
+    if (!t.undone || undoneSeen.has(t.k + "@" + t.undone.at)) continue;
+    undoneSeen.add(t.k + "@" + t.undone.at);
+    if (t.undone.byKind === "human" && S.me && t.undone.by === S.me) continue; // they did it themselves
+    toast({ cls: "bad", sticky: !t.undone.conflict && t.undone.byKind !== "human", text: label(t) + ": your approval was undone. " + undoneText(t.undone) + "." });
+  }
+}
 async function refresh() {
   const all = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/tasks").then((s) => [n, s])));
   tasks = [];
+  setTimeout(flagNewUndone, 0);
   for (const [n, s] of all) {
     lastEvents.set(n, Math.max(lastEvents.get(n) || 0, s.lastEvent));
     tasks.push(...tag(n, s.tasks));

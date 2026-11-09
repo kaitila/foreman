@@ -76,6 +76,13 @@ export interface QueueOptions {
   dryRun?: boolean;
   /** Only this task (the board's Merge button): the same rules, for one approved task. */
   only?: string;
+  /**
+   * GitHub works mergeability out lazily (after main moves it answers UNKNOWN for a few
+   * seconds): how many more times to read a PR that says UNKNOWN (default 4), and how long
+   * to wait between reads (default 3 seconds). T-0094.
+   */
+  mergeableRetries?: number;
+  mergeableWaitSeconds?: number;
 }
 
 export type QueueAction = "merged" | "would_merge" | "sent_back" | "would_send_back" | "skipped" | "error";
@@ -94,6 +101,21 @@ export function approvedOldestFirst(f: Foreman): Task[] {
 
 export async function readPr(run: Run | AsyncRun, cwd: string, pr: string): Promise<PrState | null> {
   return parsePr(await run(PR_VIEW(pr), cwd));
+}
+
+/**
+ * Reads a PR, and reads it again while GitHub is still working out whether it merges cleanly.
+ * The waits come out of one budget for the whole pass (`budget.left`), so a long queue right
+ * after main moved can't hold the pass for minutes: once it is spent, a PR is read once.
+ */
+async function readDecided(run: Run | AsyncRun, cwd: string, pr: string, budget: { left: number }, waitMs: number, sleep: (ms: number) => Promise<void>) {
+  let s = await readPr(run, cwd, pr);
+  while (s && s.mergeable === "UNKNOWN" && budget.left > 0) {
+    budget.left--;
+    await sleep(waitMs);
+    s = await readPr(run, cwd, pr);
+  }
+  return s;
 }
 
 export const PR_VIEW = (pr: string) => ["gh", "pr", "view", pr, "--json", "headRefOid,mergeable,isDraft,statusCheckRollup"];
@@ -121,8 +143,17 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
   const cwd = opts.cwd ?? f.root ?? process.cwd();
   const settleMs = (opts.settleSeconds ?? 30) * 1000;
   const sleep = opts.sleep ?? defaultSleep;
+  const tries = opts.mergeableRetries ?? 4;
+  const waitMs = (opts.mergeableWaitSeconds ?? 3) * 1000;
+  const budget = { left: tries };
+  const stillChecking = "GitHub was still working out whether it merges cleanly (mergeable: UNKNOWN): run the queue again in a minute";
   const report: QueueEntry[] = [];
   const queue = approvedOldestFirst(f).filter((t) => opts.only === undefined || t.id === opts.only);
+  // Asking GitHub about a PR is what makes it work out mergeability: ask about every PR in the
+  // queue at once first, so they are being worked out together, not one after another.
+  if (queue.length > 1 && tries > 0) {
+    await Promise.all(queue.map((t) => f.fullPr(t.pr)).filter((p): p is string => !!p && GITHUB_PR.test(p)).map((p) => Promise.resolve(run(PR_VIEW(p), cwd)).catch(() => null)));
+  }
   for (const t of queue) {
     const entry = (action: QueueAction, reason: string) => {
       report.push({ id: t.id, pr: t.pr, action, reason });
@@ -138,7 +169,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       entry("skipped", "its verdict recorded no commit: rework and verify again");
       continue;
     }
-    const first = await readPr(run, cwd, pr);
+    const first = await readDecided(run, cwd, pr, budget, waitMs, sleep);
     if (!first) {
       entry("skipped", `couldn't read ${pr} (is gh installed and logged in?)`);
       continue;
@@ -156,7 +187,10 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
         f.sendBackConflict(t.id, actor);
         entry("sent_back", "conflicts with main: back to ready, to merge main and verify again");
       } catch (e) {
-        entry("error", e instanceof Error ? e.message : String(e));
+        // GitHub changed its answer between our read and the send-back's own read (main moved
+        // again): nothing went wrong, the next pass decides.
+        if (e instanceof ForemanError && e.code === "not_conflicting") entry("skipped", `GitHub's answer changed while sending it back (${e.message}): the next pass decides`);
+        else entry("error", e instanceof Error ? e.message : String(e));
       }
       continue;
     }
@@ -165,7 +199,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       continue;
     }
     if (first.mergeable !== "MERGEABLE") {
-      entry("skipped", `GitHub hasn't worked out whether it merges cleanly yet (${first.mergeable})`);
+      entry("skipped", first.mergeable === "UNKNOWN" ? stillChecking : `GitHub doesn't say it merges cleanly (mergeable: ${first.mergeable})`);
       continue;
     }
     const v1 = judgeChecks(first.checks);
@@ -175,7 +209,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     // Settled: a check that starts late (a slow workflow, a re-run) must show up before we merge.
     await sleep(settleMs);
-    const second = await readPr(run, cwd, pr);
+    const second = await readDecided(run, cwd, pr, budget, waitMs, sleep);
     if (!second) {
       entry("skipped", `couldn't read ${pr} again (is gh installed and logged in?)`);
       continue;
@@ -198,11 +232,16 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
       continue;
     }
     if (second.mergeable !== "MERGEABLE") {
-      entry("skipped", `GitHub no longer says it merges cleanly (${second.mergeable})`);
+      entry(
+        "skipped",
+        second.mergeable === "UNKNOWN" ? stillChecking
+          : second.mergeable === "CONFLICTING" ? "main moved while its checks settled, and it now conflicts: the next pass sends it back"
+          : `GitHub no longer says it merges cleanly (mergeable: ${second.mergeable})`,
+      );
       continue;
     }
     if (opts.dryRun) {
-      entry("would_merge", `${v2.names.length} checks green at ${verified.slice(0, 8)}`);
+      entry("would_merge", `${v2.names.length} check${v2.names.length === 1 ? "" : "s"} green at ${verified.slice(0, 8)}`);
       return report;
     }
     // --match-head-commit: GitHub refuses if the head moved between our read and the merge.
@@ -220,7 +259,7 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
     }
     try {
       f.merged(t.id, actor);
-      entry("merged", `${v2.names.length} checks green at ${verified.slice(0, 8)}`);
+      entry("merged", `${v2.names.length} check${v2.names.length === 1 ? "" : "s"} green at ${verified.slice(0, 8)}`);
     } catch (e) {
       const msg = e instanceof ForemanError ? e.message : String(e);
       entry("error", `merged on GitHub, but foreman refused to mark it: ${msg}`);

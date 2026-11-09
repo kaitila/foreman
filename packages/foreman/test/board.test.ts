@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { LANES, startBoard, type Board } from "../src/board/server";
-import { type Actor, Foreman } from "../src/core";
+import { approvalUndone, LANES, startBoard, type Board } from "../src/board/server";
+import { type Actor, type Event, Foreman } from "../src/core";
 import type { Policy } from "../src/policy";
 import { DEFAULT_PROTECTED } from "../src/policy";
 import { openDb } from "../src/store";
@@ -74,7 +74,7 @@ describe("listing", () => {
     expect(byId[draft].status).toBe("draft");
     expect(byId[waiting].status).toBe("needs_approval");
     expect(byId[evil].status).toBe("ready");
-    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "live", "pr", "risk", "status", "title", "updatedAt"]);
+    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "live", "pr", "risk", "status", "title", "undone", "updatedAt"]);
     expect(body.lastEvent).toBe(f.events().at(-1)!.id);
   });
 
@@ -234,5 +234,150 @@ describe("approve", () => {
     } finally {
       await ro.stop();
     }
+  });
+});
+
+describe("an undone approval is flagged (T-0094)", () => {
+  let n = 0;
+  const ev = (type: string, actor: Actor, data: Record<string, unknown> = {}): Event => {
+    n += 1;
+    return { id: n, taskId: "T-0001", at: 5000 + n, actor: actor.name, actorKind: actor.kind, type, data };
+  };
+  const queueActor: Actor = { name: "merge-queue", kind: "agent" };
+
+  test("a rework of an approved task is flagged with who, what kind and why", () => {
+    const events = [ev("submitted", worker), ev("approved", human), ev("rework", worker, { reason: "one more thing", was: "approved" })];
+    expect(approvalUndone(events)).toEqual({ by: "worker-1", byKind: "agent", at: events[2]!.at, reason: "one more thing", conflict: false });
+  });
+
+  test("the merge queue's conflict send-back is flagged as a conflict", () => {
+    const events = [ev("approved", human), ev("rework", queueActor, { reason: "conflicts with main", was: "approved", conflict: true })];
+    expect(approvalUndone(events)).toMatchObject({ by: "merge-queue", conflict: true, reason: "conflicts with main" });
+  });
+
+  test("a later approval, merge or cancel clears it", () => {
+    for (const after of ["approved", "merged", "cancelled"]) {
+      const events = [ev("approved", human), ev("rework", human, { reason: "x", was: "approved" }), ev(after, human)];
+      expect(approvalUndone(events)).toBeNull();
+    }
+  });
+
+  test("a rework of a task that wasn't approved isn't flagged; no events is null", () => {
+    expect(approvalUndone([ev("rework", worker, { reason: "gap", was: "needs_approval" })])).toBeNull();
+    expect(approvalUndone([ev("rework", worker, { reason: "gap", was: "in_review" })])).toBeNull();
+    expect(approvalUndone([])).toBeNull();
+  });
+
+  test("only a person's approval counts: undoing an auto approval isn't flagged", () => {
+    // risk auto: foreman approves by itself, with no approved event
+    expect(approvalUndone([ev("submitted", worker), ev("verified", verifier), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // an approved event by an agent doesn't count either
+    expect(approvalUndone([ev("approved", verifier), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // a person's approval of an earlier submission doesn't carry over to the next one
+    expect(approvalUndone([ev("approved", human), ev("submitted", worker), ev("rework", worker, { reason: "gap", was: "approved" })])).toBeNull();
+    // the same rework after a person's approval is flagged
+    expect(approvalUndone([ev("submitted", worker), ev("approved", human), ev("rework", worker, { reason: "gap", was: "approved" })])).toMatchObject({ by: "worker-1", byKind: "agent" });
+  });
+
+  test("/api/tasks: a task approved again has undone null, even when the events alone would flag it", async () => {
+    // Escalated for a protected file, a person approves, then sends it back; the next diff is
+    // ordinary, so foreman approves it by itself (no approved event).
+    let changed = ["foreman.json"];
+    const g = new Foreman(openDb(":memory:"), null, (() => { let c = 1_000_000; return () => (c += 1000); })(), {
+      protectedPaths: DEFAULT_PROTECTED, changedFiles: () => changed,
+    });
+    const t = g.create({ title: "Auto task", acceptance: ["cmd: bun test"], ready: true, risk: "auto" }, human);
+    const round = () => {
+      g.claim(t.id, worker);
+      g.submit(t.id, worker, { pr: "https://example.com/pull/3" });
+      g.startVerify(t.id, verifier);
+      return g.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status;
+    };
+    expect(round()).toBe("needs_approval");
+    g.approve(t.id, human);
+    g.rework(t.id, human, "one more thing");
+    changed = ["src/a.ts"];
+    expect(round()).toBe("approved");
+    expect(approvalUndone(g.events(t.id))).not.toBeNull();
+    const b = startBoard({ foreman: g, port: 0, approver: human });
+    try {
+      const body = await (await fetch(`${b.url}/api/tasks`)).json();
+      expect(body.tasks.find((x: { id: string }) => x.id === t.id).undone).toBeNull();
+    } finally {
+      await b.stop();
+    }
+  });
+
+  test("/api/tasks: an auto-approved task its worker reworked has undone null", async () => {
+    const g = setup();
+    const t = g.create({ title: "Auto task", acceptance: ["cmd: bun test"], ready: true, risk: "auto" }, human);
+    g.claim(t.id, worker);
+    g.submit(t.id, worker, { pr: "https://example.com/pull/2" });
+    g.startVerify(t.id, verifier);
+    expect(g.recordVerify(t.id, verifier, [{ check: "c1", pass: true, evidence: "ok" }]).status).toBe("approved");
+    g.rework(t.id, worker, "found a gap");
+    const b = startBoard({ foreman: g, port: 0, approver: human });
+    try {
+      const body = await (await fetch(`${b.url}/api/tasks`)).json();
+      expect(body.tasks.find((x: { id: string }) => x.id === t.id).undone).toBeNull();
+    } finally {
+      await b.stop();
+    }
+  });
+
+  test("/api/tasks carries undone for the reworked task and null for the others", async () => {
+    const g = setup();
+    const id = waitingTask(g);
+    const other = waitingTask(g, "Another task");
+    g.approve(id, human);
+    g.rework(id, human, "changed my mind");
+    const b = startBoard({ foreman: g, port: 0, approver: human });
+    try {
+      const body = await (await fetch(`${b.url}/api/tasks`)).json();
+      const byId = Object.fromEntries(body.tasks.map((t: { id: string }) => [t.id, t]));
+      expect(byId[id].undone).toMatchObject({ by: "ada", byKind: "human", reason: "changed my mind", conflict: false });
+      expect(byId[other].undone).toBeNull();
+    } finally {
+      await b.stop();
+    }
+  });
+});
+
+describe("the page flags surprises (T-0094)", () => {
+  let html = "";
+  beforeAll(async () => {
+    html = await (await get("/")).text();
+  });
+
+  test("it has the queue notice, the undone flag and note, the conflict button and the UNKNOWN wording", () => {
+    expect(html).toContain("queueSummary(");
+    expect(html).toContain('"qnote ');
+    expect(html).toContain('"flag"');
+    expect(html).toContain("Approval undone");
+    expect(html).toContain("Your approval was undone");
+    expect(html).toContain('conflict ? "Send back " + prNumber(t.pr)');
+    expect(html).toContain("GitHub is checking if it merges");
+    // no alarm for a person's own rework: the page knows who signs off here
+    expect(html).toContain('"me":"ada"');
+    expect(html).toContain("t.undone.by === S.me");
+    // a person's send-back toast closes itself; an agent's stays until dismissed
+    expect(html).toContain('sticky: !t.undone.conflict && t.undone.byKind !== "human"');
+  });
+
+  test("queueSummary: bad on any failure, ok only when something merged, else skip", () => {
+    const src = /function queueSummary\(entries, failures\) \{[\s\S]*?\n\}/.exec(html)?.[0];
+    expect(src).toBeTruthy();
+    const queueSummary = new Function("label", `${src}; return queueSummary;`)((e: { id: string }) => e.id) as (
+      entries: { id: string; action: string }[],
+      failures: unknown[],
+    ) => { cls: string; text: string };
+    const e = (id: string, action: string) => ({ id, action });
+    expect(queueSummary([e("T-1", "merged"), e("T-2", "sent_back"), e("T-3", "skipped")], [])).toMatchObject({
+      cls: "ok", text: "Merged T-1 · 1 sent back · 1 skipped",
+    });
+    expect(queueSummary([e("T-3", "skipped")], [])).toMatchObject({ cls: "skip", text: "Nothing merged · 1 skipped" });
+    expect(queueSummary([e("T-1", "merged"), e("T-4", "error")], [])).toMatchObject({ cls: "bad", text: "Merged T-1 · 1 failed" });
+    expect(queueSummary([], ["down"])).toMatchObject({ cls: "bad", text: "The queue didn't run · 1 failed" });
+    expect(queueSummary([], [])).toMatchObject({ cls: "skip", text: "Nothing was approved" });
   });
 });
