@@ -139,18 +139,53 @@ const prefix = (g: string) => g.split(/[*?[{]/)[0]!;
 
 /** Could some file match both globs? Errs towards yes. */
 export function globsOverlap(p: string, q: string): boolean {
+  return sameFiles(p, q) || reaches(p, q) || reaches(q, p);
+}
+
+/** One matches the other or its literal prefix, or their literal prefixes nest ("packages/" vs "packages/foreman/src/"). */
+function sameFiles(p: string, q: string): boolean {
   const pp = prefix(p);
   const qp = prefix(q);
   if (new Bun.Glob(q).match(p) || new Bun.Glob(q).match(pp) || new Bun.Glob(p).match(qp)) return true;
-  // Literal prefixes overlap ("packages/" vs "packages/foreman/src/"); an empty prefix
-  // ("**/.claude/**") says nothing, the glob matches above handle it.
   return pp !== "" && qp !== "" && (pp.startsWith(qp) || qp.startsWith(pp));
 }
 
-/** Could a task with these declared paths touch a protected path? Errs towards yes. */
+/**
+ * Does g, a glob that starts with a wildcard ("**\/*.md"), reach into h's folders
+ * ("docs/**")? Only a glob with a wildcard has folders: a plain path is matched in sameFiles.
+ */
+function reaches(g: string, h: string): boolean {
+  const hp = prefix(h);
+  if (prefix(g) !== "" || h === hp) return false;
+  return hp === "" ? g.includes("**") : reachesInto(g, hp);
+}
+
+/**
+ * Could glob g (no literal prefix) match a file under literal prefix pre? Walks pre's
+ * folders against g's leading segments: "**" reaches anywhere, "*.md" stays at the top.
+ */
+function reachesInto(g: string, pre: string): boolean {
+  if (g.includes("{")) return true; // a brace can hold a "/": don't guess
+  const segs = g.split("/");
+  const dirs = pre.split("/").slice(0, -1); // the folders pre names in full
+  for (let i = 0; i < dirs.length; i++) {
+    const seg = segs[i]!;
+    if (seg.startsWith("**")) return true;
+    if (i === segs.length - 1) return false; // g's last segment names a file, not a folder
+    if (!new Bun.Glob(seg).match(dirs[i]!)) return false;
+  }
+  return true;
+}
+
+/**
+ * Could a task with these declared paths touch a protected path? Errs towards yes, but
+ * one way only (D0038): the task's "**\/*.md" reaching into a protected "docs/decisions/**"
+ * counts; a protected "**\/package.json" reaching into the task's "src/**" doesn't, or every
+ * folder-wide task would wait for a person. The diff check at verdict time catches that file.
+ */
 export function mayTouchProtected(paths: string[], protectedPaths: string[]): boolean {
   if (paths.length === 0) return false; // undeclared: the diff check at verdict time decides
-  return paths.some((p) => protectedPaths.some((q) => globsOverlap(p, q)));
+  return paths.some((p) => protectedPaths.some((q) => sameFiles(p, q) || reaches(p, q)));
 }
 
 /**
