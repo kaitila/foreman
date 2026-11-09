@@ -7,6 +7,7 @@
 **Chosen:**
 - **Every done or cancelled task's recorded sessions are removed** (the session ids on its `lease_pinned` events), separately from its worktree. A session `claude rm` reports as already gone ("No job matching") counts as removed; any other refusal is tried again next time. Each removal is recorded as a `sessions_removed` event on the task, so a session is removed once.
 - **It runs on its own:** on every `fm dispatch` tick and after every pass of the `fm serve --queue` loop, as well as in `fm janitor`. A failure never breaks a tick or a pass.
+- **It never gets in the way.** A session still running (its lease's process is alive, e.g. a worker on a task just cancelled) is left until it ends. A run removes at most 5 sessions; the first failure that isn't "already gone" ends it and pauses removals for 10 minutes, so a backlog after an upgrade or a stuck `claude` can't stall a dispatcher tick or the board. `claude rm` runs with the same cleaned environment as foreman's other `claude` calls, and a task with nothing left to remove isn't looked at again.
 - **`FOREMAN_KEEP_SESSIONS=1` turns it off.** Under `bun test` it does nothing unless a test gives it a runner, so a test never removes a real session.
 - **Helper agents are stopped too:** the ship skill says to stop a helper once its report is folded in and it won't be messaged again.
 
