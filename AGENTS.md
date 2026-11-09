@@ -1,6 +1,6 @@
-# meta-repo
+# foreman
 
-A starter for projects where AI coding agents (Claude Code; other tools later, see D0005) write most of the code: agent docs, guardrails, CI, test and design kits, and a task layer ("foreman") that turns requests into agent work and tracks it to sign-off.
+A starter for projects where AI coding agents (Claude Code; other tools later, see D0005) write most of the code: agent docs, guardrails, CI, test and design kits, and a task layer (also called foreman, `packages/foreman`) that turns requests into agent work and tracks it to sign-off. Its packages are published as `@foreman-kit/*` (D0026).
 
 ## Where things are
 - `docs/research-plan.md`: the plan. Tracks R1–R8, steps M0–M8, each gated by a check.

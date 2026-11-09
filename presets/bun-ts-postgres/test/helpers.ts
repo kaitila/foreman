@@ -1,4 +1,4 @@
-import { createTestDb, type TestDb } from "@meta-repo/test-kit";
+import { createTestDb, type TestDb } from "@foreman-kit/test-kit";
 import postgres from "postgres";
 import { runMigrations } from "../src/db/migrate";
 import { handle } from "../src/server";

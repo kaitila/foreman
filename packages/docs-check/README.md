@@ -27,7 +27,7 @@ Files come from `git ls-files` (tracked and untracked-but-not-ignored), so an ig
 Optional `docs-check.config.ts` at the repo root:
 
 ```ts
-import { defineConfig, envRegistry } from "@meta-repo/docs-check";
+import { defineConfig, envRegistry } from "@foreman-kit/docs-check";
 export default defineConfig({
   exclude: ["vendor/**"],
   decisions: { dir: "docs/decisions", pad: 4 }, // or false

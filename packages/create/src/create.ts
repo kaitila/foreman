@@ -1,7 +1,7 @@
 // create: a new project from a preset. init: the kit added to a repository that exists.
 // Both never overwrite a file the project has (settings.json is merged, D0014), and both
 // record what they installed in .meta-repo/installed.json so sync can update it later (D0018).
-import { install, type InstallResult } from "@meta-repo/agent-kit";
+import { install, type InstallResult, SCOPE } from "@foreman-kit/agent-kit";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { generate, NAME } from "../../../presets/generate";
@@ -76,7 +76,7 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
 
   const changes: Change[] = [];
   const files = generate(join(PRESETS, preset), name);
-  // The preset takes meta-repo packages from the workspace; outside it they're vendored (D0018).
+  // The preset takes the kit's packages from the workspace; outside it they're vendored (D0018).
   const vendored: Record<string, string> = {};
   let pkgJson = files.get("package.json")!;
   for (const pkg of workspaceDeps(pkgJson)) {
@@ -84,7 +84,7 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
     write(target, path, data);
     vendored[path] = sha256(data);
     pkgJson = pointDep(pkgJson, pkg, path);
-    changes.push({ action: "created", path, note: `@meta-repo/${pkg}, vendored` });
+    changes.push({ action: "created", path, note: `${SCOPE}/${pkg}, vendored` });
   }
   files.set("package.json", pkgJson);
   for (const [path, text] of files) write(target, path, text);
@@ -104,7 +104,7 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
   if (opts.git !== false) {
     run(["git", "init", "-q", "-b", "main"], target);
     run(["git", "add", "-A"], target);
-    run(["git", "commit", "-q", "-m", `Start ${name} from the meta-repo ${preset} preset (${source()})`], target);
+    run(["git", "commit", "-q", "-m", `Start ${name} from the foreman ${preset} preset (${source()})`], target);
     changes.push({ action: "created", path: ".git", note: "first commit on main" });
   }
   return changes;
@@ -196,7 +196,7 @@ export function init(dir: string, opts: InitOptions = {}): Change[] {
 const DEP_KEYS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
 type PackageJson = { scripts?: Record<string, string> } & Partial<Record<(typeof DEP_KEYS)[number], Record<string, string>>>;
 type McpJson = { mcpServers?: Record<string, unknown> };
-const FOREMAN = "@meta-repo/foreman";
+const FOREMAN = `${SCOPE}/foreman`;
 
 function readIfThere(dir: string, path: string): string | null {
   return existsSync(join(dir, path)) ? readFileSync(join(dir, path), "utf8") : null;

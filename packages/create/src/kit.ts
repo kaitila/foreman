@@ -1,24 +1,26 @@
 // What create, init and sync share: the kit's files, the record of what was installed
-// (.meta-repo/installed.json, D0018), and the meta-repo packages a preset app vendors.
-import { TEMPLATES, templateFiles, templateSettings } from "@meta-repo/agent-kit";
+// (.meta-repo/installed.json, D0018), and the kit's packages a preset app vendors.
+import { SCOPE, TEMPLATES, templateFiles, templateSettings } from "@foreman-kit/agent-kit";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-/** The meta-repo checkout this package runs from. */
+/** The foreman checkout this package runs from. */
 export const META_ROOT = join(import.meta.dir, "..", "..", "..");
 export const PRESETS = join(META_ROOT, "presets");
 export const OWN_TEMPLATES = join(import.meta.dir, "..", "templates");
 export const RECORD = join(".meta-repo", "installed.json");
-/** Vendored meta-repo packages, as tarballs named by content hash (D0018). */
+/** Vendored kit packages, as tarballs named by content hash (D0018). */
 export const VENDOR = ".meta-repo/packages";
+/** The scope the kit's packages had before D0026. A project made then still depends on them by it. */
+export const OLD_SCOPE = "@meta-repo";
 export const SETTINGS = ".claude/settings.json";
 export const MCP = ".mcp.json";
 /** The foreman MCP server a project gets: the installed package, never a registry fetch. */
-export const FOREMAN_SERVER = { type: "stdio", command: "bun", args: ["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"] };
+export const FOREMAN_SERVER = { type: "stdio", command: "bun", args: [`node_modules/${SCOPE}/foreman/src/cli.ts`, "mcp"] };
 
 export interface Installed {
-  /** The meta-repo version the files were last installed or synced from. */
+  /** The kit version the files were last installed or synced from. */
   source: string;
   /** The preset the project was made from (create only). */
   preset?: string;
@@ -59,7 +61,7 @@ export function readInstalled(dir: string): Installed | null {
 export function writeInstalled(dir: string, rec: Installed) {
   const files = Object.fromEntries(Object.entries(rec.files).sort(([a], [b]) => a.localeCompare(b)));
   const out = {
-    $comment: "Written by meta-repo create, init and sync: the hash of each kit file as installed, so sync can tell the project's changes from the kit's. Delete an entry to let sync restore a file you deleted.",
+    $comment: "Written by foreman's create, init and sync: the hash of each kit file as installed, so sync can tell the project's changes from the kit's. Delete an entry to let sync restore a file you deleted.",
     source: rec.source,
     ...(rec.preset ? { preset: rec.preset } : {}),
     files,
@@ -105,11 +107,11 @@ export function matchingKitFiles(dir: string, templates = TEMPLATES): Record<str
   return out;
 }
 
-/** `bun pm pack` a meta-repo package: its tarball, named `<pkg>-<hash>.tgz` so a new version gets a new path. */
+/** `bun pm pack` a kit package: its tarball, named `<pkg>-<hash>.tgz` so a new version gets a new path. */
 export function pack(pkg: string): { path: string; data: Uint8Array } {
   const cwd = join(META_ROOT, "packages", pkg);
-  if (!existsSync(join(cwd, "package.json"))) throw new Error(`no meta-repo package "${pkg}" to vendor`);
-  const out = mkdtempSync(join(tmpdir(), "meta-repo-pack-"));
+  if (!existsSync(join(cwd, "package.json"))) throw new Error(`no ${SCOPE} package "${pkg}" to vendor`);
+  const out = mkdtempSync(join(tmpdir(), "foreman-pack-"));
   try {
     const p = Bun.spawnSync(["bun", "pm", "pack", "--destination", out, "--quiet"], { cwd, stdout: "pipe", stderr: "pipe" });
     if (p.exitCode !== 0) throw new Error(`bun pm pack failed in packages/${pkg}: ${p.stderr.toString()}`);
@@ -122,13 +124,16 @@ export function pack(pkg: string): { path: string; data: Uint8Array } {
   }
 }
 
-/** The meta-repo packages a package.json takes from the workspace (`"@meta-repo/x": "workspace:*"`). */
+const scopeRe = (scope: string) => scope.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
+/** The kit packages a package.json takes from the workspace (`"@foreman-kit/x": "workspace:*"`). */
 export function workspaceDeps(packageJson: string): string[] {
   const pkg = JSON.parse(packageJson) as Record<string, Record<string, string> | undefined>;
   const names = new Set<string>();
+  const re = new RegExp(`^${scopeRe(SCOPE)}\\/([a-z0-9-]+)$`);
   for (const key of ["dependencies", "devDependencies", "optionalDependencies"]) {
     for (const [dep, spec] of Object.entries(pkg[key] ?? {})) {
-      const m = /^@meta-repo\/([a-z0-9-]+)$/.exec(dep);
+      const m = re.exec(dep);
       if (m && spec.startsWith("workspace:")) names.add(m[1]!);
     }
   }
@@ -136,11 +141,13 @@ export function workspaceDeps(packageJson: string): string[] {
 }
 
 /**
- * Point `@meta-repo/<pkg>` at a vendored tarball, editing only that value so the file's
+ * Point `<scope>/<pkg>` at a vendored tarball, editing only that value so the file's
  * formatting stays. Rewrites a `workspace:` spec or an earlier tarball of ours; leaves anything else.
+ * A project made before D0026 names the package by OLD_SCOPE, and keeps that name.
  */
 export function pointDep(packageJson: string, pkg: string, tarball: string): string {
-  const re = new RegExp(`("@meta-repo/${pkg}"\\s*:\\s*)"(workspace:[^"]*|file:\\.meta-repo/packages/${pkg}-[0-9a-f]+\\.tgz)"`, "g");
+  const scopes = `(?:${scopeRe(SCOPE)}|${scopeRe(OLD_SCOPE)})`;
+  const re = new RegExp(`("${scopes}/${pkg}"\\s*:\\s*)"(workspace:[^"]*|file:\\.meta-repo/packages/${pkg}-[0-9a-f]+\\.tgz)"`, "g");
   return packageJson.replace(re, `$1"file:${tarball}"`);
 }
 

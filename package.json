@@ -1,5 +1,5 @@
 {
-  "name": "meta-repo",
+  "name": "foreman",
   "private": true,
   "type": "module",
   "workspaces": [

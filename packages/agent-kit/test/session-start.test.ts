@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SCOPE } from "../src/install";
 
 const HOOK = join(import.meta.dir, "..", "templates/claude/hooks/session-start.ts");
 const FM = join(import.meta.dir, "..", "..", "foreman/src/cli.ts");
@@ -48,7 +49,8 @@ test("injects the claimed task; silent without an actor, without a task, or with
   }
 });
 
-test("finds the installed @meta-repo/foreman, also from a worktree with no node_modules, when FOREMAN_BIN is unset and the PATH has none", () => {
+// @meta-repo is foreman's old scope: a project not yet moved to the new one keeps working.
+test.each([SCOPE, "@meta-repo"])("finds the installed %s/foreman, also from a worktree with no node_modules, when FOREMAN_BIN is unset and the PATH has none", (scope) => {
   const dir = mkdtempSync(join(tmpdir(), "ss-"));
   try {
     const project = join(dir, "project");
@@ -71,8 +73,8 @@ test("finds the installed @meta-repo/foreman, also from a worktree with no node_
     const env = { ...db, FOREMAN_ACTOR: "w1", PATH: `${bin}:/usr/bin:/bin` };
     expect(run(env, project)).toEqual({ code: 0, out: "" }); // nothing installed: silent
 
-    mkdirSync(join(project, "node_modules/@meta-repo"), { recursive: true });
-    symlinkSync(join(FM, "..", ".."), join(project, "node_modules/@meta-repo/foreman"));
+    mkdirSync(join(project, "node_modules", scope), { recursive: true });
+    symlinkSync(join(FM, "..", ".."), join(project, "node_modules", scope, "foreman"));
     for (const at of [project, worktree]) {
       const r = run(env, at);
       expect({ at, code: r.code }).toEqual({ at, code: 0 });
