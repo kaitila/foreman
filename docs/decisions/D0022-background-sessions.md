@@ -1,6 +1,6 @@
 # D0022. Dispatched workers and verifiers run as Claude Code background sessions on the person's config dir (2026-11-05)
 
-**Status:** Active
+**Status:** Amended by D0034
 
 **Context:** The person wants foreman's workers and verifiers to show in Claude Code's own agent view: `claude agents`, `attach`, `logs`, `stop`, and `--resume` afterwards. Today [D0011](D0011-foreman-dispatch.md)'s launch adapter runs `claude -p` under a foreman-owned `CLAUDE_CONFIG_DIR`, and none of those views can see it. Live runs, their commands and what each one saw are in [R5.3b](../research/R5.3b-background-sessions.md). Amends D0011's launch adapter for the worker and verifier roles.
 
