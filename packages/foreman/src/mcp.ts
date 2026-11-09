@@ -60,7 +60,7 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
           .array(z.string())
           .optional()
           .describe('Checks: "cmd: <command that must exit 0>" or "statement: <claim to verify>"'),
-        paths: z.array(z.string()).optional().describe("Globs the task may touch"),
+        paths: z.array(z.string()).optional().describe("The narrowest globs covering the files the task will touch. Tasks with overlapping paths never run at once, so a broad glob like packages/** makes other tasks wait."),
         risk: z.enum(["auto", "review", "human"]).optional(),
         parent: z.string().optional(),
         blockedBy: z.array(z.string()).optional(),

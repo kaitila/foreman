@@ -180,7 +180,7 @@ describe("dispatch", () => {
     expect(w.opts).toMatchObject({ role: "worker", taskId: t.id });
     expect(w.opts.baseEnv?.FOREMAN_AGENT).toBe("1");
     expect(w.actor.name).toBe(`worker-${t.id}`);
-    for (const lesson of ["don't claim", "bun install", "subagents", "< /dev/null", "submit_task", "FOREMAN_ACTOR=worker-"]) {
+    for (const lesson of ["don't claim", "bun install", "subagents", "< /dev/null", "submit_task", "FOREMAN_ACTOR=worker-", "one scripted edit", "full check once"]) {
       expect(w.opts.prompt).toContain(lesson);
     }
     const task = env.f.get(t.id);
