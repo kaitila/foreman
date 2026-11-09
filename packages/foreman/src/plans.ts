@@ -195,13 +195,20 @@ export class Plans {
    * Plans are shaped by people and their own sessions, not by dispatched ones (D0033). The CLI and
    * MCP both come through here, so a worker can't get round its tool list with Bash.
    */
-  private mayShape(actor: Actor, verb: string) {
+  private mayShape(actor: Actor, verb: string, intakeMay = false) {
     const role = actor.kind === "agent" ? roleOf(actor.name) : null;
-    if (role) throw new ForemanError("not_allowed", `a dispatched ${role} session can't ${verb} a plan; file the work with create_task, or tell the person`);
+    if (role && !(role === "intake" && intakeMay)) {
+      throw new ForemanError("not_allowed", `a dispatched ${role} session can't ${verb} a plan; file the work with create_task, or tell the person`);
+    }
+  }
+
+  /** Intake (T-0098) may file a plan and put its own tasks in it; nothing else. */
+  private isIntake(actor: Actor): boolean {
+    return actor.kind === "agent" && roleOf(actor.name) === "intake";
   }
 
   create(input: PlanCreateInput, actor: Actor): Plan {
-    this.mayShape(actor, "create");
+    this.mayShape(actor, "create", true);
     if (!input.title?.trim()) throw new ForemanError("invalid", "a plan needs a title");
     if (!input.steps?.length) throw new ForemanError("invalid", "a plan needs at least one step");
     this.checkSteps(input.steps);
@@ -255,7 +262,12 @@ export class Plans {
 
   /** Put a task in a plan's step, moving it if it was in another. */
   add(taskId: string, planId: string, step: number, actor: Actor): Plan {
-    this.mayShape(actor, "move tasks in");
+    this.mayShape(actor, "move tasks in", true);
+    if (this.isIntake(actor)) {
+      if (this.row(planId).created_by !== actor.name || this.f.get(taskId).createdBy !== actor.name) {
+        throw new ForemanError("not_allowed", "an intake session only puts the tasks it filed into the plan it filed");
+      }
+    }
     this.place(taskId, planId, step, actor);
     return this.get(planId);
   }
@@ -296,6 +308,9 @@ export class Plans {
   /** File a task straight into a plan's step: one transaction, so a bad step files nothing. */
   createTask(input: CreateInput, placement: Placement | null, actor: Actor): Task {
     if (!placement) return this.f.create(input, actor);
+    if (this.isIntake(actor) && this.row(placement.plan).created_by !== actor.name) {
+      throw new ForemanError("not_allowed", "an intake session only files tasks into the plan it filed");
+    }
     return this.tx(() => {
       const t = this.f.create(input, actor);
       this.place(t.id, placement.plan, placement.step, actor); // any filer, a worker too

@@ -90,11 +90,12 @@ export const ROLE_TOOLS: Record<Role, { allowed: string[]; disallowed: string[] 
     disallowed: [...EDIT, ...fm(...PLAN_WRITES)],
   },
   intake: {
-    allowed: [...READ, ...fm("list_tasks", "show_task", "create_task")],
+    // Files a plan when the request is two or more tasks (T-0098); plans.ts limits it to its own plan and tasks.
+    allowed: [...READ, ...fm("list_tasks", "show_task", "create_task", "list_plans", "show_plan", "create_plan", "plan_task")],
     disallowed: [
       ...EDIT, "Bash",
       ...fm("next_tasks", "claim_task", "heartbeat", "report_progress", "submit_task", "start_verify",
-        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task", ...PLAN_WRITES),
+        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task", "edit_plan"),
     ],
   },
 };

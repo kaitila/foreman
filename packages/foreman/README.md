@@ -90,7 +90,7 @@ fm plan cancel P-0001 --reason "..."
 - **Progress is never stored.** It comes from the tasks' statuses each time a plan is read. A step is `empty` with no tasks (or only cancelled ones), `waiting` while its tasks are draft or ready, `in_progress` once one is claimed or further, and `done` when every task that isn't cancelled is done. The plan is done when every step is. Adding a step reopens it. Cancelling is the one state set by hand.
 - **History:** `plan_created`, `plan_edited` and `plan_cancelled` events, and `planned` and `unplanned` on the task itself. `fm show` and `show_task` name a task's plan and step.
 - **MCP:** `create_plan`, `list_plans`, `show_plan`, `edit_plan` (title, goal, add steps, cancel), `plan_task` (add to a step, or `remove`), and `create_task` takes `plan` and `step`. A bad plan or step refuses the whole `create_task`: nothing is filed.
-- **Who:** a person, or a session they run, shapes plans. A dispatched worker, verifier or intake session (an agent whose actor is `worker-…`, `verifier-…` or `intake-…`) is refused `not_allowed` by the plans core, from the CLI as from MCP, and gets `create_plan`, `edit_plan` and `plan_task` in `--disallowedTools` too. It can still file a task it found into a plan with `create_task --plan --step`.
+- **Who:** a person, or a session they run, shapes plans. A dispatched worker or verifier session (an agent whose actor is `worker-…` or `verifier-…`) is refused `not_allowed` by the plans core, from the CLI as from MCP, and gets `create_plan`, `edit_plan` and `plan_task` in `--disallowedTools` too. It can still file a task it found into a plan with `create_task --plan --step`. An intake session (`intake-…`) may file a plan and put the tasks it filed into it (see Intake), and nothing more: it can't edit or cancel a plan, take a task out, or touch another plan or task.
 - **Storage:** three tables, `plans`, `plan_steps` and `plan_tasks`, added the additive way, so the schema version doesn't move and an older foreman on the same database ignores them.
 
 ## Merge queue and janitor
@@ -196,7 +196,7 @@ Both run as agents. Without `FOREMAN_ACTOR` they act as `merge-queue` and `janit
 - **Tools per role**, passed as `--allowedTools`, because the new config dir doesn't trust the workspace and so ignores the project's `permissions.allow`. The project's deny rules, hooks (so the guard hook too) and `.mcp.json` still apply. Edit tools are `Edit`, `MultiEdit`, `Write` and `NotebookEdit`.
   - `worker`: read and edit tools, `Bash`, `Agent`, `Skill`, and foreman's work tools one by one (list, next, show, create, claim, heartbeat, progress, submit, reserve, edit). `start_verify`, `record_verdict`, `mark_merged` and `rework_task` are disallowed, so a worker can't verify or merge.
   - `verifier`: read tools, `Bash`, `Skill`, and foreman's show, list, verify, verdict and heartbeat tools. Edit tools are disallowed.
-  - `intake`: read tools and foreman's list, show and create tools. Edit tools, `Bash` and every other foreman tool are disallowed. The adapter can't restrict `Bash` to read-only commands, so intake gets none.
+  - `intake`: read tools, foreman's list, show and create tools for tasks, and `list_plans`, `show_plan`, `create_plan` and `plan_task`. Edit tools, `Bash` and every other foreman tool (`edit_plan` too) are disallowed. The adapter can't restrict `Bash` to read-only commands, so intake gets none.
   - **Plus the role rules:** `foreman.json`'s `agent` and role deny rules ([Role rules](#role-rules)) are added to `--disallowedTools`. They are read from the main checkout (the `policyRoot` option changes where). A malformed `roles` block stops the launch.
 - **MCP servers:** always `--strict-mcp-config`, so user servers and claude.ai connectors stay out (R5.3b found print mode got the connectors without it). The session gets the servers in the `mcpConfig` option. Without it, it gets the servers in the main checkout's `.mcp.json`, or foreman's own server if there is none.
 - **Limits per role:** `--max-turns`, `--max-budget-usd` and a wall-clock timeout.
@@ -286,18 +286,25 @@ Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` 
 
 `fm intake "<request>" [--ready] [--model m] [--budget usd]` turns a free-text request into tasks (step M6). It starts an `intake` session through the launch adapter, in the current directory (see [D0011](../../docs/decisions/D0011-foreman-dispatch.md)):
 
-- **What the session can do:** read the code (`Read`, `Glob`, `Grep`) and use foreman's `list_tasks`, `show_task` and `create_task`. Nothing else: no edits, no `Bash`, no other foreman tools.
+- **What the session can do:** read the code (`Read`, `Glob`, `Grep`) and use foreman's `list_tasks`, `show_task`, `create_task`, `list_plans`, `show_plan`, `create_plan` and `plan_task`. Nothing else: no edits, no `Bash`, no other foreman tools. The plans core lets it put only the tasks it filed into the plan it filed (D0033).
 - **Its foreman:** the session gets this foreman's own MCP server, by the absolute path of its `cli.ts`, and no other server, so it works in a repo whose `.mcp.json` doesn't list foreman. The server runs as `intake-<run id>`, which is what `created_by` shows, and with `FOREMAN_DRAFTS_ONLY=1`, so `create_task` files drafts whatever the model asks.
-- **What it is told:** search the board first and report what is already filed (any status but cancelled) as a duplicate; then file each remaining piece of work with a spec, at least one acceptance check and the narrowest paths that fit, since tasks whose paths overlap never run at once and a glob like `packages/**` makes the rest wait (D0029). It answers with a `--json-schema` structured result: the ids it filed, the duplicates with a reason, and a summary.
-- **What foreman believes:** the board, not the model. The tasks filed are the ones `intake-<run id>` created during the run. An id the model reports but didn't file, a filed task it doesn't report, a duplicate that wasn't on the board before, or a task without checks or paths is listed as a problem.
-- **Drafts unless `--ready`:** with `--ready`, foreman marks each filed task ready itself, as the person who ran the command. A task without checks or paths stays a draft.
-- **Output:** one line per task filed and per duplicate, then any problems and the cost. Exit 1 if there was a problem (the session failed, ran out of budget or turns, or a check above failed); what was filed is still listed. `--json` prints the whole result.
+- **What it is told:** search the board first and report what is already filed (any status but cancelled) as a duplicate; then file each remaining piece of work with a spec, at least one acceptance check and the narrowest paths that fit, since tasks whose paths overlap never run at once and a glob like `packages/**` makes the rest wait (D0029). Two or more tasks make a plan: it files one first, with the request in a sentence as the goal and the order the work has to happen in as steps, each with a check, then files each task into its step (tasks that can run side by side share one). One task gets no plan. It answers with a `--json-schema` structured result: the ids it filed, the plan id (if any), the duplicates with a reason, and a summary.
+- **What foreman believes:** the board, not the model. The tasks filed are the ones `intake-<run id>` created during the run. The plan is the one it created. An id the model reports but didn't file, a filed task it doesn't report, a duplicate that wasn't on the board before, or a task without checks or paths is listed as a problem. So is a plan it reports but didn't create (or created but didn't report), two or more tasks with no plan, a plan for one task, a filed task outside the plan, and a step with no task.
+- **Drafts unless `--ready`:** with `--ready`, foreman marks each filed task ready itself, as the person who ran the command. A task without checks or paths stays a draft. The plan has no ready state: its steps follow their tasks.
+- **Output:** the plan, if one was filed: its id and title, then each step with its check and its tasks; then one line per task filed outside a plan and per duplicate, then any problems and the cost. Exit 1 if there was a problem (the session failed, ran out of budget or turns, or a check above failed); what was filed is still listed. `--json` prints the whole result.
 - **Limits:** `--budget` is the session's `--max-budget-usd` (default $1); turns and time are the intake role's limits (30 turns, 10 minutes).
 
 ```sh
 $ fm intake "Add a --shout flag to the greet CLI in src/greet.ts that prints the greeting in upper case, with a test."
 T-0002  draft  Add --shout flag to greet CLI that prints the greeting in upper case
 (intake-9sh7, 10 turns, $0.009)
+$ fm intake "Add a --whisper flag to the greet CLI and document it in the README."
+P-0001  plan   Add --whisper and document it
+  1. Code  (check: bun test passes)
+     T-0003  draft  Add --whisper flag to greet CLI
+  2. Docs  (check: the README shows --whisper)
+     T-0004  draft  Document --whisper in the README
+(intake-…, 12 turns, $0.012)
 $ fm intake "Add a --shout flag to the greet CLI in src/greet.ts that prints the greeting in upper case, with a test."
 T-0002  already filed: Already on the board in draft: ...
 (intake-…, 8 turns, $0.005)

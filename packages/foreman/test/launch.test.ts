@@ -114,6 +114,11 @@ describe("buildLaunch", () => {
     const def = list(buildLaunch(base({ role: "intake" })).cmd, "--allowedTools");
     expect(def).toContain("mcp__foreman__create_task");
     expect(def).not.toContain("Bash");
+    // It files a plan for two or more tasks (T-0098), but never edits one.
+    expect(def).toEqual(expect.arrayContaining(["mcp__foreman__create_plan", "mcp__foreman__plan_task"]));
+    const denied = list(buildLaunch(base({ role: "intake" })).cmd, "--disallowedTools");
+    expect(denied).toContain("mcp__foreman__edit_plan");
+    expect(denied).not.toContain("mcp__foreman__create_plan");
   });
 
   test("--model and --json-schema only when given", () => {
@@ -200,12 +205,15 @@ describe("role deny rules from foreman.json (T-0055, D0019)", () => {
     expect(i).toEqual(expect.arrayContaining(["Bash(ssh *)", "Read(data/**)"]));
   });
 
-  test("no dispatched role may change a plan; a worker still files tasks into one with create_task", () => {
+  test("no worker or verifier may change a plan, intake may only file one; a worker still files tasks into one with create_task", () => {
     const d = fresh("plans");
-    for (const role of ["worker", "verifier", "intake"] as const) {
-      const { cmd } = buildLaunch(base({ role, taskId: role === "intake" ? undefined : "T-1", policyRoot: d }));
+    for (const role of ["worker", "verifier"] as const) {
+      const { cmd } = buildLaunch(base({ role, taskId: "T-1", policyRoot: d }));
       expect(list(cmd, "--disallowedTools")).toEqual(expect.arrayContaining(["mcp__foreman__create_plan", "mcp__foreman__edit_plan", "mcp__foreman__plan_task"]));
     }
+    const intake = buildLaunch(base({ role: "intake", policyRoot: d })).cmd;
+    expect(list(intake, "--disallowedTools")).toContain("mcp__foreman__edit_plan");
+    expect(list(intake, "--allowedTools")).toEqual(expect.arrayContaining(["mcp__foreman__create_plan", "mcp__foreman__plan_task"]));
     expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: d })).cmd, "--allowedTools")).toContain("mcp__foreman__create_task");
   });
 

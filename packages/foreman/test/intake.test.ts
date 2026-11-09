@@ -9,6 +9,7 @@ import { type Actor, Foreman, type CreateInput } from "../src/core";
 import { INTAKE_SCHEMA, intake, intakeCommand, intakePrompt } from "../src/intake";
 import { buildLaunch, type LaunchOptions, type LaunchResult } from "../src/launch";
 import { buildServer } from "../src/mcp";
+import { Plans, type StepInput } from "../src/plans";
 import { openDb } from "../src/store";
 
 const person: Actor = { name: "ann", kind: "human" };
@@ -56,6 +57,35 @@ function fakeSession(
   return { launcher, seen };
 }
 
+/** A fake session that files a plan with `steps`, then `tasks` into the steps in `at` (null: outside the plan). */
+function fakePlanSession(
+  f: Foreman,
+  steps: StepInput[],
+  tasks: CreateInput[],
+  at: (number | null)[],
+  answer?: (ids: string[], plan: string) => unknown,
+) {
+  const plans = new Plans(f);
+  const launcher = async (o: LaunchOptions) => {
+    const env = (o.mcpConfig as { mcpServers: { foreman: { env: Record<string, string> } } }).mcpServers.foreman.env;
+    const actor: Actor = { name: env.FOREMAN_ACTOR!, kind: "agent" };
+    const plan = plans.create({ title: "Shout", goal: "Add a --shout flag and document it.", steps }, actor).id;
+    const ids = tasks.map((t, i) => {
+      const step = at[i] ?? null;
+      return plans.createTask({ ...t, ready: false }, step === null ? null : { plan, step }, actor).id;
+    });
+    const structured = answer ? answer(ids, plan) : { created: ids, plan, duplicates: [], summary: "" };
+    return result({ structured });
+  };
+  return { launcher, plans };
+}
+
+const twoSteps: StepInput[] = [
+  { title: "Code", check: "bun test passes" },
+  { title: "Docs", check: "the README shows --shout" },
+];
+const docs: CreateInput = { ...good, title: "Document --shout", paths: ["README.md"] };
+
 describe("intake", () => {
   test("files drafts through a read-only intake session and reads them back from the board", async () => {
     const f = board();
@@ -86,12 +116,81 @@ describe("intake", () => {
     expect(server.foreman!.env.FOREMAN_DRAFTS_ONLY).toBe("1");
   });
 
-  test("--ready marks what it filed ready, as the person who asked", async () => {
+  test("one task files no plan", async () => {
     const f = board();
-    const { launcher } = fakeSession(f, [good, { ...good, title: "Document --shout", paths: ["README.md"] }]);
+    const { launcher } = fakeSession(f, [good]);
+    const r = await intake(f, { request: "x", actor: person, launcher });
+    expect(r.ok).toBe(true);
+    expect(r.plan).toBeNull();
+    expect(new Plans(f).list()).toEqual([]);
+  });
+
+  test("two or more tasks file a plan whose steps hold them; side by side tasks share a step", async () => {
+    const f = board();
+    const { launcher, plans } = fakePlanSession(f, twoSteps, [good, { ...good, title: "Add --whisper" }, docs], [1, 1, 2]);
+    const r = await intake(f, { request: "x", actor: person, runId: "pl01", launcher });
+    expect(r.problems).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.plan!.id).toBe("P-0001");
+    expect(r.plan!.createdBy).toBe("intake-pl01");
+    expect(r.plan!.goal).toBe("Add a --shout flag and document it.");
+    expect(r.plan!.steps.map((s) => [s.n, s.check, s.tasks.map((t) => t.id)])).toEqual([
+      [1, "bun test passes", ["T-0001", "T-0002"]],
+      [2, "the README shows --shout", ["T-0003"]],
+    ]);
+    expect(plans.placement("T-0003")).toEqual({ plan: "P-0001", step: 2 });
+  });
+
+  test("several tasks without a plan, a task outside it, an empty step or an unreported plan are problems", async () => {
+    let f = board();
+    let r = await intake(f, { request: "x", actor: person, launcher: fakeSession(f, [good, docs]).launcher });
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContain("2 tasks were filed without a plan");
+
+    f = board();
+    const three = [...twoSteps, { title: "Release", check: "tagged" }];
+    r = await intake(f, { request: "x", actor: person, launcher: fakePlanSession(f, three, [good, docs], [1, null]).launcher });
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContain("T-0002 was filed outside P-0001");
+    expect(r.problems).toContain("P-0001 step 2 (Docs) has no task");
+    expect(r.problems).toContain("P-0001 step 3 (Release) has no task");
+
+    f = board();
+    const quiet = fakePlanSession(f, twoSteps, [good, docs], [1, 2], (ids) => ({ created: ids, duplicates: [], summary: "" }));
+    r = await intake(f, { request: "x", actor: person, launcher: quiet.launcher });
+    expect(r.problems).toEqual(["P-0001 was filed but not reported"]);
+    expect(r.plan!.id).toBe("P-0001"); // the board's plan, all the same
+  });
+
+  test("the plan reported must be one this run created", async () => {
+    const f = board();
+    new Plans(f).create({ title: "Old", steps: twoSteps }, person); // P-0001, before the run
+    const lying = fakePlanSession(f, twoSteps, [good, docs], [1, 2], (ids) => ({ created: ids, plan: "P-0001", duplicates: [], summary: "" }));
+    const r = await intake(f, { request: "x", actor: person, launcher: lying.launcher });
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContain("the session reported P-0001 as its plan, but this run didn't create it");
+    expect(r.problems).toContain("P-0002 was filed but not reported");
+    expect(r.plan!.id).toBe("P-0002");
+  });
+
+  test("a plan for one task is a problem", async () => {
+    const f = board();
+    const { launcher } = fakePlanSession(f, [twoSteps[0]!], [good], [1]);
+    const r = await intake(f, { request: "x", actor: person, launcher });
+    expect(r.problems).toEqual(["P-0001 was filed for one task; one task needs no plan"]);
+  });
+
+  test("--ready marks what it filed ready, as the person who asked; the plan has no ready state", async () => {
+    const f = board();
+    const { launcher } = fakePlanSession(f, twoSteps, [good, docs], [1, 2]);
     const r = await intake(f, { request: "x", ready: true, actor: person, launcher });
     expect(r.ok).toBe(true);
     expect(r.created.map((t) => t.status)).toEqual(["ready", "ready"]);
+    expect(r.plan!.state).toBe("active");
+    expect(r.plan!.steps.map((s) => [s.state, s.tasks[0]!.status])).toEqual([
+      ["waiting", "ready"],
+      ["waiting", "ready"],
+    ]);
     expect(f.events("T-0001").find((e) => e.type === "ready")?.actor).toBe("ann");
   });
 
@@ -187,6 +286,14 @@ describe("intake", () => {
     expect(p.indexOf("<request>")).toBeGreaterThan(p.indexOf("create_task"));
   });
 
+  test("the prompt asks for a plan when there are two or more tasks, and none for one", () => {
+    const p = intakePrompt("anything");
+    expect(p).toContain("Two or more tasks make a plan");
+    expect(p).toContain("create_plan");
+    expect(p).toContain("One task: no plan.");
+    expect(INTAKE_SCHEMA.properties.plan.type).toBe("string");
+  });
+
   test("the prompt asks for narrow paths, since overlapping tasks wait for each other", () => {
     const p = intakePrompt("anything");
     expect(p).toContain("narrowest globs");
@@ -208,6 +315,24 @@ describe("fm intake", () => {
     expect(r.text).toContain("T-0002  draft  Add --shout");
     expect(r.text).toContain("T-0001  already filed: covers the README part");
     expect(r.text).toMatch(/intake-\w+, 5 turns, \$0\.010/);
+  });
+
+  test("prints the plan with its steps and their tasks, then anything outside it", async () => {
+    const f = board();
+    const { launcher } = fakePlanSession(f, twoSteps, [good, docs, { ...good, title: "Stray" }], [1, 2, null]);
+    const r = await intakeCommand(f, person, "shout", {}, launcher);
+    expect(r.code).toBe(1);
+    expect(r.text).toContain(
+      [
+        "P-0001  plan   Shout",
+        "  1. Code  (check: bun test passes)",
+        "     T-0001  draft  Add --shout",
+        "  2. Docs  (check: the README shows --shout)",
+        "     T-0002  draft  Document --shout",
+        "T-0003  draft  Stray",
+      ].join("\n"),
+    );
+    expect(r.text).toContain("problem: T-0003 was filed outside P-0001");
   });
 
   test("nothing filed, problems and exit 1", async () => {
@@ -249,10 +374,13 @@ describe("intake's session", () => {
   test("may read and file, but not claim, verify, edit or run commands", () => {
     const { cmd } = buildLaunch(base);
     expect(flag(cmd, "--allowedTools")!.split(",").sort()).toEqual(
-      ["Glob", "Grep", "Read", "mcp__foreman__create_task", "mcp__foreman__list_tasks", "mcp__foreman__show_task"].sort(),
+      [
+        "Glob", "Grep", "Read",
+        ...["create_task", "list_tasks", "show_task", "list_plans", "show_plan", "create_plan", "plan_task"].map((n) => `mcp__foreman__${n}`),
+      ].sort(),
     );
     const denied = flag(cmd, "--disallowedTools")!.split(",");
-    for (const t of ["Bash", "Edit", "Write", "mcp__foreman__claim_task", "mcp__foreman__record_verdict", "mcp__foreman__edit_task"]) {
+    for (const t of ["Bash", "Edit", "Write", "mcp__foreman__claim_task", "mcp__foreman__record_verdict", "mcp__foreman__edit_task", "mcp__foreman__edit_plan"]) {
       expect(denied).toContain(t);
     }
   });
