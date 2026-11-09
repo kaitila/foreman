@@ -64,5 +64,7 @@ Wait for CI in the background. Never submit red.
 ## 8. Submit
 `submit_task` with the PR URL and a summary that says, for each acceptance check, what you did and how you showed it. You let go of the task here. Don't merge it yourself unless the project's rules say a passing verifier is enough for this task; foreman says which (`approved`, or `needs_approval` for a person).
 
+After a person has approved it, the PR is theirs as approved: don't push to it or rework the task, even for something they just asked for. Foreman refuses the rework. File the new work as its own task (`create_task` with `discoveredFrom`), or ask the person.
+
 ## 9. Report
 To the user: the PR link and state, the task id and its foreman status, what the review found and what you did about it, and anything left for a person.

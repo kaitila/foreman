@@ -1,6 +1,6 @@
 # D0012. The merge queue sends a conflicting PR back on GitHub's word, not its own (2026-10-31)
 
-**Status:** Active
+**Status:** Amended by D0031
 
 **Context:** The merge queue of [D0011](D0011-foreman-dispatch.md) sends an approved PR that conflicts with main back to work. `rework` lets only the task's workers or a person do that ([D0009](D0009-edit-rework-verified-head.md)), and the queue is neither: it runs as an agent.
 
