@@ -1153,7 +1153,7 @@ function flagNewUndone() {
     if (!t.undone || undoneSeen.has(t.k + "@" + t.undone.at)) continue;
     undoneSeen.add(t.k + "@" + t.undone.at);
     if (t.undone.byKind === "human" && S.me && t.undone.by === S.me) continue; // they did it themselves
-    toast({ cls: "bad", sticky: !t.undone.conflict, text: label(t) + ": your approval was undone. " + undoneText(t.undone) + "." });
+    toast({ cls: "bad", sticky: !t.undone.conflict && t.undone.byKind !== "human", text: label(t) + ": your approval was undone. " + undoneText(t.undone) + "." });
   }
 }
 async function refresh() {

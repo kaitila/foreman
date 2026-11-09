@@ -187,7 +187,10 @@ export async function mergeQueuePass(f: Foreman, actor: Actor, opts: QueueOption
         f.sendBackConflict(t.id, actor);
         entry("sent_back", "conflicts with main: back to ready, to merge main and verify again");
       } catch (e) {
-        entry("error", e instanceof Error ? e.message : String(e));
+        // GitHub changed its answer between our read and the send-back's own read (main moved
+        // again): nothing went wrong, the next pass decides.
+        if (e instanceof ForemanError && e.code === "not_conflicting") entry("skipped", `GitHub's answer changed while sending it back (${e.message}): the next pass decides`);
+        else entry("error", e instanceof Error ? e.message : String(e));
       }
       continue;
     }

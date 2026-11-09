@@ -171,17 +171,19 @@ export function startBoard(opts: BoardOptions): Board {
     });
   const fail = (status: number, error: string, message: string) => json({ error, message }, status);
 
-  const state = (c: Ctx) => ({
-    lanes: LANES,
-    tasks: (() => {
-      const byTask = new Map<string, Event[]>();
-      for (const e of c.f.events()) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
+  const state = (c: Ctx) => {
+    // The history is read once per request: grouped by task for the flags, and for the last id.
+    const evs = c.f.events();
+    const byTask = new Map<string, Event[]>();
+    for (const e of evs) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
+    return {
+      lanes: LANES,
       // An approved task is approved again, whatever happened before: nothing to flag.
-      return c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) }));
-    })(),
-    lastEvent: c.f.events().at(-1)?.id ?? 0,
-    canApprove: token !== null,
-  });
+      tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) })),
+      lastEvent: evs.at(-1)?.id ?? 0,
+      canApprove: token !== null,
+    };
+  };
   const summary = (c: Ctx) => {
     const ts = c.f.list();
     return {
