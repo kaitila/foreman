@@ -40,6 +40,22 @@
   --color-danger: #b8262b;
   --color-danger-soft: #fceaea;
 
+  /* Selection: a cool neutral, so a selected task reads as chosen, not as disabled grey */
+  --color-selected: #eef1f6;
+  --color-selected-strong: #e5e9f1;
+  --color-selected-line: #cfd6e3;
+
+  /* Project colour labels: identity, not meaning, so they only ever appear as small dots */
+  --label-gray: #8b8d98;
+  --label-red: #e5484d;
+  --label-orange: #ee7a2f;
+  --label-yellow: #e2b008;
+  --label-green: #30a46c;
+  --label-teal: #12a594;
+  --label-blue: #3e7bfa;
+  --label-purple: #8e4ec6;
+  --label-pink: #d6409f;
+
   --color-focus: #1a1a1e;
   --color-scrim: rgba(18, 18, 22, 0.16);
   --color-thumb: #d2d2d8;
@@ -91,6 +107,8 @@
   --measure: 46rem;
   --icon-size: 0.875rem;
   --dot-size: 0.375rem;
+  --label-size: 0.5rem;
+  --label-size-lg: 0.625rem;
   --avatar-size: 1.25rem;
   --kbd-size: 1.125rem;
   --undo-width: 9.5rem;
@@ -145,6 +163,18 @@
     --color-go-soft: #13261b;
     --color-danger: #f2797c;
     --color-danger-soft: #2d1617;
+    --color-selected: #1d2027;
+    --color-selected-strong: #232731;
+    --color-selected-line: #363b47;
+    --label-gray: #9b9ba5;
+    --label-red: #f2555a;
+    --label-orange: #ff8b3e;
+    --label-yellow: #f5c84a;
+    --label-green: #3dd68c;
+    --label-teal: #2ebdaa;
+    --label-blue: #5b93ff;
+    --label-purple: #a875e8;
+    --label-pink: #e86bb8;
     --color-focus: #ececef;
     --color-scrim: rgba(0, 0, 0, 0.5);
     --color-thumb: #36363c;

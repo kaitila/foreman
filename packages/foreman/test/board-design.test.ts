@@ -19,6 +19,8 @@ const PAIRS: [string, string][] = [
   ["danger", "danger-soft"],
   ["on-primary", "primary"],
   ["on-primary", "primary-hover"],
+  // The selected and open row or card (T-0089).
+  ...["ink", "ink-muted", "ink-faint"].flatMap((t) => ["selected", "selected-strong"].map((s): [string, string] => [t, s])),
 ];
 
 describe("board design tokens", () => {

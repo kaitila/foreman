@@ -1,6 +1,6 @@
 # D0024. One board for every project on this machine (2026-11-05)
 
-**Status:** Active
+**Status:** Amended by D0028
 
 **Context:** A person runs several repos at once, each with its own `.foreman/foreman.db`. `fm serve` showed only the repo it started in, on a fixed port, so a second board could not start.
 
