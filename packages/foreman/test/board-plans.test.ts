@@ -180,11 +180,18 @@ function chromium(): string | null {
   }
   return null;
 }
-const browser = chromium();
+const FLAGS = ["--headless", "--no-sandbox", "--disable-gpu", "--virtual-time-budget=3000", "--dump-dom"];
+// Only a browser that runs a page's script and prints its DOM in time counts (CI's may not).
+function works(path: string | null): string | null {
+  if (!path) return null;
+  const r = Bun.spawnSync([path, ...FLAGS, 'data:text/html,<body><script>document.body.textContent="probe-ok"</script>'], { stdout: "pipe", stderr: "ignore", timeout: 15_000 });
+  return r.stdout.toString().includes("probe-ok") ? path : null;
+}
+const browser = works(chromium());
 
 describe.skipIf(!browser)("rendered in a headless browser", () => {
   const dom = async (hash: string) => {
-    const p = Bun.spawn([browser!, "--headless", "--no-sandbox", "--disable-gpu", "--virtual-time-budget=3000", "--dump-dom", `${board.url}/${hash}`], { stdout: "pipe", stderr: "ignore" });
+    const p = Bun.spawn([browser!, ...FLAGS, `${board.url}/${hash}`], { stdout: "pipe", stderr: "ignore", timeout: 15_000 });
     const out = await new Response(p.stdout).text();
     await p.exited;
     // Only what the view drew, not the embedded state or the palette.
