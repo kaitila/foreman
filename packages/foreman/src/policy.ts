@@ -179,6 +179,30 @@ export const defaultRun: Run = (cmd, cwd) => {
   }
 };
 
+/** A runner that doesn't block the event loop (the merge queue's, so the board answers during a pass). */
+export type AsyncRun = ((cmd: string[], cwd: string) => Promise<string | null>) & {
+  lastError?: string;
+};
+
+/**
+ * A new async runner: gh run with Bun.spawn, killed at 30 s. Each one keeps its own
+ * `lastError`, so give each pass its own and two passes in parallel can't mix them up.
+ */
+export function asyncRunner(): AsyncRun {
+  const run: AsyncRun = async (cmd, cwd) => {
+    try {
+      const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 30_000 });
+      const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+      run.lastError = code === 0 ? undefined : err.trim();
+      return code === 0 ? out.trim() : null;
+    } catch {
+      run.lastError = undefined;
+      return null; // e.g. gh not installed
+    }
+  };
+  return run;
+}
+
 export const GITHUB_PR = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/;
 
 export function gitPolicy(root: string | null, run: Run = defaultRun): Policy {
