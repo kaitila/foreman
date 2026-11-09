@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { basename } from "node:path";
 import { type Actor, type Event, type Foreman, ForemanError, type Status, type Task } from "../core";
-import { defaultRun, GITHUB_PR } from "../policy";
+import { asyncRunner, GITHUB_PR } from "../policy";
 import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
 import { pageHtml } from "./page";
 import { hasLiveSession, recentActivity, taskSessions } from "../activity";
@@ -60,17 +60,6 @@ export interface BoardOptions {
     onPass?: (project: string, entries: QueueEntry[]) => void;
     onError?: (project: string, error: unknown) => void;
   };
-}
-
-/** gh run off the event loop; null on failure or when the process is killed at the timeout. */
-async function asyncRun(cmd: string[], cwd: string): Promise<string | null> {
-  try {
-    const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 30_000 });
-    const out = await new Response(p.stdout).text();
-    return (await p.exited) === 0 ? out.trim() : null;
-  } catch {
-    return null;
-  }
 }
 
 export interface Board {
@@ -176,11 +165,11 @@ export function startBoard(opts: BoardOptions): Board {
     };
   };
 
-  const run = opts.queue?.run ?? defaultRun;
   const prCacheMs = opts.prCacheMs ?? 15_000;
   /** A PR's state for its card: what the merge queue would read first, without merging. */
   const prTimeoutMs = opts.prTimeoutMs ?? 15_000;
-  const readRun = opts.readRun ?? (opts.queue?.run ? async (c: string[], d: string) => run(c, d) : asyncRun);
+  const queueRun = opts.queue?.run;
+  const readRun = opts.readRun ?? (queueRun ? async (c: string[], d: string) => queueRun(c, d) : asyncRunner());
   const inflight = new Map<string, Promise<unknown>>();
   const prState = async (c: Ctx, t: Task): Promise<unknown> => {
     if (!t.pr || !GITHUB_PR.test(t.pr)) return { pr: t.pr, readable: false, reason: "no GitHub PR" };
