@@ -4,6 +4,7 @@
   "description": "One tokens file as the single source of a design, tokens.ts generated from it, a lint against raw colours and px, and screenshots for a design-critic agent",
   "license": "MIT",
   "type": "module",
+  "files": ["src", "tokens.css", "tokens.ts", "README.md"],
   "bin": { "design-kit": "src/cli.ts" },
   "exports": {
     ".": "./src/index.ts",
