@@ -69,6 +69,8 @@ export interface Config {
   setup?: string;
   /** Deny rules per agent role; validated by roles.ts (D0019). */
   roles?: unknown;
+  /** The foreman versions this repo needs, as a semver range (`>=0.2.0`); an older fm refuses to open it (D0026). */
+  foreman?: string;
 }
 
 /**

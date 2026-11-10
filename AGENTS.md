@@ -9,7 +9,7 @@ A starter for projects where AI coding agents (Claude Code; other tools later, s
 - `packages/foreman/`: the task layer ([README](packages/foreman/README.md)). The board's design system: `docs/board-design.md`.
 - `packages/agent-kit/`: guardrail baseline and templates ([README](packages/agent-kit/README.md)). This repo runs its own baseline (`.claude/settings.json`).
 - `packages/docs-check/`: keeps the docs true to the code ([README](packages/docs-check/README.md)).
-- `packages/foreman/src/kit/`: `fm create`, `init` and `sync`: start a project from a preset, add the kit to a repo, take the kit's updates ([KIT.md](packages/foreman/KIT.md)). agent-kit's templates and the presets ship inside the foreman package (D0032).
+- `packages/foreman/src/kit/`: `fm create`, `init` and `sync`: start a project from a preset, set up foreman in a repo with the kit pieces chosen, take the kit's updates ([KIT.md](packages/foreman/KIT.md)). agent-kit's templates and the presets ship inside the foreman package (D0032).
 - `packages/design-kit/`: tokens file, design lint and screenshots ([README](packages/design-kit/README.md)).
 
 ## Commands

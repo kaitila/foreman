@@ -2,11 +2,8 @@
   "mcpServers": {
     "foreman": {
       "type": "stdio",
-      "command": "bun",
-      "args": [
-        "node_modules/@foreman-kit/foreman/src/cli.ts",
-        "mcp"
-      ]
+      "command": "fm",
+      "args": ["mcp"]
     }
   }
 }

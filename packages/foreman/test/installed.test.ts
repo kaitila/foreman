@@ -83,20 +83,29 @@ test("fm help runs from the installed copy", () => {
   expect(run([fm, "help"], base)).toContain("Usage: fm <command>");
 });
 
-test("fm init adds the kit to a git repo, and fm sync finds it up to date", () => {
+test("fm init sets up foreman alone, --with adds kit pieces from the installed copy, and fm sync finds it up to date", () => {
   const repo = join(base, "repo");
   mkdirSync(repo);
   run(["git", "init", "-q"], repo);
+  // No terminal and no flags: foreman only.
   const out = run([fm, "init"], repo);
-  expect(out).toContain("created  .claude/hooks/guard.ts");
+  expect(out).not.toContain(".claude/");
+  expect(existsSync(join(repo, ".claude"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(repo, ".mcp.json"), "utf8")).mcpServers.foreman).toEqual({ type: "stdio", command: "fm", args: ["mcp"] });
+  const more = run([fm, "init", "--with", "guardrails,skills,docs"], repo);
+  expect(more).toContain("created  .claude/hooks/guard.ts");
   expect(readFileSync(join(repo, ".claude", "hooks", "guard.ts"), "utf8")).toBe(readFileSync(join(TEMPLATES, "claude", "hooks", "guard.ts"), "utf8"));
   const version = (JSON.parse(readFileSync(join(installed, "package.json"), "utf8")) as { version: string }).version;
-  expect(JSON.parse(readFileSync(join(repo, ".meta-repo", "installed.json"), "utf8")).source).toBe(version);
+  const rec = JSON.parse(readFileSync(join(repo, ".foreman-kit", "installed.json"), "utf8"));
+  expect(rec.source).toBe(version);
+  expect(rec.pieces).toEqual(["docs", "guardrails", "skills"]);
+  expect(JSON.parse(readFileSync(join(repo, "foreman.json"), "utf8")).foreman).toBe(`>=${version}`);
+  expect(existsSync(join(repo, ".meta-repo"))).toBe(false);
   expect(run([fm, "sync"], repo)).toContain(`kit ${version} -> ${version}`);
   expect(naming(repo)).toEqual([]);
 });
 
-test("fm create makes a project from the bundled preset, with foreman vendored from the installed copy", () => {
+test("fm create makes a project from the bundled preset; foreman is the person's fm, the other kit packages come by version", () => {
   const work = join(base, "work");
   mkdirSync(work);
   const out = run([fm, "create", "app", "--no-install"], work);
@@ -107,9 +116,13 @@ test("fm create makes a project from the bundled preset, with foreman vendored f
   }
   const pkg = JSON.parse(readFileSync(join(app, "package.json"), "utf8")) as { devDependencies?: Record<string, string>; dependencies?: Record<string, string> };
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-  expect(deps["@foreman-kit/foreman"]).toMatch(/^file:\.meta-repo\/packages\/foreman-[0-9a-f]+\.tgz$/);
+  expect(deps["@foreman-kit/foreman"]).toBeUndefined();
+  expect(JSON.parse(readFileSync(join(app, ".mcp.json"), "utf8")).mcpServers.foreman.command).toBe("fm");
   // The other kit packages can't be packed without the checkout: they're taken by version.
-  for (const [name, spec] of Object.entries(deps)) if (name.startsWith("@foreman-kit/") && name !== "@foreman-kit/foreman") expect(spec, name).toMatch(/^\d+\.\d+\.\d+/);
+  const kit = Object.entries(deps).filter(([name]) => name.startsWith("@foreman-kit/"));
+  expect(kit.length).toBeGreaterThan(0);
+  for (const [name, spec] of kit) expect(spec, name).toMatch(/^\d+\.\d+\.\d+/);
   expect(out).toContain("from the registry");
+  expect(existsSync(join(app, ".meta-repo"))).toBe(false);
   expect(naming(app)).toEqual([]);
 });
