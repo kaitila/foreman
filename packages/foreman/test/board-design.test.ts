@@ -47,4 +47,14 @@ describe("board design tokens", () => {
     expect(result.findings).toEqual([]);
     expect(result.files).toBeGreaterThanOrEqual(2);
   });
+
+  // T-0109: as a `1fr` grid column the reason shrank to one character per line in a board column.
+  test("a queue notice row wraps, and the reason keeps a minimum width", () => {
+    const css = readFileSync(repo + "packages/foreman/src/board/board.css", "utf8");
+    const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+    expect(rule(".qnote-list li")).toContain("flex-wrap: wrap");
+    expect(rule(".qnote-list li")).not.toContain("grid");
+    expect(rule(".qnote-list .qr")).toContain("flex: 1 1 var(--reason-min)");
+    expect(tokens.light["reason-min"]).toMatch(/^\d+(\.\d+)?rem$/);
+  });
 });
