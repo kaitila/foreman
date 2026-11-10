@@ -17,7 +17,7 @@
 // off), foreman's environment goes in through --settings env, and foreman enforces
 // turns, budget and time itself from the transcript (see launchBg).
 import { spawn as nodeSpawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { resolvePolicy } from "./roles";
@@ -683,9 +683,19 @@ export function summarizeTranscript(text: string): TranscriptSummary {
   return { turns: usage.size, costUsd, lastText };
 }
 
-/** Where Claude Code keeps the transcript of a session started in `cwd`. */
+/**
+ * Where Claude Code keeps the transcript of a session started in `cwd`. It names the folder after
+ * the directory's real path, so a `cwd` reached through a symlink is resolved first (T-0122);
+ * a directory that is gone keeps the path as given.
+ */
 export function transcriptPath(configDir: string, cwd: string, sessionId: string): string {
-  return join(configDir, "projects", resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
+  let dir = resolve(cwd);
+  try {
+    dir = realpathSync(dir);
+  } catch {
+    // gone: the path as given is the best there is
+  }
+  return join(configDir, "projects", dir.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
 }
 
 function readText(p: string): string {

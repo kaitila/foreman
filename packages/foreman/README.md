@@ -67,6 +67,7 @@ foreman janitor --dry-run          # reclaim, clean up finished tasks, list stuc
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
 fm dispatch --verify-only          # only verify submitted tasks, claim nothing new
+fm dispatchers                     # the dispatchers running now: pid, slots in use, starter, tasks in flight
 fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
 fm projects color meta-repo teal   # a project's colour label on the board (gray red orange yellow green teal blue purple pink, or none)
 fm serve --queue                   # the board, plus the merge queue every 60 s in the same process (--interval, --settle-seconds 30)
@@ -276,10 +277,16 @@ What must hold:
 
 **Watching a session.** `fm logs <task> [--role worker|verifier] [-f]` reads the task's session transcripts (found from the session id on the `lease_pinned` event) and prints readable lines: `> Bash bun test` for a tool call with its main argument, `# text` for what the session said, `  -> first line` of a result, and turns and cost so far. `-f` keeps printing lines appended later until no session of the task is alive. `fm list` marks a task with a live session with `*`. The board's task view shows each session's last 10 lines and its cost, refreshed every few seconds while a session runs (`sessions` in `/api/tasks/<id>`, `live` on the task list). Nothing is stored: it all comes from the transcripts Claude Code already writes.
 
+**Which dispatchers run.** A running `fm dispatch` records itself in the project's database ([D0041](../../docs/decisions/D0041-dispatcher-registry.md)), so there is no need to look for the process by hand (`pgrep -af "fm dispatch"`):
+- `fm dispatchers [--json]` lists the running ones, a line each: pid, scope (`everything` for now), slots in use out of `--max`, its flags, who started it, how long ago, and the tasks its sessions are on. E.g. `pid 4242  everything  2/3 slots  --once  by ada  up 5 min  T-0042 worker, T-0040 verifier`.
+- `fm list` ends with the same line per running dispatcher, prefixed `dispatcher`, and with nothing when none runs. `fm list --json` is still the array of tasks.
+- **The record** (`dispatchers` table, read with `runningDispatchers` in `src/dispatchers.ts`): pid, `--max`, the flags `--once`, `--verify-only` and `--print`, the starter (`FOREMAN_ACTOR` or the person, plus `CLAUDE_CODE_SESSION_ID` when set), working directory, start time, scope, and on every tick the running sessions (task, role, pid, session id) and a last-seen time.
+- **Never stale:** the dispatcher removes its record when it ends or is interrupted. A record whose pid is no longer alive (the same check as a pinned lease) is deleted by the next read and not shown, so a killed dispatcher never shows as running. Like the lease pins, the table is added without a schema version bump, so an older foreman on the same database still works.
+
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.
-- **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task.
+- **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task. Paths that both stay inside `docs/decisions/` don't count: new decision files take reserved numbers and the index is generated (D0037).
 - **A worker per task:** the dispatcher claims the task as `worker-<task>` and makes `.claude/worktrees/<task>` on a new branch `<task>-<title>` from `origin/main`. It records both with `progress`, then starts a worker with the `ship` skill. A task back for rework keeps its worktree, or its branch if the worktree is gone. If the worktree can't be made, the task goes back to `ready`. A newly made worktree is prepared once with the `setup` command from `foreman.json` (e.g. `"setup": "bun install && bun install --cwd web"`) before the worker starts, and the prompt says so; a failed setup is reported to the worker, not fatal. Without `setup` the prompt tells the session to run `bun install`.
 - **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists, whoever submitted them (an interactive session, a person), with or without `--once`.
 - **Leases follow the process:** each session's lease is pinned to its PID (`pinLease`). While the PID lives, the lease doesn't time out; once it's gone, `reclaim` releases the task (`ready`, or `in_review` for a verifier). A new holder ends the pin. The pins live in their own table, so an older foreman on the same database still works.
@@ -287,7 +294,7 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
 - **`--once`:** start workers for what fits now, see those tasks through verification, then stop. Submitted tasks it didn't start still get a verifier. **`--verify-only`:** start verifiers for submitted tasks and never claim a ready task, to get verifications without starting new work. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
-Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
+Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/dispatchers.test.ts` covers the registry. `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
 
 ## Intake
 
