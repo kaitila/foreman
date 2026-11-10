@@ -20,7 +20,6 @@
       "devDependencies": {
         "@foreman-kit/design-kit": "workspace:*",
         "@foreman-kit/docs-check": "workspace:*",
-        "@foreman-kit/foreman": "workspace:*",
         "@foreman-kit/test-kit": "workspace:*",
         "@types/bun": "1.3.5",
         "drizzle-kit": "0.31.11",

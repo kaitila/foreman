@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,10 @@ test("an agent works a task end to end over MCP, and can't approve", async () =>
     const r = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
     return { error: r.isError === true, text: r.content[0]!.text };
   };
+
+  // the server reports the package version, which release:version bumps (T-0103)
+  const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string };
+  expect(client.getServerVersion()).toEqual({ name: "foreman", version: pkg.version });
 
   const names = (await client.listTools()).tools.map((t) => t.name);
   expect(names).toContain("claim_task");
@@ -138,3 +142,28 @@ test("plans over MCP: create, file a task into a step, show progress, move and c
     rmSync(d, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("the server reports VERSION from kit/paths, not a version of its own", async () => {
+  // package.json may sit at the same number a literal would, so swap VERSION for one nothing else uses.
+  const { mock } = await import("bun:test");
+  const real = { ...(await import("../src/kit/paths")) };
+  mock.module("../src/kit/paths", () => ({ ...real, VERSION: "9.8.7-test" }));
+  const { buildServer } = await import("../src/mcp");
+  const { Foreman } = await import("../src/core");
+  const { openDb } = await import("../src/store");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const server = buildServer(new Foreman(openDb(":memory:"), null), { name: "worker-1", kind: "agent" });
+  const client = new Client({ name: "test", version: "0" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  expect(client.getServerVersion()).toEqual({ name: "foreman", version: "9.8.7-test" });
+  await client.close();
+  // bun shares mocked modules across test files: put the real one back
+  mock.module("../src/kit/paths", () => real);
+});
+
+test("the mocked VERSION doesn't leak past its test", async () => {
+  expect((await import("../src/kit/paths")).VERSION).toBe(
+    JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version,
+  );
+});

@@ -93,9 +93,10 @@ export const SHORTCUTS: [string, string, string][] = [
   ["k / ↑", "previous task", "Move"],
   ["h / ←", "previous column (board)", "Move"],
   ["l / →", "next column (board)", "Move"],
-  ["Enter / o", "open the task", "Move"],
+  ["Enter / o", "open the task or plan", "Move"],
   ["g n", "go to Needs you", "Go to"],
   ["g a", "go to All tasks", "Go to"],
+  ["g p", "go to Plans", "Go to"],
   ["g 1", "go to the first project (2, 3 … for the others)", "Go to"],
   ["v", "switch between list and board", "Go to"],
   ["a", "approve the task", "Act"],
@@ -138,17 +139,39 @@ const COLORS = new Map((S.projects || []).map((p) => [p.name, p.color || null]))
 const lastEvents = new Map((S.projects || [{ name: "", lastEvent: S.lastEvent || 0 }]).map((p) => [p.name, p.lastEvent]));
 const tag = (name, ts) => ts.map((t) => ({ ...t, project: name, k: name + "/" + t.id }));
 let tasks = (S.projects || [{ name: "", tasks: S.tasks || [] }]).flatMap((p) => tag(p.name, p.tasks));
+// Plans (D0033), read-only here. p.k is "plan:" + project/id, so it never collides with a task's key.
+const PLAN_NAMES = { active: "Active", done: "Done", cancelled: "Cancelled" };
+const PLAN_ORDER = ["active", "done", "cancelled"];
+const STEP_NAMES = { empty: "Empty", waiting: "Waiting", in_progress: "In progress", done: "Done" };
+// A step's state drawn with the task glyph it reads like: no tasks is a dashed ring, done a check.
+const STEP_GLYPH = { empty: "draft", waiting: "ready", in_progress: "in_progress", done: "done" };
+const tagPlans = (name, ps) => ps.map((p) => ({ ...p, project: name, k: "plan:" + name + "/" + p.id }));
+let plans = (S.projects || []).flatMap((p) => tagPlans(p.name, p.plans || []));
 // view: "all" or one project's name. inbox: only what needs the person. mode: "list" or "board".
+// plansView: the Plans view is showing; openPlan: the plan whose steps show (its key), or null for the list.
 let openId = null, sel = null, filter = "", live = true, token = "", view = "all", inbox = false, mode = "list";
+let plansView = false, openPlan = null;
 let collapsed = new Set(["done", "cancelled"]);
+let planFolded = new Set(["done", "cancelled"]);
 try {
   const p = JSON.parse(localStorage.getItem(PREFS) || "{}");
   if (p.mode === "board") mode = "board";
   if (Array.isArray(p.collapsed)) collapsed = new Set(p.collapsed.filter((s) => typeof s === "string"));
+  if (Array.isArray(p.planFolded)) planFolded = new Set(p.planFolded.filter((s) => typeof s === "string"));
 } catch {}
-function savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify({ mode, collapsed: [...collapsed] })); } catch {} }
+function savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify({ mode, collapsed: [...collapsed], planFolded: [...planFolded] })); } catch {} }
 const byKey = (k) => tasks.find((t) => t.k === k);
-const inView = () => tasks.filter((t) => (view === "all" || t.project === view) && (!inbox || YOURS(t)));
+const byPlan = (k) => plans.find((p) => p.k === k);
+const curPlan = () => (plansView && openPlan ? byPlan(openPlan) || null : null);
+// A plan's tasks in step order, as the task list knows them (a task the list hasn't seen yet gets the plan's own fields).
+function planTasks(p) {
+  return p.steps.flatMap((s) => s.tasks.map((x) => byKey(p.project + "/" + x.id) || { risk: "auto", updatedAt: p.updatedAt, live: false, undone: null, ...x, project: p.project, k: p.project + "/" + x.id }));
+}
+const plansInView = () => plans.filter((p) => view === "all" || p.project === view);
+const planMatches = (p) => !filter || filter.toLowerCase().split(/\\s+/).every((w) => (p.project + " " + p.id + " " + p.title + " " + p.goal + " " + PLAN_NAMES[p.state]).toLowerCase().includes(w));
+// The tasks the keys and Approve all act on: in a plan, its tasks; in the plan list, none.
+const inView = () => (plansView ? (curPlan() ? planTasks(curPlan()) : [])
+  : tasks.filter((t) => (view === "all" || t.project === view) && (!inbox || YOURS(t))));
 const pending = new Map(); // key -> { kind, ids, until, timer }: waiting out the undo window
 const busy = new Map();    // key -> { kind, text }: request sent, waiting for the answer
 const results = new Map(); // key -> { cls, text, at }
@@ -181,6 +204,8 @@ const PATHS = {
   tasks: "M3 4.5h1M6.5 4.5H13M3 8h1M6.5 8H13M3 11.5h1M6.5 11.5H13",
   folder: "M2 4.5v8h12v-6.5H7.5L6 4.5z",
   layers: "M8 2.5l5.5 3L8 8.5l-5.5-3zM2.5 8.5L8 11.5l5.5-3",
+  plans: "M2.5 4h5M5 8h5M7.5 12h6",
+  back: "M10 4L6 8l4 4",
   external: "M9.5 2.5h4v4M13.5 2.5L7.5 8.5M12 9.5v4H2.5V4H6.5",
   copy: "M5.5 5.5h8v8h-8zM10.5 5.5v-3h-8v8h3",
   check: "M3.5 8.5l3 3 6-7",
@@ -290,16 +315,26 @@ const proj = (name) => "/api/p/" + encodeURIComponent(name);
 const taskPath = (t, what) => proj(t.project) + "/tasks/" + encodeURIComponent(t.id) + "/" + what;
 // #p=<project>&<task id>: either part may be missing. (The token's #t=... is taken off first.)
 function hashFor(t) { return "#" + (multi ? "p=" + encodeURIComponent(t.project) + "&" : "") + t.id; }
+// #plan=<id> opens that plan (#plans the list), alongside the project and task parts.
 function parseHash(h) {
-  let project = null, id = null;
+  let project = null, id = null, plan = null, plansList = false;
   for (const part of h.replace(/^#/, "").split("&")) {
     if (part.startsWith("p=")) { try { project = decodeURIComponent(part.slice(2)); } catch {} }
+    else if (/^plan=[A-Za-z0-9_-]+$/.test(part)) plan = part.slice(5);
+    else if (part === "plans") plansList = true;
     else if (/^[A-Za-z0-9_-]+$/.test(part)) id = part;
   }
-  return { project, id };
+  return { project, id, plan, plansList };
 }
 function setHash(h) { if (location.hash !== h) history.replaceState(null, "", location.pathname + location.search + h); }
-const scopeHash = () => (view === "all" || !multi ? "" : "#p=" + encodeURIComponent(view));
+function scopeHash() {
+  const parts = [];
+  const p = curPlan();
+  if (multi && (p || view !== "all")) parts.push("p=" + encodeURIComponent(p ? p.project : view));
+  if (p) parts.push("plan=" + p.id);
+  else if (plansView) parts.push("plans");
+  return parts.length ? "#" + parts.join("&") : "";
+}
 
 // Approve, merge and run queue all wait out the same undo window before anything is sent.
 // A task already waiting out an undo window or in a request (on its own or in Approve all) isn't scheduled twice.
@@ -488,7 +523,9 @@ function matches(t) {
 function visible() { return inView().filter(matches); }
 // The order j and k walk: the list's groups (open ones only), or the board's columns.
 function order() {
+  if (plansView && !openPlan) return PLAN_ORDER.filter((s) => !planFolded.has(s)).flatMap((s) => plansInView().filter((p) => p.state === s && planMatches(p)));
   const v = visible();
+  if (plansView) return v; // a plan's tasks, step by step
   if (mode === "board") return S.lanes.flatMap((l) => v.filter((t) => t.status === l)); // Needs you holds only two statuses anyway
   return LIST_ORDER.filter((l) => !collapsed.has(l)).flatMap((l) => v.filter((t) => t.status === l));
 }
@@ -689,6 +726,163 @@ function toggleGroup(lane) {
   savePrefs();
   render();
 }
+
+// The Plans view: every plan with its progress, grouped Active, Done, Cancelled (the last two folded).
+const progressText = (p) => p.progress.stepsDone + " of " + p.progress.steps + " steps · " + p.progress.tasksDone + " of " + p.progress.tasks + " tasks";
+const planGlyph = (p) => statusIcon(p.state === "active" ? (p.steps.some((s) => s.state !== "empty" && s.state !== "waiting") ? "in_progress" : "ready") : p.state);
+// One glyph per step, in order: the plan's progress at a glance.
+function pips(p) {
+  const box = el("span", "pips");
+  box.setAttribute("aria-label", progressText(p));
+  for (const s of p.steps) {
+    const g = statusIcon(STEP_GLYPH[s.state]);
+    const w = el("span", "pip");
+    w.title = "Step " + s.n + ": " + s.title + " (" + STEP_NAMES[s.state].toLowerCase() + ")";
+    w.append(g);
+    box.append(w);
+  }
+  return box;
+}
+function planRow(p) {
+  const r = el("div", "row plan-row" + (sel === p.k ? " sel" : ""));
+  r.dataset.id = p.k;
+  r.tabIndex = sel === p.k ? 0 : -1;
+  r.setAttribute("role", "group");
+  r.setAttribute("aria-label", p.id + " " + p.title + ", " + PLAN_NAMES[p.state] + ", " + progressText(p));
+  r.addEventListener("click", () => { select(p.k, false); openPlanView(p.k); });
+  r.addEventListener("focus", () => { if (sel !== p.k) { sel = p.k; markSel(); } });
+  const main = el("div", "main-line");
+  const title = el("span", "title", p.title);
+  title.title = p.title;
+  const sub = el("div", "sub");
+  sub.append(el("span", "", p.id));
+  if (multi && view === "all") sub.append(projChip(p.project));
+  sub.append(el("span", "", progressText(p)));
+  main.append(title, sub);
+  const side = el("div", "side");
+  if (multi && view === "all") { const s = el("span", "slot s-proj"); s.append(projChip(p.project)); side.append(s); }
+  side.append(pips(p), el("span", "progress", progressText(p)));
+  r.append(planGlyph(p), el("span", "id", p.id), main, side);
+  return r;
+}
+function renderPlans(box, now) {
+  const p = curPlan();
+  if (p) return renderPlan(box, p, now);
+  const all = plansInView(), shown = all.filter(planMatches);
+  if (!shown.length) {
+    const e = el("div", "blank");
+    if (filter && all.length) e.append(el("h2", "", "No plan matches “" + filter + "”"), el("p", "", "Press Esc to clear the filter."));
+    else {
+      e.append(el("h2", "", "No plans yet"), el("p", "", "A plan is ordered steps, each with a check, and the tasks that make each step. File one from the terminal."));
+      const c = el("p"); c.append(el("code", "", 'fm plan new "What to ship" --step "First step :: what shows it is done"')); e.append(c);
+    }
+    box.append(e);
+    return;
+  }
+  const wrap = el("div", "list plans");
+  for (const state of PLAN_ORDER) {
+    const ps = shown.filter((x) => x.state === state);
+    if (!ps.length) continue;
+    const closed = planFolded.has(state);
+    const g = el("section", "group" + (closed ? " closed" : ""));
+    g.dataset.lane = "plans-" + state;
+    g.setAttribute("aria-label", PLAN_NAMES[state] + " plans");
+    const head = el("div", "group-head");
+    const tog = el("button", "group-toggle");
+    tog.type = "button";
+    tog.setAttribute("aria-expanded", String(!closed));
+    tog.title = (closed ? "Show " : "Hide ") + PLAN_NAMES[state].toLowerCase() + " plans";
+    const name = el("span", "group-name", PLAN_NAMES[state]);
+    name.setAttribute("role", "heading");
+    name.setAttribute("aria-level", "2");
+    tog.append(icon("chev", "chev"), name, el("span", "group-count", ps.length));
+    tog.addEventListener("click", () => { if (planFolded.has(state)) planFolded.delete(state); else planFolded.add(state); savePrefs(); render(); });
+    head.append(tog);
+    g.append(head);
+    if (!closed) for (const x of ps) g.append(planRow(x));
+    wrap.append(g);
+  }
+  box.append(wrap);
+}
+// One plan: its goal, then each step in order with its check, its state and its tasks as normal rows.
+function renderPlan(box, p, now) {
+  const ts = planTasks(p), shown = ts.filter(matches);
+  const wrap = el("div", "list plan-detail" + (shown.some(YOURS) ? " with-act" : ""));
+  const head = el("div", "plan-head");
+  const back = el("button", "btn quiet back");
+  back.type = "button";
+  back.title = "Back to Plans (Esc)";
+  back.append(icon("back"), el("span", "", "Plans"));
+  back.addEventListener("click", closePlanView);
+  const meta = el("div", "plan-meta");
+  if (multi) meta.append(projChip(p.project));
+  meta.append(planGlyph(p), el("span", "id", p.id), el("span", "", PLAN_NAMES[p.state]), el("span", "progress", progressText(p)));
+  const title = el("h2", "plan-title", p.title);
+  head.append(back, meta, title);
+  if (p.state === "cancelled" && p.cancelReason) head.append(el("p", "why", "Cancelled: " + p.cancelReason));
+  if (p.goal) head.append(spec(p.goal));
+  wrap.append(head);
+  for (const s of p.steps) {
+    const sec = el("section", "group step");
+    sec.dataset.lane = "step-" + s.n;
+    sec.setAttribute("aria-label", "Step " + s.n + ": " + s.title);
+    const h = el("div", "group-head");
+    const name = el("span", "group-name", s.n + ". " + s.title);
+    name.setAttribute("role", "heading");
+    name.setAttribute("aria-level", "2");
+    const st = el("span", "step-state " + s.state, STEP_NAMES[s.state]);
+    h.append(statusIcon(STEP_GLYPH[s.state]), name, st, el("span", "group-count", s.tasks.length));
+    sec.append(h);
+    const check = el("p", "step-check");
+    check.append(el("span", "step-label", "Check"), document.createTextNode(s.check));
+    sec.append(check);
+    const mine = shown.filter((t) => s.tasks.some((x) => p.project + "/" + x.id === t.k));
+    if (!s.tasks.length) sec.append(el("div", "group-note", "No tasks yet. File one with fm add … --plan " + p.id + " --step " + s.n + "."));
+    else if (!mine.length && filter) sec.append(el("div", "group-note", "No task here matches the filter."));
+    for (const t of mine) sec.append(row(t, now));
+    wrap.append(sec);
+  }
+  box.append(wrap);
+}
+// Open a plan from its row, a task's panel or the palette. The list's copy shows at once; then it is read fresh.
+async function openPlanView(k) {
+  const p = byPlan(k);
+  if (!p) return;
+  plansView = true;
+  openPlan = k;
+  sel = null;
+  if (view !== "all" && view !== p.project) view = p.project;
+  sideNav(false);
+  if (!openId) setHash(scopeHash());
+  render();
+  $("#content").scrollTop = 0;
+  try {
+    const d = await get(proj(p.project) + "/plans/" + encodeURIComponent(p.id));
+    const fresh = tagPlans(p.project, [d.plan])[0];
+    plans = plans.map((x) => (x.k === k ? fresh : x));
+    if (openPlan === k) render();
+  } catch {}
+}
+function closePlanView() {
+  const k = openPlan;
+  openPlan = null;
+  sel = k;
+  if (!openId) setHash(scopeHash());
+  render();
+  if (k) select(k, true);
+}
+function setPlans() {
+  plansView = true;
+  openPlan = null;
+  sel = null;
+  sideNav(false);
+  if (!openId) setHash(scopeHash());
+  render();
+}
+function goToPlan(project, id) {
+  const p = plans.find((x) => x.project === project && x.id === id);
+  if (p) openPlanView(p.k); else toast({ cls: "skip", text: "No plan " + id + " on this board." });
+}
 function renderBoard(box, shown, now, scroll) {
   const wrap = el("div", "board");
   for (const lane of S.lanes.filter((l) => !inbox || l === "needs_approval" || l === "approved")) {
@@ -737,7 +931,8 @@ function render() {
   box.replaceChildren();
   const mine = inView(), shown = visible();
   nav();
-  if (!shown.length && !(inbox && !filter)) {
+  if (plansView) renderPlans(box, now);
+  else if (!shown.length && !(inbox && !filter)) {
     const e = el("div", "blank");
     if (filter) e.append(el("h2", "", "Nothing matches “" + filter + "”"), el("p", "", "Press Esc to clear the filter."));
     else if (!tasks.length) {
@@ -748,7 +943,8 @@ function render() {
   } else if (mode === "board") renderBoard(box, shown, now, scroll);
   else renderList(box, shown, now);
   box.scrollTop = scroll.top;
-  $("#total").textContent = filter ? shown.length + " of " + mine.length : String(mine.length);
+  if (plansView && !openPlan) { const all = plansInView(), n = all.filter(planMatches).length; $("#total").textContent = filter ? n + " of " + all.length : String(all.length); }
+  else $("#total").textContent = filter ? shown.length + " of " + mine.length : String(mine.length);
   if (openId) { const t = byKey(openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t, false)].filter(Boolean)); }
   restoreFocus(fk);
 }
@@ -757,21 +953,27 @@ function render() {
 function nav() {
   const scoped = tasks.filter((t) => view === "all" || t.project === view);
   const yours = scoped.filter(YOURS).length;
-  const mkView = (isInbox, name, ic, n, attn) => {
-    const b = el("button", "nav-item" + (inbox === isInbox ? " on" : ""));
+  const mkView = (on, name, ic, n, attn, key, run) => {
+    const b = el("button", "nav-item" + (on ? " on" : ""));
     b.type = "button";
-    b.setAttribute("aria-current", inbox === isInbox ? "page" : "false");
+    b.setAttribute("aria-current", on ? "page" : "false");
     b.append(icon(ic), el("span", "name", name));
     if (n) b.append(el("span", "count" + (attn ? " attn" : ""), n));
-    b.title = name + " (g " + (isInbox ? "n" : "a") + ")";
-    b.addEventListener("click", () => setInbox(isInbox));
+    b.title = name + " (g " + key + ")";
+    b.addEventListener("click", run);
     return b;
   };
-  $("#views").replaceChildren(mkView(true, "Needs you", "inbox", yours, true), mkView(false, "All tasks", "tasks", scoped.length, false));
+  const activePlans = plansInView().filter((p) => p.state === "active").length;
+  $("#views").replaceChildren(mkView(!plansView && inbox, "Needs you", "inbox", yours, true, "n", () => setInbox(true)),
+    mkView(!plansView && !inbox, "All tasks", "tasks", scoped.length, false, "a", () => setInbox(false)),
+    mkView(plansView, "Plans", "plans", activePlans, false, "p", setPlans));
   const scopeName = multi ? (view === "all" ? null : view) : PROJECTS[0] || null;
   $("#scope").replaceChildren(...(scopeName ? [labelDot(scopeName, false), document.createTextNode(scopeName + " / ")].filter(Boolean) : []));
-  $("#title-text").textContent = inbox ? "Needs you" : "All tasks";
-  document.title = (yours ? "(" + yours + ") " : "") + (inbox ? "Needs you" : "All tasks") + " · foreman";
+  const heading = plansView ? "Plans" : inbox ? "Needs you" : "All tasks";
+  $("#title-text").textContent = heading;
+  document.title = (yours ? "(" + yours + ") " : "") + (curPlan() ? curPlan().title + " · Plans" : heading) + " · foreman";
+  // List or Board is for tasks; a plan always lists its steps.
+  $(".seg").hidden = plansView;
   for (const s of document.querySelectorAll(".seg button")) {
     const on = s.dataset.mode === mode;
     s.classList.toggle("on", on);
@@ -809,12 +1011,16 @@ function nav() {
 }
 function setView(value) {
   view = value;
+  if (openPlan && (byPlan(openPlan) || {}).project !== value && value !== "all") openPlan = null;
   setHash(openId ? location.hash : scopeHash());
   sideNav(false);
   render();
 }
 function setInbox(on) {
   inbox = on;
+  plansView = false;
+  openPlan = null;
+  if (!openId) setHash(scopeHash());
   sideNav(false);
   render();
 }
@@ -943,6 +1149,16 @@ async function openTask(id) {
   upd.title = new Date(t.updatedAt).toLocaleString();
   prop(dl, "Updated", upd);
   if (multi) prop(dl, "Project", labelDot(k.project, false), el("span", "", k.project));
+  // The plan and step it is in (D0033), linked to the plan.
+  const pl = d.placement;
+  if (pl) {
+    const a = el("a", "", pl.plan + " " + pl.planTitle);
+    a.href = "#" + (multi ? "p=" + encodeURIComponent(k.project) + "&" : "") + "plan=" + pl.plan;
+    a.title = "Open " + pl.plan + " in Plans";
+    a.addEventListener("click", (e) => { e.preventDefault(); goToPlan(k.project, pl.plan); });
+    prop(dl, "Plan", a);
+    prop(dl, "Step", statusIcon(STEP_GLYPH[pl.stepState] || "draft"), el("span", "", pl.step + ". " + pl.stepTitle));
+  }
   body.append(dl);
   const slot = el("div", "detail-act");
   slot.id = "detail-act";
@@ -1075,6 +1291,8 @@ function commands(q) {
   }
   out.push({ group: "Go to", label: "Needs you", keys: "g n", icon: "inbox", run: () => setInbox(true) });
   out.push({ group: "Go to", label: "All tasks", keys: "g a", icon: "tasks", run: () => setInbox(false) });
+  out.push({ group: "Go to", label: "Plans", keys: "g p", icon: "plans", run: setPlans });
+  if (curPlan()) out.push({ group: "Go to", label: "Back to Plans", keys: "Esc", icon: "back", run: closePlanView });
   if (multi) {
     out.push({ group: "Go to", label: "All projects", icon: "layers", run: () => setView("all") });
     PROJECTS.forEach((n, i) => out.push({ group: "Go to", label: "Project " + n, keys: i < 9 ? "g " + (i + 1) : "", swatch: COLORS.get(n) || "none", run: () => setView(n) }));
@@ -1096,17 +1314,22 @@ function commands(q) {
   const words = q.toLowerCase().split(/\\s+/).filter(Boolean);
   const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
   const cmds = out.filter((c) => hit(c.group + " " + c.label));
+  const planItems = plans.filter((x) => hit(x.project + " " + x.id + " " + x.title + " " + PLAN_NAMES[x.state]))
+    .slice(0, words.length ? 20 : 4).map((x) => ({
+      group: "Plans", label: x.id + "  " + x.title, icon: "plans", sub: (multi ? x.project + " · " : "") + progressText(x),
+      run: () => openPlanView(x.k),
+    }));
   const found = tasks.filter((x) => hit(x.project + " " + x.id + " " + x.title + " " + NAMES[x.status]));
   const taskItems = found.slice(0, words.length ? 40 : 8).map((x) => ({
     group: "Tasks", label: x.id + "  " + x.title, status: x.status, sub: multi ? x.project : "",
     run: () => goToTask(x),
   }));
-  return [...cmds, ...taskItems];
+  return [...cmds, ...planItems, ...taskItems];
 }
 // Bring a task into view (leaving Needs you or a project if it isn't there), select it and open it.
 function goToTask(x) {
   x = byKey(x.k) || x;
-  if (!inView().includes(x)) { inbox = false; if (view !== "all" && view !== x.project) view = "all"; }
+  if (!inView().includes(x)) { plansView = false; openPlan = null; inbox = false; if (view !== "all" && view !== x.project) view = "all"; }
   if (filter && !matches(x)) { filter = ""; $("#filter").value = ""; }
   if (mode === "list" && collapsed.has(x.status)) { collapsed.delete(x.status); savePrefs(); }
   render();
@@ -1230,8 +1453,9 @@ function flagNewUndone() {
   }
 }
 async function refresh() {
-  const all = await Promise.all(PROJECTS.map((n) => get(proj(n) + "/tasks").then((s) => [n, s])));
+  const all = await Promise.all(PROJECTS.map((n) => Promise.all([get(proj(n) + "/tasks"), get(proj(n) + "/plans")]).then(([s, ps]) => [n, s, ps])));
   tasks = [];
+  plans = all.flatMap(([n, , ps]) => tagPlans(n, ps.plans));
   setTimeout(flagNewUndone, 0);
   for (const [n, s] of all) {
     lastEvents.set(n, Math.max(lastEvents.get(n) || 0, s.lastEvent));
@@ -1272,7 +1496,7 @@ function move(step) {
   const i = v.findIndex((t) => t.k === sel);
   const next = v[i < 0 ? (step < 0 ? v.length - 1 : 0) : Math.min(v.length - 1, Math.max(0, i + step))];
   select(next.k, true);
-  if (openId && openId !== next.k) openTask(next.k);
+  if (openId && openId !== next.k && byKey(next.k)) openTask(next.k);
 }
 // h and l on the board: the same row in the previous or next column that has tasks.
 function across(step) {
@@ -1290,6 +1514,7 @@ function escape(typing) {
   if (!$("#help").hidden) help(false);
   else if ($(".app").classList.contains("nav-open")) sideNav(false);
   else if (openId) closeTask();
+  else if (openPlan && !typing) closePlanView();
   else if (filter || typing) { $("#filter").value = ""; filter = ""; $("#filter").blur(); render(); if (sel) select(sel, true); }
   else if (sel) { sel = null; markSel(); if (document.activeElement) document.activeElement.blur(); }
 }
@@ -1311,6 +1536,7 @@ document.addEventListener("keydown", (e) => {
     gAt = 0;
     if (e.key === "n") setInbox(true);
     else if (e.key === "a") setInbox(false);
+    else if (e.key === "p") setPlans();
     else if (/^[1-9]$/.test(e.key) && multi && PROJECTS[Number(e.key) - 1] !== undefined) setView(PROJECTS[Number(e.key) - 1]);
     e.preventDefault();
     return;
@@ -1322,8 +1548,9 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "?") help($("#help").hidden);
   else if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); move(1); }
   else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); move(-1); }
-  else if ((e.key === "h" || e.key === "ArrowLeft") && mode === "board") { e.preventDefault(); across(-1); }
-  else if ((e.key === "l" || e.key === "ArrowRight") && mode === "board") { e.preventDefault(); across(1); }
+  else if ((e.key === "h" || e.key === "ArrowLeft") && mode === "board" && !plansView) { e.preventDefault(); across(-1); }
+  else if ((e.key === "l" || e.key === "ArrowRight") && mode === "board" && !plansView) { e.preventDefault(); across(1); }
+  else if ((e.key === "Enter" || e.key === "o") && plansView && !openPlan && sel && byPlan(sel) && !onControl) { e.preventDefault(); openPlanView(sel); }
   else if ((e.key === "Enter" || e.key === "o") && t && !onControl && openId !== t.k) { e.preventDefault(); openTask(t.k); }
   else if (e.key === "g") gAt = now;
   else if (e.key === "v") setMode(mode === "list" ? "board" : "list");
@@ -1374,7 +1601,12 @@ setInterval(render, 30000);
 {
   const h = parseHash(location.hash);
   if (h.project && PROJECTS.includes(h.project)) view = h.project;
+  if (h.plansList) plansView = true;
   render();
+  if (h.plan) {
+    const p = plans.find((x) => x.id === h.plan && (!h.project || x.project === h.project)) || plans.find((x) => x.id === h.plan);
+    if (p) openPlanView(p.k);
+  }
   if (h.id) {
     const t = tasks.find((x) => x.id === h.id && (!h.project || x.project === h.project)) || tasks.find((x) => x.id === h.id);
     if (t) goToTask(t);
