@@ -5,9 +5,11 @@
 // - Each session's lease is pinned to its PID: alive keeps the claim, dead releases it.
 // - Workers and verifiers run as `claude --bg` sessions the person sees in `claude agents`
 //   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
+// - While it runs it keeps a record of itself in the registry (D0041, dispatchers.ts).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
+import { type DispatcherSession, registerDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { loadConfig, pathsOverlap } from "./policy";
 
@@ -215,8 +217,12 @@ export interface DispatchOptions {
   setupRunner?: SetupRunner;
   /** "bg" (default, D0022): `claude --bg`, visible in `claude agents`. "print": `claude -p` (D0011). */
   mode?: LaunchMode;
-  /** Who reclaims dead leases. Default: "dispatcher" (agent). */
+  /** Who started it: reclaims dead leases, and is the registry's starter. Default: "dispatcher" (agent). */
   actor?: Actor;
+  /** The Claude Code session that started it, for the registry. Default: CLAUDE_CODE_SESSION_ID. */
+  starterSession?: string;
+  /** The clock for the registry's times. Default: Date.now. */
+  now?: () => number;
   log?: (line: string) => void;
 }
 
@@ -240,7 +246,7 @@ function clashes(t: Task, others: Task[]): Task | undefined {
 
 export class Dispatcher {
   readonly max: number;
-  private running = new Map<string, { role: Role; done: Promise<void> }>();
+  private running = new Map<string, { role: Role; done: Promise<void>; rec: SessionRecord }>();
   /** Roles already started per task in this run: each task gets one worker and one verifier. */
   private tried = new Map<string, Set<Role>>();
   private first = true;
@@ -279,8 +285,40 @@ export class Dispatcher {
     this.tried.set(id, s);
   }
 
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  /** The sessions running now, as the registry shows them. */
+  inFlight(): DispatcherSession[] {
+    return [...this.running.values()].map(({ rec }) => ({
+      task: rec.task,
+      role: rec.role,
+      pid: rec.pid,
+      ...(rec.session ? { session: rec.session.id, ...(rec.session.sessionId ? { sessionId: rec.session.sessionId } : {}) } : {}),
+    }));
+  }
+
+  /** Tell the registry what runs now (D0041). Nothing happens unless run() registered this dispatcher. */
+  private seen() {
+    try {
+      touchDispatcher(this.f, process.pid, this.inFlight(), this.now());
+    } catch (e) {
+      // The registry is for looking, not for the work: never stop a dispatcher over it.
+      this.log(`dispatcher record not updated: ${(e as Error).message}`);
+    }
+  }
+
   /** One pass: release dead leases, start verifiers, then workers, while slots are free. */
   tick(): void {
+    try {
+      this.pass();
+    } finally {
+      this.seen();
+    }
+  }
+
+  private pass(): void {
     this.f.reclaim(this.actor);
     const free = () => this.running.size < this.max;
 
@@ -381,6 +419,7 @@ export class Dispatcher {
       }
       const watch = session ? `, "${session.name}": claude attach ${session.id}` : "";
       this.log(`${t.id} ${role} started (pid ${pid}${watch}) in ${cwd}`);
+      if (this.running.has(t.id)) this.seen();
     };
     const done = (async () => {
       try {
@@ -406,15 +445,51 @@ export class Dispatcher {
       rec.status = this.f.get(t.id).status;
       this.sessions.push(rec);
       this.running.delete(t.id);
+      this.seen();
       const cost = rec.costUsd ? `, $${rec.costUsd.toFixed(2)}` : "";
       this.log(`${t.id} ${role} ended (exit ${rec.exitCode ?? "-"}${cost}${rec.error ? `, ${rec.error}` : ""}): task is ${rec.status}`);
     })();
-    this.running.set(t.id, { role, done });
+    this.running.set(t.id, { role, done, rec });
     this.peak = Math.max(this.peak, this.running.size);
   }
 
-  /** Run until nothing is running and nothing more can start. */
+  /**
+   * Run until nothing is running and nothing more can start. For that time the dispatcher
+   * is in the registry (D0041): the record goes when run() ends, and when the process
+   * exits or is interrupted. A kill that skips both leaves a record the next read drops.
+   */
   async run(): Promise<SessionRecord[]> {
+    const pid = process.pid;
+    const gone = () => {
+      try {
+        unregisterDispatcher(this.f, pid);
+      } catch {
+        // the database is closed or busy: the next read drops the record of a dead process
+      }
+    };
+    // An interrupt must end in process.exit, so "exit" listeners run: this one, and the
+    // launch adapter's, which stops the sessions.
+    const signals = (["SIGINT", "SIGTERM"] as const).map((sig, i) => ({ sig, on: () => process.exit([130, 143][i]) }));
+    registerDispatcher(this.f, {
+      pid,
+      max: this.max,
+      flags: { once: this.opts.once === true, verifyOnly: this.opts.verifyOnly === true, print: launchModeFrom(this.opts.mode) === "print" },
+      starter: { name: this.actor.name, kind: this.actor.kind, session: this.opts.starterSession ?? (process.env.CLAUDE_CODE_SESSION_ID || undefined) },
+      cwd: process.cwd(),
+      startedAt: this.now(),
+    });
+    process.on("exit", gone);
+    for (const s of signals) process.on(s.sig, s.on);
+    try {
+      return await this.loop();
+    } finally {
+      process.off("exit", gone);
+      for (const s of signals) process.off(s.sig, s.on);
+      gone();
+    }
+  }
+
+  private async loop(): Promise<SessionRecord[]> {
     const pollMs = this.opts.pollMs ?? 10_000;
     for (;;) {
       this.tick();
