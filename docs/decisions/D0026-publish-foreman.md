@@ -1,6 +1,6 @@
 # D0026. Foreman is a published package, the project is renamed foreman, and init sets up foreman alone with the kit as opt-in pieces (2026-11-09)
 
-**Status:** Amended by D0035
+**Status:** Amended by D0035, D0039
 
 **Context:** Today a person clones this repo, runs `bun run link`, and `fm create`, `init` and `sync` pack tarballs from that clone into each project (D0018, D0020, D0025). The clone has to stay in place, a project without `package.json` gets no foreman, and every project gets the whole kit. The person asked for a published package, the project renamed foreman, and an `init` that sets up foreman and offers the rest as opt-in pieces. Amends D0001, D0018, D0020 and D0025.
 
