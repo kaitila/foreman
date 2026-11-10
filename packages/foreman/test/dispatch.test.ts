@@ -62,7 +62,7 @@ function setup(onLaunch?: (s: Session) => void) {
   const add = (title: string, paths: string[]) =>
     f.create({ title, acceptance: ["cmd: true"], paths, risk: "auto", ready: true }, human);
   const log: string[] = [];
-  const dispatcher = (o: { max?: number; once?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
+  const dispatcher = (o: { max?: number; once?: boolean; verifyOnly?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
     new Dispatcher(f, { ...o, launcher, worktrees, pollMs: 5, log: (l) => log.push(l) });
   return { f, sessions, alive, add, dispatcher, log, peak: () => peak, tick: (ms: number) => (clock += ms) };
 }
@@ -169,6 +169,39 @@ describe("dispatch", () => {
     expect(done.map((s) => `${s.task} ${s.role}`)).toEqual([`${first.id} worker`, `${first.id} verifier`]);
     expect(env.f.get(first.id).status).toBe("approved");
     expect(env.f.get("T-0002").status).toBe("ready");
+  });
+
+  /** A task some other session claimed and submitted, with its worktree on disk. */
+  const submittedElsewhere = (env: ReturnType<typeof setup>, title: string, paths: string[]) => {
+    const t = env.add(title, paths);
+    const other: Actor = { name: "interactive-session", kind: "agent" };
+    env.f.claim(t.id, other);
+    const wt = join(dir, `${t.id}-elsewhere`);
+    mkdirSync(wt, { recursive: true });
+    env.f.progress(t.id, other, { branch: branchFor(t), worktree: wt });
+    env.f.submit(t.id, other, { pr: "https://example.com/pull/1", summary: "done" });
+    return env.f.get(t.id);
+  };
+
+  test("--once verifies a task another session submitted, as well as its own", async () => {
+    const env = setup((s) => setTimeout(() => (s.opts.role === "worker" ? submit(env.f, s) : pass(env.f, s)), 1));
+    const theirs = submittedElsewhere(env, "theirs", ["src/a/**"]);
+    const own = env.add("own", ["src/b/**"]);
+    const done = await env.dispatcher({ max: 2, once: true }).run();
+    expect(done.map((s) => `${s.task} ${s.role}`).sort()).toEqual([`${own.id} verifier`, `${own.id} worker`, `${theirs.id} verifier`].sort());
+    expect(env.f.get(theirs.id).status).toBe("approved");
+    expect(env.sessions.find((s) => s.opts.taskId === theirs.id)!.opts.cwd).toBe(theirs.worktree!);
+  });
+
+  test("--verify-only starts verifiers for submitted tasks and never claims a ready one", async () => {
+    const env = setup((s) => setTimeout(() => pass(env.f, s), 1));
+    const theirs = submittedElsewhere(env, "theirs", ["src/a/**"]);
+    const ready = env.add("ready", ["src/b/**"]);
+    const done = await env.dispatcher({ max: 3, verifyOnly: true }).run();
+    expect(done.map((s) => `${s.task} ${s.role}`)).toEqual([`${theirs.id} verifier`]);
+    expect(env.f.get(theirs.id).status).toBe("approved");
+    expect(env.f.get(ready.id).status).toBe("ready");
+    expect(env.f.events(ready.id).some((e) => e.type === "claimed")).toBe(false);
   });
 
   test("workers and verifiers get their own actor, tools, and the lessons in their prompt", () => {

@@ -1,5 +1,6 @@
 // The local board (T-0035, T-0067): one Bun.serve on 127.0.0.1, a read-only JSON API over
 // the same Foreman core, and one page with inline CSS/JS (no external assets, works offline).
+// Plans (D0033) are read here too, from the plans core; the board never writes them.
 // The writes are approve, merge and run-queue. Each needs the token `fm serve` prints to its
 // own terminal, in the fragment of the URL it prints (never in a page or an API response),
 // and, when the browser sends one, our own Origin (D0021).
@@ -12,6 +13,7 @@ import { pageHtml } from "./page";
 import { hasLiveSession, recentActivity, taskSessions } from "../activity";
 import { removeFinishedSessions } from "../janitor";
 import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
+import { Plans } from "../plans";
 
 export const LANES: Status[] = [
   "draft",
@@ -129,6 +131,16 @@ export function checksWithVerdicts(t: Task, events: Event[]) {
     for (const r of results) latest.set(r.check, { pass: r.pass, evidence: r.evidence, by: e.actor, at: e.at });
   }
   return t.acceptance.map((c) => ({ ...c, verdict: latest.get(c.id) ?? null }));
+}
+
+/** The plan and step a task is in, with their titles, for its panel; null when it is in none. */
+export function placement(f: Foreman, taskId: string) {
+  const plans = new Plans(f);
+  const at = plans.placement(taskId);
+  if (!at) return null;
+  const p = plans.get(at.plan);
+  const step = p.steps.find((s) => s.n === at.step);
+  return { plan: p.id, planTitle: p.title, planState: p.state, step: at.step, stepTitle: step?.title ?? "", stepState: step?.state ?? "empty" };
 }
 
 /** What one project needs: its database, where gh runs, its PR cache and its one-pass-at-a-time flag. */
@@ -289,7 +301,7 @@ export function startBoard(opts: BoardOptions): Board {
             canApprove: token !== null,
             // Who signs off here, so the page doesn't alarm the person about their own rework.
             me: opts.approver?.name ?? null,
-            projects: ctxs.map((c) => ({ name: c.name, ...state(c) })),
+            projects: ctxs.map((c) => ({ name: c.name, ...state(c), plans: new Plans(c.f).list() })),
           };
           return new Response(pageHtml(nonce, initial), {
             headers: { ...security(nonce), "content-type": "text/html; charset=utf-8" },
@@ -316,6 +328,10 @@ export function startBoard(opts: BoardOptions): Board {
         const f = ctx.f;
         if (req.method === "GET" || req.method === "HEAD") {
           if (path === "/api/tasks") return json(state(ctx));
+          // Plans, active first, each with its steps, their tasks and the progress made from them.
+          if (path === "/api/plans") return json({ plans: new Plans(f).list() });
+          const pl = /^\/api\/plans\/([A-Za-z0-9_-]+)$/.exec(path);
+          if (pl) return json({ plan: new Plans(f).get(pl[1]!) });
           if (path === "/api/events") {
             const since = Number(url.searchParams.get("since") ?? 0) || 0;
             const events = f.events().filter((e) => e.id > since);
@@ -332,7 +348,7 @@ export function startBoard(opts: BoardOptions): Board {
               role: s.role, actor: s.actor, name: s.name ?? null, id: s.id ?? null, live: s.live,
               ...(s.path ? recentActivity(s.path, 10) : { lines: [], turns: 0, costUsd: 0 }),
             }));
-            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions });
+            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions, placement: placement(f, t.id) });
           }
           return fail(404, "not_found", "no such page");
         }

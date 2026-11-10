@@ -21,7 +21,7 @@
 // session (FOREMAN_ACTOR set) whose role rules foreman can't give.
 // Self-contained on purpose: a project gets a copy, with no package to install.
 import { relative, resolve, basename, dirname, isAbsolute } from "node:path";
-import { FOREMAN_INSTALLS } from "./scope";
+import { FOREMAN_INSTALLS, trustedOnPath } from "./scope";
 
 export interface Decision {
   deny: string;
@@ -812,9 +812,10 @@ function run(cmd: string[], cwd: string): { out: string | null; err: string } {
 /** foreman from $FOREMAN_BIN, this repo's own copy, or the PATH. The repo's own comes before the
  * PATH so a worktree is judged by its own foreman, not an older linked one. */
 /**
- * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
- * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
- * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package.
+ * On the PATH only a foreman that really is foreman (trustedOnPath): any dependency can ship a bin
+ * named foreman, and a session started from a package script has node_modules/.bin first.
+ * Installed, the package's own file, not its .bin link. Each file is looked for in this checkout, then in the
  * main checkout, since a fresh worktree has no node_modules yet.
  */
 function foremanCmd(root: string): string[] | null {
@@ -832,7 +833,7 @@ function foremanCmd(root: string): string[] | null {
     }
     return null;
   };
-  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
+  return find("packages/foreman/src/cli.ts") ?? (trustedOnPath("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
 }
 
 export function realContext(cwd: string): Context {

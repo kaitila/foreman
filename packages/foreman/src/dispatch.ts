@@ -200,8 +200,10 @@ Follow the verify skill, and end with record_verdict ${t.id}: one result per acc
 export interface DispatchOptions {
   /** Sessions at once, workers and verifiers together. Default 3. */
   max?: number;
-  /** Start what fits now, see those tasks through verification, then stop. */
+  /** Start workers for what fits now, see those tasks through verification, then stop. Submitted tasks from other sessions get a verifier too. */
   once?: boolean;
+  /** Only start verifiers for submitted tasks: never claim a ready task. */
+  verifyOnly?: boolean;
   model?: string;
   /** Each session's --max-budget-usd. Default: the role's own limit. */
   budgetUsd?: number;
@@ -244,8 +246,6 @@ export class Dispatcher {
   private running = new Map<string, { role: Role; done: Promise<void> }>();
   /** Roles already started per task in this run: each task gets one worker and one verifier. */
   private tried = new Map<string, Set<Role>>();
-  /** Tasks this run started a worker for (--once only sees these through). */
-  private mine = new Set<string>();
   private first = true;
   readonly sessions: SessionRecord[] = [];
   /** Most sessions running at the same time, for the summary and the tests. */
@@ -297,12 +297,12 @@ export class Dispatcher {
     for (const t of this.f.list({ status: ["in_review"] })) {
       if (!free()) break;
       if (this.running.has(t.id) || this.triedRole(t.id, "verifier")) continue;
-      if (this.opts.once && !this.mine.has(t.id)) continue;
       if (!t.worktree || !existsSync(t.worktree)) continue; // nowhere to verify it
       this.startVerifier(t);
     }
 
-    if (this.opts.once && !this.first) return;
+    // Every in_review task gets a verifier, whoever submitted it; --once only limits new workers.
+    if (this.opts.verifyOnly || (this.opts.once && !this.first)) return;
     this.first = false;
     const active = this.f.list({ status: ACTIVE });
     for (const t of this.f.ready("agent")) {
@@ -349,7 +349,6 @@ export class Dispatcher {
       }
     }
     const task = this.f.progress(t.id, actor, { branch: wt.branch, worktree: wt.path, note: "dispatched" });
-    this.mine.add(t.id);
     this.start("worker", task, actor, wt.path, workerPrompt(task, wt, this.f.events(task.id), setup));
     return task;
   }

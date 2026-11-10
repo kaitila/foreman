@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { type Actor, Foreman, ForemanError } from "../src/core";
+import { type Actor, checkVersion, Foreman, ForemanError, UPGRADE } from "../src/core";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { VERSION } from "../src/kit/paths";
 import { toMarkdown } from "../src/export";
 import type { Policy } from "../src/policy";
 import { DEFAULT_PROTECTED } from "../src/policy";
@@ -368,5 +372,79 @@ describe("a person's approval holds (T-0094)", () => {
     f.claim(id, worker);
     f.submit(id, worker, { pr: "https://example.com/pull/1" });
     expect(f.personApproved(id)).toBe(false);
+  });
+});
+
+describe("the foreman version a repo needs (D0026)", () => {
+  const codeOf = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (e) {
+      return e instanceof ForemanError ? e.code : `not a ForemanError: ${(e as Error).message}`;
+    }
+    return "ok";
+  };
+
+  test("an fm older than foreman.json's range refuses, naming the range, its version and the upgrade command", () => {
+    let err: unknown;
+    try {
+      checkVersion("/repo", "0.1.0", { foreman: ">=0.2.0" });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ForemanError);
+    expect((err as ForemanError).code).toBe("too_old");
+    expect((err as ForemanError).message).toContain(">=0.2.0");
+    expect((err as ForemanError).message).toContain("0.1.0");
+    expect((err as ForemanError).message).toContain(UPGRADE);
+    expect(UPGRADE).toBe("bun add -g @foreman-kit/foreman@latest");
+    expect(codeOf(() => checkVersion("/repo", "1.4.0", { foreman: "^2.0.0" }))).toBe("too_old");
+  });
+
+  test("a satisfied range, no range and no foreman.json are accepted", () => {
+    expect(codeOf(() => checkVersion("/repo", "0.2.0", { foreman: ">=0.2.0" }))).toBe("ok");
+    expect(codeOf(() => checkVersion("/repo", "0.3.1", { foreman: "^0.3.0" }))).toBe("ok");
+    expect(codeOf(() => checkVersion("/repo", "0.2.0", {}))).toBe("ok");
+    expect(codeOf(() => checkVersion(null))).toBe("ok"); // not in a repo: no foreman.json to read
+    expect(codeOf(() => checkVersion("/repo", VERSION, { foreman: `>=${VERSION}` }))).toBe("ok"); // what init writes
+    // A prerelease fm counts as its release.
+    expect(codeOf(() => checkVersion("/repo", "0.2.0-rc.1", { foreman: ">=0.2.0" }))).toBe("ok");
+    expect(codeOf(() => checkVersion("/repo", "0.2.0-rc.1", { foreman: ">=0.3.0" }))).toBe("too_old");
+  });
+
+  test.each(["", "  ", "abc", ">=x", ">=1.0.0 <"])("a malformed range (%p) is invalid, not a version mismatch", (range) => {
+    expect(codeOf(() => checkVersion("/repo", "0.2.0", { foreman: range }))).toBe("invalid");
+  });
+
+  test("a range that isn't a string is invalid", () => {
+    expect(codeOf(() => checkVersion("/repo", "0.2.0", { foreman: 2 as unknown as string }))).toBe("invalid");
+  });
+
+  test("Foreman.open refuses a repo whose foreman.json needs a newer fm, before opening the database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "foreman-version-"));
+    const saved = process.env.FOREMAN_DB;
+    try {
+      Bun.spawnSync(["git", "init", "-q", dir]);
+      writeFileSync(join(dir, "foreman.json"), JSON.stringify({ foreman: ">=999.0.0" }));
+      delete process.env.FOREMAN_DB;
+      let err: unknown;
+      try {
+        Foreman.open(dir);
+      } catch (e) {
+        err = e;
+      }
+      expect((err as ForemanError).code).toBe("too_old");
+      expect((err as ForemanError).message).toContain(UPGRADE);
+      expect(Bun.file(join(dir, ".foreman", "foreman.db")).size).toBe(0); // no board made
+
+      // The same repo with a range this fm meets opens.
+      writeFileSync(join(dir, "foreman.json"), JSON.stringify({ foreman: `>=${VERSION}` }));
+      process.env.FOREMAN_DB = ":memory:";
+      expect(Foreman.open(dir).list()).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.FOREMAN_DB;
+      else process.env.FOREMAN_DB = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

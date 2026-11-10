@@ -26,7 +26,7 @@ bun run link          # or: bun packages/foreman/src/cli.ts setup
 fm setup              # checks gh and claude, links fm, says how to fix what is missing
 ```
 
-Then `fm` works from anywhere: `fm create ~/x` starts a project, `fm init` adds the kit to the repo you are in, `fm sync --all` takes the kit's updates in every project fm has seen, and `fm help` lists the rest. See [packages/foreman](packages/foreman/README.md).
+Then `fm` works from anywhere: `fm create ~/x` starts a project, `fm init` sets up foreman in the repo you are in, in any language, and offers the rest of the kit as pieces to pick (`--with docs,guardrails` or `--all` to choose without asking, `fm add <piece>` for one later), `fm sync --all` takes the kit's updates in every project fm has seen, and `fm help` lists the rest. See [packages/foreman](packages/foreman/README.md).
 
 Status: steps M0–M7 of [the plan](docs/research-plan.md) are done; M8 is a private pilot.
 
