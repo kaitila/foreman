@@ -55,6 +55,9 @@ jobs:
           docker logs pg; exit 1
       # The same command agents and people run locally (D0004).
       - run: bun run check
+      # What a release would ship, checked on every run, so a packaging break shows up before a tag.
+      - name: Dry-run pack of each published package
+        run: bun run release:pack --dry-run
       - name: Known vulnerabilities in dependencies
         run: bun audit --audit-level=high
 
