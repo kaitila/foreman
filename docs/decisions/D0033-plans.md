@@ -9,7 +9,7 @@
 - **Progress is derived, never stored:** from the step's tasks' statuses (`empty`, `waiting`, `in_progress`, `done`; cancelled tasks don't count), and the plan is done when every step is. Only cancelling is set by hand.
 - **Additive tables** (`plans`, `plan_steps`, `plan_tasks`), not a new column on `tasks`, so `SCHEMA_VERSION` stays 1 and an older foreman in another worktree keeps opening the shared database (D0002).
 - **Plan events** go in the existing append-only `events` table: plan-wide ones with no task id, `planned`/`unplanned` on the task.
-- **Dispatched sessions can't change plans:** the plans core refuses an agent whose actor has a dispatched role prefix (`worker-`, `verifier-`, `intake-`), so the CLI through Bash is closed as well as MCP, and the three plan-writing tools are in every role's `--disallowedTools`. A worker can still file a discovered task into a plan with `create_task`. T-0098 opens plan writes to intake.
+- **Dispatched sessions can't change plans:** the plans core refuses an agent whose actor has a dispatched role prefix (`worker-`, `verifier-`, `intake-`), so the CLI through Bash is closed as well as MCP, and the three plan-writing tools are in every role's `--disallowedTools`. A worker can still file a discovered task into a plan with `create_task`. Intake is the one exception (T-0098): it may `create_plan`, and file or `plan_task` only the tasks it created into the plan it created, never edit, cancel or empty one, so a request of two or more tasks arrives as a plan.
 - The core lives in `plans.ts`, beside `core.ts` rather than in it. The board view (T-0097) and intake filing plans (T-0098) come after.
 
 **Why:**
