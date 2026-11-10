@@ -16,6 +16,8 @@
     "live-launch": "bun packages/foreman/scripts/live-launch.ts",
     "live-intake": "bun packages/foreman/scripts/live-intake.ts",
     "link": "cd packages/foreman && bun link",
+    "release:version": "bun .github/scripts/release.ts version",
+    "release:pack": "bun .github/scripts/release.ts pack",
     "docs:check": "bun packages/docs-check/src/cli.ts",
     "board:design": "bun packages/design-kit/src/cli.ts lint packages/foreman/src/board --tokens packages/foreman/src/board/tokens.css"
   },

@@ -4,6 +4,7 @@
   "description": "Keep a repository's docs true to its code: links, anchors, paths, one-file-per-decision log, references, review freshness, code-to-doc registries",
   "license": "MIT",
   "type": "module",
+  "files": ["src", "README.md"],
   "bin": { "docs-check": "src/cli.ts" },
   "exports": { ".": "./src/index.ts" }
 }

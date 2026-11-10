@@ -4,6 +4,7 @@
   "description": "Test infrastructure for Bun + Postgres projects worked on by parallel agents: worktree slots, fast DB reset, fixtures, fake network, fake LLM, affected tests",
   "license": "MIT",
   "type": "module",
+  "files": ["src", "README.md"],
   "exports": {
     ".": "./src/index.ts"
   },
