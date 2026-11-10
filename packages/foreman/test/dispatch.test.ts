@@ -138,6 +138,18 @@ describe("dispatch", () => {
     expect(workers()).toEqual([a.id, c.id, b.id]);
   });
 
+  test("tasks that share only docs/decisions/** run at once (D0037)", () => {
+    const env = setup();
+    const a = env.add("a", ["src/a/**", "docs/decisions/**"]);
+    const b = env.add("b", ["src/b/**", "docs/decisions/**", "docs/decisions/README.md"]);
+    const c = env.add("c", ["src/a/x.ts", "docs/decisions/**"]);
+    env.dispatcher({ max: 3 }).tick();
+    expect(env.sessions.map((s) => s.opts.taskId)).toEqual([a.id, b.id]);
+    // Any other shared path still makes a task wait.
+    expect(env.f.get(c.id).status).toBe("ready");
+    expect(env.log.some((l) => l.includes(`${c.id} waits`) && l.includes(a.id))).toBe(true);
+  });
+
   test("a task without declared paths overlaps everything", () => {
     const env = setup();
     env.add("anything", []);

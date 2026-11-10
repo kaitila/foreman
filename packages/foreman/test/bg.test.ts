@@ -1,7 +1,7 @@
 // Background mode (D0022): `claude --bg` sessions watched through a fake
 // `claude agents --json --all` and a transcript the fake writes. No Claude Code runs.
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Actor, type Event, Foreman, type Task } from "../src/core";
@@ -174,7 +174,8 @@ function fakeCli(scripts: Step[][], opts: { refuse?: string } = {}) {
         if (s.at < s.steps.length) {
           s.at++;
           if (step.out !== undefined) {
-            const p = transcriptPath(configDir, s.cwd, s.sessionId);
+            // As Claude Code does it: the folder is named after the directory's real path.
+            const p = join(configDir, "projects", realpathSync(s.cwd).replace(/[^a-zA-Z0-9]/g, "-"), `${s.sessionId}.jsonl`);
             mkdirSync(join(p, ".."), { recursive: true });
             const content = step.text ? [{ type: "text", text: step.text }] : [{ type: "tool_use" }];
             appendFileSync(p, JSON.stringify({ type: "assistant", message: { id: `m${s.msg++}`, model: "claude-haiku-5-5", usage: { output_tokens: step.out }, content } }) + "\n");
@@ -216,6 +217,27 @@ describe("launch in background mode", () => {
     expect(r.turns).toBe(2);
     expect(r.costUsd).toBeCloseTo((3000 * 0.5) / M, 12);
     expect(r.session?.id).toBe("abc00000");
+    expect(calls.stopped).toEqual(["abc00000"]);
+  });
+
+  test("a working directory reached through a symlink: the transcript is found and the session ends (T-0122)", async () => {
+    const real = fresh("real-wt");
+    const link = join(dir, `link-wt-${n++}`);
+    symlinkSync(real, link);
+    const cfg = fresh("cfg");
+    expect(transcriptPath(cfg, link, "s1")).toBe(transcriptPath(cfg, real, "s1"));
+    expect(transcriptPath(cfg, link, "s1")).toBe(join(cfg, "projects", realpathSync(real).replace(/[^a-zA-Z0-9]/g, "-"), "s1.jsonl"));
+    // A directory that is gone keeps the path as given.
+    const gone = join(dir, "no-such-wt");
+    expect(transcriptPath(cfg, gone, "s1")).toBe(join(cfg, "projects", gone.replace(/[^a-zA-Z0-9]/g, "-"), "s1.jsonl"));
+
+    // The fake stays idle for ever: only a reply read from the transcript ends the watch before the timeout.
+    const { cli, calls } = fakeCli([[{ status: "busy" }, { status: "idle", out: 1000, text: "verified" }]]);
+    const r = await launch({ ...bgBase(link), cli, pollMs: 1, timeoutMs: 2_000 });
+    expect(r.timedOut).toBeFalsy();
+    expect(r.isError).toBe(false);
+    expect(r.result).toBe("verified");
+    expect(r.turns).toBe(1);
     expect(calls.stopped).toEqual(["abc00000"]);
   });
 
