@@ -67,6 +67,7 @@ foreman janitor --dry-run          # reclaim, clean up finished tasks and their 
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
 fm dispatch --verify-only          # only verify submitted tasks, claim nothing new
+fm dispatchers                     # the dispatchers running now: pid, slots in use, starter, tasks in flight
 fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
 fm projects color meta-repo teal   # a project's colour label on the board (gray red orange yellow green teal blue purple pink, or none)
 fm serve --queue                   # the board, plus the merge queue every 60 s in the same process (--interval, --settle-seconds 30)
@@ -279,6 +280,12 @@ What must hold:
 
 **Finished sessions** ([D0034](../../docs/decisions/D0034-finished-sessions-removed.md)). Once a task is done or cancelled, its sessions leave the person's sessions list: foreman runs `claude rm` on each session id on its `lease_pinned` events, whatever happened to its worktree. This runs on every `fm dispatch` tick, after every pass of `fm serve --queue`, and in `fm janitor`; a failure never breaks a tick or a pass. A session already gone counts as removed; any other refusal is tried again next time. Each removal is a `sessions_removed` event on the task, so a session is removed once. A session still running is left until it ends; a run removes at most 5, and a failure that isn't "already gone" pauses removals for 10 minutes. `FOREMAN_KEEP_SESSIONS=1` turns it off. Under `bun test` it does nothing unless the test passes a runner. After that, the task's events are the record: verdicts, PR and merge are kept, the transcripts and their turn and cost figures are not.
 
+**Which dispatchers run.** A running `fm dispatch` records itself in the project's database ([D0041](../../docs/decisions/D0041-dispatcher-registry.md)), so there is no need to look for the process by hand (`pgrep -af "fm dispatch"`):
+- `fm dispatchers [--json]` lists the running ones, a line each: pid, scope (`everything` for now), slots in use out of `--max`, its flags, who started it, how long ago, and the tasks its sessions are on. E.g. `pid 4242  everything  2/3 slots  --once  by ada  up 5 min  T-0042 worker, T-0040 verifier`.
+- `fm list` ends with the same line per running dispatcher, prefixed `dispatcher`, and with nothing when none runs. `fm list --json` is still the array of tasks.
+- **The record** (`dispatchers` table, read with `runningDispatchers` in `src/dispatchers.ts`): pid, `--max`, the flags `--once`, `--verify-only` and `--print`, the starter (`FOREMAN_ACTOR` or the person, plus `CLAUDE_CODE_SESSION_ID` when set), working directory, start time, scope, and on every tick the running sessions (task, role, pid, session id) and a last-seen time.
+- **Never stale:** the dispatcher removes its record when it ends or is interrupted. A record whose pid is no longer alive (the same check as a pinned lease) is deleted by the next read and not shown, so a killed dispatcher never shows as running. Like the lease pins, the table is added without a schema version bump, so an older foreman on the same database still works.
+
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.
@@ -290,7 +297,7 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
 - **`--once`:** start workers for what fits now, see those tasks through verification, then stop. Submitted tasks it didn't start still get a verifier. **`--verify-only`:** start verifiers for submitted tasks and never claim a ready task, to get verifications without starting new work. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
-Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
+Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/dispatchers.test.ts` covers the registry. `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
 
 ## Intake
 

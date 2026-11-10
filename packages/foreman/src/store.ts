@@ -145,4 +145,19 @@ function additive(db: Database) {
     FOREIGN KEY (plan_id, step) REFERENCES plan_steps(plan_id, n)
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS plan_tasks_plan ON plan_tasks(plan_id, step)`);
+  // Running dispatchers (D0041): one row per `fm dispatch` while it runs, removed when it
+  // ends. dispatchers.ts drops a row whose process is gone when it reads.
+  db.exec(`CREATE TABLE IF NOT EXISTS dispatchers (
+    pid             INTEGER PRIMARY KEY,
+    max             INTEGER NOT NULL,
+    flags           TEXT NOT NULL DEFAULT '{}',  -- JSON {once, verifyOnly, print}
+    starter         TEXT NOT NULL,               -- FOREMAN_ACTOR, or the person
+    starter_kind    TEXT NOT NULL,               -- human | agent
+    starter_session TEXT,                        -- CLAUDE_CODE_SESSION_ID, when set
+    cwd             TEXT NOT NULL,
+    scope           TEXT NOT NULL DEFAULT 'everything',
+    started_at      INTEGER NOT NULL,            -- ms epoch
+    last_seen       INTEGER NOT NULL,            -- ms epoch of the last tick
+    sessions        TEXT NOT NULL DEFAULT '[]'   -- JSON [{task, role, pid, session, sessionId}]
+  )`);
 }

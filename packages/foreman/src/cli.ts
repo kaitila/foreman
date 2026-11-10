@@ -12,6 +12,7 @@ import {
   type Task,
 } from "./core";
 import { hasLiveSession, printLogs } from "./activity";
+import { dispatcherLine, runningDispatchers } from "./dispatchers";
 import { toMarkdown } from "./export";
 import { parseStep, planLine, planText, Plans } from "./plans";
 import { janitor } from "./janitor";
@@ -52,7 +53,7 @@ Tasks
   add <title> [--spec md] [--check "cmd: bun test"]... [--path glob]... [--risk auto|review|human]
               [--parent T-1] [--blocked-by T-2]... [--from T-3] [--plan P-1 --step n] [--ready]
   ready-up <id>                 draft -> ready (needs at least one check)
-  list [--status s]... [--mine]  (* marks a task with a live session)
+  list [--status s]... [--mine]  (* marks a task with a live session; ends with a line per running dispatcher)
   next                          ready tasks whose blockers are done
   show <id>                     task, checks and history
   logs <id> [--role worker|verifier] [-f]
@@ -102,6 +103,8 @@ Agents
                                 Sessions run as Claude Code background sessions: watch them with
                                 "claude agents", "claude attach <name>"; --print (or
                                 FOREMAN_LAUNCH=print) runs headless "claude -p" instead
+  dispatchers                   the dispatchers running now: pid, scope, slots in use out of --max,
+                                who started it, how long ago, the tasks its sessions are on
 Board
   serve [--port 4499] [--queue] local web board on 127.0.0.1; approve and merge from the link it prints;
                                 --queue runs the merge queue in the same process (see below)
@@ -476,7 +479,10 @@ export async function main(argv: string[]): Promise<number | null> {
     case "list": {
       const ts = f.list({ status: o.status as Status[] | undefined, assignee: o.mine ? me.name : undefined });
       const live = new Set(ts.filter((t) => hasLiveSession(f, t.id)).map((t) => t.id));
-      return out(ts.map((t) => ({ ...t, live: live.has(t.id) })), ts.map((t) => `${live.has(t.id) ? "*" : " "} ${line(t)}`).join("\n") || "no tasks"), 0;
+      // One line per running dispatcher at the end (D0041). --json stays the task array: fm dispatchers --json has them.
+      const running = o.json ? [] : runningDispatchers(f).map((d) => `dispatcher ${dispatcherLine(d)}`);
+      const text = [ts.map((t) => `${live.has(t.id) ? "*" : " "} ${line(t)}`).join("\n") || "no tasks", ...running].join("\n");
+      return out(ts.map((t) => ({ ...t, live: live.has(t.id) })), text), 0;
     }
     case "next": {
       const ts = f.ready(me.kind);
@@ -628,6 +634,10 @@ export async function main(argv: string[]): Promise<number | null> {
         ? `${sessions.map((s) => `${s.task} ${s.role}: ${s.status}${s.error ? ` (${s.error})` : ""}`).join("\n")}\n${sessions.length} sessions, $${cost.toFixed(2)}`
         : "nothing to dispatch";
       return out(sessions, text), 0;
+    }
+    case "dispatchers": {
+      const ds = runningDispatchers(f);
+      return out(ds, ds.map((d) => dispatcherLine(d)).join("\n") || "no dispatcher is running"), 0;
     }
     case "merge-queue": {
       const actor = process.env.FOREMAN_ACTOR ? me : { name: "merge-queue", kind: me.kind };
