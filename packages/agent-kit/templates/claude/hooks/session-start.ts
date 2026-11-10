@@ -2,7 +2,7 @@
 // Prints hookSpecificOutput.additionalContext. Prints nothing and exits 0 when there is no actor,
 // no task, no foreman, or anything goes wrong: a missing task must never stop a session.
 import { dirname, resolve } from "node:path";
-import { FOREMAN_INSTALLS } from "./scope";
+import { FOREMAN_INSTALLS, trustedOnPath } from "./scope";
 
 type Check = { id: string; kind: string; text: string };
 type Task = {
@@ -34,9 +34,10 @@ export function render(tasks: Task[]): string {
 }
 
 /**
- * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package
- * (node_modules/.bin isn't on a session's PATH). The package's own file, not its .bin link: any
- * dependency can ship a bin named foreman. Each file is looked for in this checkout, then in the
+ * foreman from $FOREMAN_BIN, the repo's own copy, the PATH, or the project's installed package.
+ * On the PATH only a foreman that really is foreman (trustedOnPath): any dependency can ship a bin
+ * named foreman, and a session started from a package script has node_modules/.bin first.
+ * Installed, the package's own file, not its .bin link. Each file is looked for in this checkout, then in the
  * main checkout, since a fresh worktree has no node_modules yet.
  */
 function foremanCmd(root: string): string[] | null {
@@ -54,7 +55,7 @@ function foremanCmd(root: string): string[] | null {
     }
     return null;
   };
-  return find("packages/foreman/src/cli.ts") ?? (Bun.which("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
+  return find("packages/foreman/src/cli.ts") ?? (trustedOnPath("foreman") ? ["foreman"] : null) ?? FOREMAN_INSTALLS.reduce<string[] | null>((hit, rel) => hit ?? find(rel), null);
 }
 
 /** The additionalContext to inject, or null for "say nothing". */

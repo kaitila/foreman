@@ -1,19 +1,22 @@
 // sync: bring a project's kit files up to the foreman version this runs from (D0018).
 // Three-way per file: the hash recorded at install, the file now, and the kit's file now.
-// A file the project changed or deleted is never overwritten or restored.
+// A file the project changed or deleted is never overwritten or restored. Only the files of the
+// pieces the project has are touched (D0026).
 import { mergeSettings, OMIT_FILE, readOmit, SCOPE, TEMPLATES, templateSettings } from "./install";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { checkVersion } from "../core";
 import {
   type Change,
   type HookGroup,
+  filePieces,
   hookKey,
   matcherHash,
   kitFiles,
   pack,
   pointDep,
-  RECORD,
   readInstalled,
+  recordPath,
   SETTINGS,
   sha256,
   source,
@@ -41,8 +44,11 @@ export interface SyncResult {
 export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
   const target = resolve(dir);
   const templates = opts.templates ?? TEMPLATES;
+  // An older fm would write its older kit over a project that needs a newer one (D0026).
+  checkVersion(target);
   const rec = readInstalled(target);
-  if (!rec) throw new Error(`no ${RECORD} here: add the kit with init (or create) first`);
+  if (!rec) throw new Error(`no ${recordPath(target)} here: set up foreman with init (or create) first`);
+  const pieces = filePieces(rec);
   const files = { ...rec.files };
   const hooks = { ...rec.hooks };
   const changes: Change[] = [];
@@ -51,7 +57,9 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
 
   // settings.json is merged, as init does: the baseline's new rules are added, the project's kept.
   const omit = readOmit(target);
-  if (!existsSync(join(target, SETTINGS))) changes.push({ action: "deleted", path: SETTINGS, note: "not there; not restored (agent-kit init adds it)" });
+  if (!pieces.includes("guardrails")) {
+    // No guardrails piece: the project has no kit settings or hooks to keep up to date.
+  } else if (!existsSync(join(target, SETTINGS))) changes.push({ action: "deleted", path: SETTINGS, note: "not there; not restored (agent-kit init adds it)" });
   else {
     const project = JSON.parse(readFileSync(join(target, SETTINGS), "utf8"));
     const baseline = JSON.parse(readFileSync(templateSettings(templates), "utf8"));
@@ -81,14 +89,14 @@ export function sync(dir: string, opts: SyncOptions = {}): SyncResult {
     for (const rule of omitted) changes.push({ action: "skipped", path: rule, note: `listed in ${OMIT_FILE}` });
   }
 
-  const kit = kitFiles(templates);
+  const kit = kitFiles(templates, pieces);
   for (const [path, data] of kit) {
     const base = files[path];
     const cur = hashOf(path);
     const next = sha256(data);
     if (cur === next) files[path] = next;
     else if (cur === null) {
-      if (base) changes.push({ action: "deleted", path, note: `deleted here; not restored (delete its entry in ${RECORD} to get it back)` });
+      if (base) changes.push({ action: "deleted", path, note: `deleted here; not restored (delete its entry in ${recordPath(target)} to get it back)` });
       else {
         put(path, data);
         files[path] = next;

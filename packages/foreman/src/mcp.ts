@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { type Actor, Foreman, ForemanError, type Status } from "./core";
 import { toMarkdown } from "./export";
+import { VERSION } from "./kit/paths";
 import { planText, Plans } from "./plans";
 
 const STATUSES = [
@@ -18,7 +19,7 @@ export interface ServerOptions {
 }
 
 export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): McpServer {
-  const server = new McpServer({ name: "foreman", version: "0.1.0" });
+  const server = new McpServer({ name: "foreman", version: VERSION });
   const ok = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
   const wrap =
     <A>(fn: (a: A) => unknown) =>
