@@ -28,13 +28,3 @@ export const PRESETS = CHECKOUT ? join(CHECKOUT, "presets") : join(BUNDLE, "pres
 /** create's and init's own templates (AGENTS.md, foreman.json, CI). */
 export const OWN_TEMPLATES = join(PACKAGE_ROOT, "templates");
 
-/**
- * The folder of a kit package that a project vendors as a tarball, or null if this copy can't
- * pack it. foreman packs itself anywhere; the others only from the checkout, until the registry has them.
- */
-export function packageDir(pkg: string): string | null {
-  if (pkg === "foreman") return PACKAGE_ROOT;
-  if (!CHECKOUT) return null;
-  const dir = join(CHECKOUT, "packages", pkg);
-  return existsSync(join(dir, "package.json")) ? dir : null;
-}

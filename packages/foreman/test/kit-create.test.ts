@@ -8,14 +8,15 @@ import { dirname, join } from "node:path";
 import { addDevDependency } from "../src/kit/create";
 import { add, create, init, sync } from "../src/kit/index";
 import { initPieces, runKitCommand } from "../src/kit/commands";
-import { FOREMAN_SERVER, kitFiles, LEGACY_RECORD, ownTemplate, pointDep, RECORD, readInstalled, sha256, workspaceDeps } from "../src/kit/kit";
+import { FOREMAN_SERVER, kitFiles, LEGACY_RECORD, ownTemplate, raiseKitDeps, RECORD, readInstalled, sha256, versionDep, workspaceDeps } from "../src/kit/kit";
+import { migrateMcp, migratePackageJson, raiseForemanRange } from "../src/kit/migrate";
 import { VERSION } from "../src/kit/paths";
 import { parseAnswer, PIECES, piecesToAdd } from "../src/kit/pieces";
 
 const TASKS = ownTemplate("tasks-section.md");
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
-const tarballOf = (pkg: string) => new RegExp(`^file:(\\.meta-repo\\/packages\\/${pkg}-[0-9a-f]{12}\\.tgz)$`);
-const TEST_KIT_TGZ = tarballOf("test-kit");
+/** What create and init write for a kit package: this foreman's version, never a tarball (D0026). */
+const V = VERSION;
 const count = (text: string, part: string) => text.split(part).length - 1;
 /** The env with no FOREMAN_* settings, so foreman finds its board in the project itself. */
 const plainEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("FOREMAN_") && process.env[k] !== undefined)) as Record<string, string>;
@@ -83,16 +84,13 @@ async function callConfigured(dir: string, tool: string, args: Record<string, un
 const FOREMAN_ALONE = [RECORD, ".gitignore", ".mcp.json", "AGENTS.md", "CLAUDE.md", "foreman.json"].sort();
 
 describe("create", () => {
-  test("a project from the preset: kit, vendored packages, foreman.json, CI, record and one commit", () => {
+  test("a project from the preset: kit, kit packages by version, foreman.json, CI, record and one commit", () => {
     const dir = fresh("my-app");
     create(dir, { install: false });
     const pkg = JSON.parse(read(dir, "package.json"));
     expect(pkg.name).toBe("my-app");
-    for (const dep of ["docs-check", "test-kit"]) {
-      const spec: string = pkg.devDependencies[`@foreman-kit/${dep}`];
-      expect(spec).toMatch(new RegExp(`^file:\\.meta-repo/packages/${dep}-[0-9a-f]{12}\\.tgz$`));
-      expect(existsSync(join(dir, spec.slice(5)))).toBe(true);
-    }
+    for (const dep of ["docs-check", "test-kit", "design-kit"]) expect(pkg.devDependencies[`@foreman-kit/${dep}`], dep).toBe(V);
+    expect(existsSync(join(dir, ".meta-repo"))).toBe(false); // nothing vendored
     // foreman itself is the person's own fm, not a dependency (D0026).
     expect({ ...pkg.dependencies, ...pkg.devDependencies }["@foreman-kit/foreman"]).toBeUndefined();
     expect(existsSync(join(dir, ".claude/hooks/guard.ts"))).toBe(true);
@@ -237,8 +235,7 @@ describe("init: foreman alone", () => {
     init(dir, { pieces: ["test-kit"] });
     for (const f of ["package.json", ".mcp.json", ".gitignore"]) expect(read(dir, f).replaceAll("\r\n", ""), f).not.toContain("\n");
     expect(read(dir, ".gitignore")).toBe("dist/\r\nnode_modules/\r\n.foreman/\r\n");
-    const tarball = TEST_KIT_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/test-kit"])![1];
-    expect(read(dir, "package.json")).toBe(`{\r\n  "name": "ours",\r\n  "devDependencies": {\r\n    "@foreman-kit/test-kit": "file:${tarball}"\r\n  }\r\n}\r\n`);
+    expect(read(dir, "package.json")).toBe(`{\r\n  "name": "ours",\r\n  "devDependencies": {\r\n    "@foreman-kit/test-kit": "${V}"\r\n  }\r\n}\r\n`);
     expect(JSON.parse(read(dir, ".mcp.json")).mcpServers.foreman).toEqual(FOREMAN_SERVER);
     // A CRLF .gitignore that already ignores it is kept.
     const ignored = repo({ ".gitignore": ".foreman/\r\n" });
@@ -350,9 +347,9 @@ describe("init: pieces", () => {
     expect(read(withCheck, "CLAUDE.md")).toBe("@AGENTS.md\n");
     expect(read(withCheck, ".github/workflows/ci.yml")).toContain("bun run check");
     expect(count(read(withCheck, "AGENTS.md"), "## Tasks")).toBe(1); // the skeleton gets the Tasks section too
-    // docs with a package.json: docs-check vendored and a docs:check script.
+    // docs with a package.json: docs-check by version and a docs:check script.
     const pkg = JSON.parse(read(withCheck, "package.json"));
-    expect(pkg.devDependencies["@foreman-kit/docs-check"]).toMatch(tarballOf("docs-check"));
+    expect(pkg.devDependencies["@foreman-kit/docs-check"]).toBe(V);
     expect(pkg.scripts).toEqual({ check: "bun test", "docs:check": "docs-check" });
 
     const without = repo({ "package.json": JSON.stringify({ name: "x" }), "docs/decisions/D0007-ours.md": "# D0007. Ours (2026-01-01)\n" });
@@ -377,13 +374,10 @@ describe("init: pieces", () => {
     const dir = repo({ "package.json": pkgText });
     const changes = init(dir, { pieces: ["test-kit"] });
     const out = read(dir, "package.json");
-    const tarball = TEST_KIT_TGZ.exec(JSON.parse(out).devDependencies["@foreman-kit/test-kit"])?.[1];
-    expect(tarball).toBeDefined();
-    expect(existsSync(join(dir, tarball!))).toBe(true);
-    expect(out).toBe(pkgText.replace('"devDependencies": {', `"devDependencies": {\n        "@foreman-kit/test-kit": "file:${tarball}",`));
-    expect(readInstalled(dir)!.files[tarball!]).toBe(sha256(readFileSync(join(dir, tarball!))));
-    expect(changes).toContainEqual(expect.objectContaining({ action: "created", path: tarball }));
-    expect(changes).toContainEqual(expect.objectContaining({ action: "merged", path: "package.json" }));
+    expect(out).toBe(pkgText.replace('"devDependencies": {', `"devDependencies": {\n        "@foreman-kit/test-kit": "${V}",`));
+    expect(existsSync(join(dir, ".meta-repo"))).toBe(false);
+    expect(Object.keys(readInstalled(dir)!.files)).toEqual([]); // nothing vendored, so nothing to record
+    expect(changes).toContainEqual(expect.objectContaining({ action: "merged", path: "package.json", note: `@foreman-kit/test-kit ${V} added as a devDependency: run bun install` }));
   });
 
   test("reads a package.json with a BOM and keeps the BOM", () => {
@@ -391,15 +385,14 @@ describe("init: pieces", () => {
     init(dir, { pieces: ["ci", "test-kit"] });
     const out = read(dir, "package.json");
     expect(out).toStartWith('﻿{\n  "name": "ours"');
-    expect(JSON.parse(out.slice(1)).devDependencies["@foreman-kit/test-kit"]).toMatch(TEST_KIT_TGZ);
+    expect(JSON.parse(out.slice(1)).devDependencies["@foreman-kit/test-kit"]).toBe(V);
     expect(existsSync(join(dir, ".github/workflows/ci.yml"))).toBe(true); // its scripts were read too
   });
 
   test("a package.json with no devDependencies gets a block in two spaces", () => {
     const dir = repo({ "package.json": '{ "name": "ours" }' });
     init(dir, { pieces: ["test-kit"] });
-    const tarball = TEST_KIT_TGZ.exec(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/test-kit"])![1];
-    expect(read(dir, "package.json")).toBe(`{ "name": "ours",\n  "devDependencies": {\n    "@foreman-kit/test-kit": "file:${tarball}"\n  }\n}`);
+    expect(read(dir, "package.json")).toBe(`{ "name": "ours",\n  "devDependencies": {\n    "@foreman-kit/test-kit": "${V}"\n  }\n}`);
   });
 
   test("a kit package the repo already depends on is kept, in any dependency list", () => {
@@ -437,7 +430,8 @@ describe("init: pieces", () => {
     init(dir, { all: true });
     expect(readInstalled(dir)!.pieces).toEqual([...PIECES]);
     const dev = JSON.parse(read(dir, "package.json")).devDependencies;
-    for (const pkg of ["docs-check", "test-kit", "design-kit"]) expect(dev[`@foreman-kit/${pkg}`], pkg).toMatch(tarballOf(pkg));
+    for (const pkg of ["docs-check", "test-kit", "design-kit"]) expect(dev[`@foreman-kit/${pkg}`], pkg).toBe(V);
+    expect(existsSync(join(dir, ".meta-repo"))).toBe(false);
     expect(existsSync(join(dir, ".github/workflows/ci.yml"))).toBe(true);
     expect(existsSync(join(dir, ".claude/hooks/guard.ts"))).toBe(true);
   });
@@ -769,26 +763,27 @@ describe("sync", () => {
     expect(existsSync(join(s.dir, ".claude/hooks"))).toBe(false);
   });
 
-  test("a legacy record (.meta-repo/installed.json, no pieces) still syncs every kit file, and stays where it is", () => {
+  test("a legacy record (.meta-repo/installed.json, no pieces) moves to .foreman-kit/ and still syncs every kit file", () => {
     const { dir, kit } = setup();
     const rec = JSON.parse(read(dir, RECORD));
     delete rec.pieces;
-    mkdirSync(join(dir, ".meta-repo"), { recursive: true });
     put(dir, LEGACY_RECORD, JSON.stringify(rec));
     unlinkSync(join(dir, RECORD));
     bump(kit);
     const r = sync(dir, { templates: kit });
     const by = Object.fromEntries(r.changes.map((c) => [c.path, c.action]));
     expect(by).toEqual({
+      [RECORD]: "moved",
       ".claude/settings.json": "merged",
       ".claude/hooks/guard.ts": "updated",
       ".claude/agents/reviewer.md": "updated",
       ".claude/skills/ship/SKILL.md": "updated",
+      ".meta-repo/": "deleted",
     });
-    expect(existsSync(join(dir, RECORD))).toBe(false);
-    const after = JSON.parse(read(dir, LEGACY_RECORD));
+    expect(existsSync(join(dir, ".meta-repo"))).toBe(false);
+    const after = JSON.parse(read(dir, RECORD));
     expect(after.files[".claude/skills/ship/SKILL.md"]).toBe(sha256("ship v2\n"));
-    expect(after.pieces).toBeUndefined();
+    expect(after.pieces).toEqual(["guardrails", "skills"]); // what its files show
   });
 
   test("updates an installed hook group's matcher to the kit's, unless the project changed it", () => {
@@ -857,51 +852,64 @@ describe("sync", () => {
     expect(read(dir, RECORD)).toBe(before);
   });
 
-  test("replaces an outdated vendored package and points package.json at the new one", () => {
-    const dir = fresh();
-    create(dir, { install: false, git: false });
-    const rec = readInstalled(dir)!;
-    const current = Object.keys(rec.files).find((f) => f.includes("/docs-check-"))!;
-    const old = ".meta-repo/packages/docs-check-000000000000.tgz";
-    put(dir, old, "an older build");
-    unlinkSync(join(dir, current));
-    delete rec.files[current];
-    rec.files[old] = sha256("an older build");
-    put(dir, RECORD, JSON.stringify(rec));
-    put(dir, "package.json", read(dir, "package.json").replace(current, old));
-
-    const r = sync(dir);
-    expect(r.reinstall).toBe(true);
-    expect(r.changes.map((c) => c.path).sort()).toEqual([current, "package.json"].sort());
-    expect(existsSync(join(dir, old))).toBe(false);
-    expect(existsSync(join(dir, current))).toBe(true);
-    expect(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/docs-check"]).toBe(`file:${current}`);
-    expect(Object.keys(readInstalled(dir)!.files)).toContain(current);
-  });
-
-  test("replaces the tarball a piece vendored at init, like the preset's packages", () => {
+  test("raises the kit packages given by a lower version and foreman.json's range, as text edits, and asks for bun install", () => {
     const dir = repo({ "package.json": JSON.stringify({ name: "ours" }, null, 2) });
     init(dir, { pieces: ["test-kit"] });
     expect(sync(dir).changes).toEqual([]); // up to date right after init
-    const rec = readInstalled(dir)!;
-    const current = Object.keys(rec.files).find((f) => f.includes("/test-kit-"))!;
-    expect(current).toBeDefined();
-    const old = ".meta-repo/packages/test-kit-000000000000.tgz";
-    put(dir, old, "an older build");
-    unlinkSync(join(dir, current));
-    delete rec.files[current];
-    rec.files[old] = sha256("an older build");
-    put(dir, RECORD, JSON.stringify(rec));
-    put(dir, "package.json", read(dir, "package.json").replace(current, old));
+    const pkgText =
+      '{\n  "name": "ours",\n  "dependencies": { "@foreman-kit/design-kit": "^0.0.1" },\n  "devDependencies": {\n' +
+      '    "@foreman-kit/test-kit": "0.0.1",\n    "@foreman-kit/docs-check": "workspace:*",\n    "@foreman-kit/other": "0.0.1",\n    "zod": "0.0.1"\n  }\n}\n';
+    put(dir, "package.json", pkgText);
+    const fj = read(dir, "foreman.json").replace(`">=${V}"`, '">=0.0.1"');
+    put(dir, "foreman.json", fj);
 
+    const dry = sync(dir, { dryRun: true });
+    expect(read(dir, "package.json")).toBe(pkgText);
+    expect(read(dir, "foreman.json")).toBe(fj);
     const r = sync(dir);
+    expect(dry).toEqual(r);
     expect(r.reinstall).toBe(true);
-    expect(r.changes.map((c) => c.path).sort()).toEqual([current, "package.json"].sort());
-    expect(existsSync(join(dir, old))).toBe(false);
-    expect(existsSync(join(dir, current))).toBe(true);
-    expect(JSON.parse(read(dir, "package.json")).devDependencies["@foreman-kit/test-kit"]).toBe(`file:${current}`);
-    expect(readInstalled(dir)!.files[current]).toBe(sha256(readFileSync(join(dir, current))));
-    expect(readInstalled(dir)!.files[old]).toBeUndefined();
+    expect(r.changes).toEqual([
+      { action: "updated", path: "package.json", note: `@foreman-kit/design-kit ^0.0.1 -> ^${V}; @foreman-kit/test-kit 0.0.1 -> ${V}` },
+      { action: "updated", path: "foreman.json", note: `foreman >=0.0.1 -> >=${V}` },
+    ]);
+    // Only those two values changed: workspace:, a package that isn't the kit's, and the rest of the file stay.
+    expect(read(dir, "package.json")).toBe(pkgText.replace('"^0.0.1"', `"^${V}"`).replace('"@foreman-kit/test-kit": "0.0.1"', `"@foreman-kit/test-kit": "${V}"`));
+    expect(read(dir, "foreman.json")).toBe(fj.replace('">=0.0.1"', `">=${V}"`));
+    // A higher version, or a range the project wrote itself, is kept.
+    put(dir, "package.json", '{ "devDependencies": { "@foreman-kit/test-kit": "99.0.0" } }');
+    put(dir, "foreman.json", fj.replace('">=0.0.1"', '"^0.0.1 || >=0.0.2"'));
+    expect(sync(dir).changes).toEqual([]);
+  });
+
+  test("a project vendored by the code before this (a .foreman-kit record, an @foreman-kit tarball) moves to versions too", () => {
+    const dir = repo({ "package.json": '{\n  "name": "ours",\n  "devDependencies": {\n    "@foreman-kit/test-kit": "file:.meta-repo/packages/test-kit-0123456789ab.tgz"\n  }\n}\n' });
+    init(dir);
+    put(dir, ".meta-repo/packages/test-kit-0123456789ab.tgz", "an old build");
+    const rec = JSON.parse(read(dir, RECORD));
+    rec.pieces = ["test-kit"];
+    rec.files[".meta-repo/packages/test-kit-0123456789ab.tgz"] = sha256("an old build");
+    put(dir, RECORD, JSON.stringify(rec));
+    const r = sync(dir);
+    expect(r.changes).toEqual([
+      { action: "deleted", path: ".meta-repo/packages/test-kit-0123456789ab.tgz", note: "vendored tarball, no longer used" },
+      { action: "updated", path: "package.json", note: `@foreman-kit/test-kit tarball -> @foreman-kit/test-kit ${V}` },
+      { action: "deleted", path: ".meta-repo/packages/", note: "empty" },
+      { action: "deleted", path: ".meta-repo/", note: "empty" },
+    ]);
+    expect(JSON.parse(read(dir, "package.json")).devDependencies).toEqual({ "@foreman-kit/test-kit": V });
+    expect(readInstalled(dir)!.files).toEqual({});
+    expect(readInstalled(dir)!.pieces).toEqual(["test-kit"]);
+  });
+
+  test("runKitCommand sync says to run bun install when package.json changed", () => {
+    const dir = repo({ "package.json": JSON.stringify({ name: "ours" }, null, 2) });
+    init(dir, { pieces: ["test-kit"] });
+    put(dir, "package.json", read(dir, "package.json").replace(`"${V}"`, '"0.0.1"'));
+    const lines: string[] = [];
+    runKitCommand("sync", dir, {}, (l) => lines.push(l));
+    expect(lines.join("\n")).toContain("run bun install");
+    expect(lines.join("\n")).toContain("Nothing was committed");
   });
 
   test("needs a record to work from", () => {
@@ -942,25 +950,66 @@ describe("helpers", () => {
     expect(pkg.name).toBe("a");
   });
 
-  test("workspace deps are found and only our dep values are rewritten", () => {
+  test("workspace deps are found and only their values are set to a version", () => {
     const text = '{\n  "devDependencies": {\n    "@foreman-kit/docs-check": "workspace:*",\n    "@foreman-kit/other": "1.0.0",\n    "zod": "workspace:*"\n  }\n}\n';
     expect(workspaceDeps(text)).toEqual(["docs-check"]);
-    const out = pointDep(text, "docs-check", ".meta-repo/packages/docs-check-abc123abc123.tgz");
-    expect(out).toBe(text.replace('"workspace:*",', '"file:.meta-repo/packages/docs-check-abc123abc123.tgz",'));
-    expect(pointDep(out, "docs-check", ".meta-repo/packages/docs-check-ffffffffffff.tgz")).toContain("docs-check-ffffffffffff.tgz");
-    expect(pointDep(text, "other", "x.tgz")).toBe(text); // a version we didn't vendor is left alone
+    expect(versionDep(text, "docs-check", "1.2.3")).toBe(text.replace('"workspace:*",', '"1.2.3",'));
+    expect(versionDep(text, "other", "1.2.3")).toBe(text); // only a workspace: spec is rewritten
   });
 
-  test("the scope comes from foreman's package name and matches the hooks' copy, and a project made under the old scope still syncs", async () => {
+  test("raiseKitDeps raises only the kit's packages given by a lower version, keeping ^ and ~", () => {
+    const text = '{ "a": { "@foreman-kit/test-kit": "~0.0.9", "@foreman-kit/docs-check": "0.2.0", "@foreman-kit/design-kit": "file:../d", "@foreman-kit/foreman": "0.0.1" } }';
+    const { text: out, raised } = raiseKitDeps(text, "0.1.0");
+    expect(out).toBe(text.replace('"~0.0.9"', '"~0.1.0"'));
+    expect(raised).toEqual(["@foreman-kit/test-kit ~0.0.9 -> ~0.1.0"]);
+  });
+
+  test("migratePackageJson swaps tarballs for versions and removes a vendored foreman, in any position", () => {
+    const tgz = (p: string) => `"file:.meta-repo/packages/${p}-0123456789ab.tgz"`;
+    const cases: [string, string][] = [
+      // middle, under the old scope
+      [`{\n  "devDependencies": {\n    "a": "1",\n    "@meta-repo/foreman": ${tgz("foreman")},\n    "b": "2"\n  }\n}\n`, '{\n  "devDependencies": {\n    "a": "1",\n    "b": "2"\n  }\n}\n'],
+      // first
+      [`{\n  "devDependencies": {\n    "@meta-repo/foreman": ${tgz("foreman")},\n    "b": "2"\n  }\n}\n`, '{\n  "devDependencies": {\n    "b": "2"\n  }\n}\n'],
+      // last, under the current scope, CRLF
+      [`{\r\n  "devDependencies": {\r\n    "a": "1",\r\n    "@foreman-kit/foreman": ${tgz("foreman")}\r\n  }\r\n}\r\n`, '{\r\n  "devDependencies": {\r\n    "a": "1"\r\n  }\r\n}\r\n'],
+      // the only one
+      [`{\n  "devDependencies": {\n    "@meta-repo/foreman": ${tgz("foreman")}\n  }\n}\n`, '{\n  "devDependencies": {\n  }\n}\n'],
+      // a kit package: renamed to the current scope, at the version, in place
+      [`{ "devDependencies": { "@meta-repo/test-kit": ${tgz("test-kit")}, "z": "1" } }`, '{ "devDependencies": { "@foreman-kit/test-kit": "0.1.0", "z": "1" } }'],
+    ];
+    for (const [text, want] of cases) expect(migratePackageJson(text, "0.1.0").text, text).toBe(want);
+    // Nothing of ours: unchanged, no notes.
+    // A tarball that isn't the package the entry names is left alone, and doesn't stop the rest.
+    const mixed = `{ "a": { "@meta-repo/docs-check": ${tgz("test-kit")}, "@meta-repo/test-kit": ${tgz("test-kit")} } }`;
+    expect(migratePackageJson(mixed, "0.1.0").text).toBe(`{ "a": { "@meta-repo/docs-check": ${tgz("test-kit")}, "@foreman-kit/test-kit": "0.1.0" } }`);
+    const plain = '{ "devDependencies": { "@meta-repo/test-kit": "workspace:*" } }';
+    expect(migratePackageJson(plain, "0.1.0")).toEqual({ text: plain, notes: [] });
+  });
+
+  test("migrateMcp swaps only the server D0020 wrote; raiseForemanRange adds a missing range after $comment", () => {
+    const old = JSON.stringify({ mcpServers: { other: { command: "x" }, foreman: { type: "stdio", command: "bun", args: ["node_modules/@meta-repo/foreman/src/cli.ts", "mcp"] } } }, null, 4);
+    expect(JSON.parse(migrateMcp(old)!)).toEqual({ mcpServers: { other: { command: "x" }, foreman: FOREMAN_SERVER } });
+    expect(migrateMcp(old)).toContain('\n    "mcpServers"'); // its own indent
+    expect(migrateMcp(JSON.stringify({ mcpServers: { foreman: { command: "bun", args: ["node_modules/@meta-repo/foreman/src/cli.ts", "mcp", "--debug"] } } }))).toBeNull();
+    expect(migrateMcp('{ "mcpServers": { "foreman": { "command": "fm", "args": ["mcp"] } } }')).toBeNull();
+
+    const fj = '{\n  "$comment": "x",\n  "protectedPaths": []\n}\n';
+    expect(raiseForemanRange(fj, "0.1.0")).toEqual({ text: '{\n  "$comment": "x",\n  "foreman": ">=0.1.0",\n  "protectedPaths": []\n}\n', from: null });
+    expect(raiseForemanRange('{\n  "protectedPaths": []\n}\n', "0.1.0")!.text).toBe('{\n  "foreman": ">=0.1.0",\n  "protectedPaths": []\n}\n');
+    expect(JSON.parse(raiseForemanRange("{}", "0.1.0")!.text)).toEqual({ foreman: ">=0.1.0" }); // the text edit fails: rewritten
+    expect(raiseForemanRange('{ "foreman": ">=0.1.0" }', "0.1.0")).toBeNull();
+    expect(raiseForemanRange('{ "foreman": ">=0.2.0" }', "0.1.0")).toBeNull();
+  });
+
+  test("the scope comes from foreman's package name and matches the hooks' copy", async () => {
     expect(SCOPE).toBe("@foreman-kit");
     expect(SCOPE).toBe((await import(join(TEMPLATES, "claude", "hooks", "scope.ts"))).SCOPE);
     // The MCP server is the person's own fm, whatever the scope (D0026).
     expect(FOREMAN_SERVER).toEqual({ type: "stdio", command: "fm", args: ["mcp"] });
-    // Before D0026 the packages were @meta-repo/*: sync repoints that project's tarball and keeps its name.
-    const text = '{\n  "devDependencies": {\n    "@meta-repo/foreman": "file:.meta-repo/packages/foreman-000000000000.tgz",\n    "@meta-repo/docs-check": "workspace:*"\n  }\n}\n';
-    const out = pointDep(text, "foreman", ".meta-repo/packages/foreman-abc123abc123.tgz");
-    expect(out).toBe(text.replace("foreman-000000000000", "foreman-abc123abc123"));
-    expect(workspaceDeps(text)).toEqual([]); // a preset only takes packages from the workspace by the current scope
+    // Before D0026 the packages were @meta-repo/*: a preset only takes packages from the workspace by the current scope.
+    const text = '{\n  "devDependencies": {\n    "@meta-repo/docs-check": "workspace:*"\n  }\n}\n';
+    expect(workspaceDeps(text)).toEqual([]);
   });
 });
 
