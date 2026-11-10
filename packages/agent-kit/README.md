@@ -66,7 +66,8 @@ These rules are the first layer, not a security boundary: Claude Code's docs say
 Live check: `bun run live-test` runs real headless Claude sessions against both layers, about $0.06 with Haiku. The other layers are CI and branch protection on the server.
 
 **The ship flow, wired to foreman:**
-- **`templates/claude/skills/ship/`, the worker side.** It covers claim → worktree → code → three parallel agents → gate → merge main → PR → `submit_task`.
+- **`templates/claude/skills/ship/`, the worker side.** It covers claim → worktree → code → tests, docs and review → gate → merge main → PR → `submit_task`.
+  - The worker writes the tests and docs and reviews its own diff. It spawns test-writer, docs-writer and reviewer in parallel only for a large or risky change, and design-critic for any UI change.
   - The worker never verifies or approves its own task.
   - It takes numbers from `reserve_number`.
   - Work found on the way becomes a new task with `discoveredFrom`.
