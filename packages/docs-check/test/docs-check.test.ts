@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { envRegistry, run, type Config } from "../src/index";
+import { envRegistry, loadConfig, run, type Config } from "../src/index";
 import { validDate } from "../src/decisions";
 import { anchors, links, proseLines, slug } from "../src/markdown";
 
@@ -223,8 +223,8 @@ describe("helpers", () => {
   });
 });
 
-test("this repository passes", () => {
+test("this repository passes, with its own docs-check.config.ts", async () => {
   const root = join(import.meta.dir, "..", "..", "..");
-  const errors = run(root, {}, {}).failures.filter((f) => f.severity === "error");
+  const errors = run(root, await loadConfig(root), {}).failures.filter((f) => f.severity === "error");
   expect(errors).toEqual([]);
 });
