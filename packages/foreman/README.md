@@ -66,6 +66,7 @@ foreman merge-queue                # the same, every 60 s until stopped (--inter
 foreman janitor --dry-run          # reclaim, clean up finished tasks, list stuck ones (--stuck-hours 24)
 foreman intake "Add a stage filter to /investors"   # a session files it as draft tasks (see Intake)
 fm dispatch [--max 3] [--once]     # run workers and verifiers until nothing more can start
+fm dispatch --verify-only          # only verify submitted tasks, claim nothing new
 fm serve                           # web board: open the link it prints to approve and merge (--port 0: a free port)
 fm projects color meta-repo teal   # a project's colour label on the board (gray red orange yellow green teal blue purple pink, or none)
 fm serve --queue                   # the board, plus the merge queue every 60 s in the same process (--interval, --settle-seconds 30)
@@ -259,7 +260,7 @@ What must hold:
 
 ## Dispatcher
 
-`fm dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start.
+`fm dispatch [--max 3] [--once] [--verify-only] [--model m] [--budget usd] [--print]` (`src/dispatch.ts`) runs workers and verifiers through the launch adapter until nothing more can start. Stopping it (Ctrl-C, a kill) stops every session it started, a verifier mid-run included: that verifier's lease is released and its task goes back to `in_review` for the next run. To get verifications without starting new work, run `--verify-only` rather than stopping a dispatcher early.
 
 **Watching the sessions.** Workers and verifiers run as Claude Code background sessions ([D0022](../../docs/decisions/D0022-background-sessions.md)), so the person watches them with Claude Code's own commands:
 - `claude agents` lists them, named `<repo> <task> <role>` (e.g. `foreman T-0042 worker`);
@@ -276,11 +277,11 @@ The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispa
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.
 - **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task.
 - **A worker per task:** the dispatcher claims the task as `worker-<task>` and makes `.claude/worktrees/<task>` on a new branch `<task>-<title>` from `origin/main`. It records both with `progress`, then starts a worker with the `ship` skill. A task back for rework keeps its worktree, or its branch if the worktree is gone. If the worktree can't be made, the task goes back to `ready`. A newly made worktree is prepared once with the `setup` command from `foreman.json` (e.g. `"setup": "bun install && bun install --cwd web"`) before the worker starts, and the prompt says so; a failed setup is reported to the worker, not fatal. Without `setup` the prompt tells the session to run `bun install`.
-- **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists.
+- **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists, whoever submitted them (an interactive session, a person), with or without `--once`.
 - **Leases follow the process:** each session's lease is pinned to its PID (`pinLease`). While the PID lives, the lease doesn't time out; once it's gone, `reclaim` releases the task (`ready`, or `in_review` for a verifier). A new holder ends the pin. The pins live in their own table, so an older foreman on the same database still works.
 - **Prompts:** both prompts say not to spawn helper subagents, to give commands `< /dev/null`, and how to reach foreman through the CLI if its MCP tools are missing. The worker's also says the task is already claimed, to install dependencies in the fresh worktree first, to make a mechanical many-file change with one scripted edit, and to run the full check once, before pushing ([D0029](../../docs/decisions/D0029-faster-sessions.md)). Sessions run with `FOREMAN_AGENT=1`, and their stdin is `/dev/null`.
 - **One try per run:** each task gets at most one worker and one verifier per `fm dispatch`. A task that failed, or whose worker died, waits for the next run.
-- **`--once`:** start what fits now, see those tasks through verification, then stop. **`--model`** and **`--budget`** (USD, per session) go to every session.
+- **`--once`:** start workers for what fits now, see those tasks through verification, then stop. Submitted tasks it didn't start still get a verifier. **`--verify-only`:** start verifiers for submitted tasks and never claim a ready task, to get verifications without starting new work. **`--model`** and **`--budget`** (USD, per session) go to every session.
 
 Tests use a fake launcher (`Dispatcher`'s `launcher` option). `test/bg.test.ts` runs the dispatcher through background mode against a fake `claude agents --json` and transcript. `FOREMAN_LIVE_DISPATCH=1 bun test packages/foreman/test/dispatch.test.ts` also runs one real worker on a throwaway repo (Haiku, under $1).
 

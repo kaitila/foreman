@@ -91,11 +91,14 @@ Signing off
   merged <id> [--pr url]
 
 Agents
-  dispatch [--max 3] [--once] [--model m] [--budget usd] [--print]
+  dispatch [--max 3] [--once] [--verify-only] [--model m] [--budget usd] [--print]
                                 claim ready tasks into worktrees, run a worker for each and a fresh
                                 verifier once it is submitted; at most --max sessions at once, never two
-                                tasks with overlapping paths; --once: see only what fits now through
-                                verification, then stop; --budget: each session's limit in USD.
+                                tasks with overlapping paths; --once: start workers only for what fits
+                                now, see it through verification, then stop (every submitted task still
+                                gets a verifier); --verify-only: verifiers for submitted tasks, no new
+                                work; --budget: each session's limit in USD. Stopping the dispatcher
+                                stops every session it started.
                                 Sessions run as Claude Code background sessions: watch them with
                                 "claude agents", "claude attach <name>"; --print (or
                                 FOREMAN_LAUNCH=print) runs headless "claude -p" instead
@@ -183,6 +186,7 @@ export async function main(argv: string[]): Promise<number | null> {
       project: { type: "string" },
       max: { type: "string" },
       once: { type: "boolean" },
+      "verify-only": { type: "boolean" },
       print: { type: "boolean" },
       model: { type: "string" },
       budget: { type: "string" },
@@ -612,6 +616,7 @@ export async function main(argv: string[]): Promise<number | null> {
       const sessions = await dispatch(f, {
         max: num(o.max, "max"),
         once: o.once,
+        verifyOnly: o["verify-only"],
         model: o.model,
         budgetUsd: num(o.budget, "budget"),
         mode: o.print ? "print" : undefined,
