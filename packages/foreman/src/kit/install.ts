@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 import { SCOPE, TEMPLATES } from "./paths";
+import { FILE_PIECES, type Piece, pieceOfFile } from "./pieces";
 
 export { SCOPE, TEMPLATES };
 
@@ -122,10 +123,12 @@ export function mergeSettings(
   return { settings: merged, added, omitted };
 }
 
-export function install(target: string, templates = TEMPLATES): InstallResult {
+/** agent-kit's templates for `pieces` (default: guardrails and skills) into target. */
+export function install(target: string, templates = TEMPLATES, pieces: Piece[] = FILE_PIECES): InstallResult {
   const result: InstallResult = { created: [], merged: [], kept: [], omitted: [], unmatchedOmit: [] };
   const omit = readOmit(target);
   for (const { src, rel } of templateFiles(templates)) {
+    if (!pieces.includes(pieceOfFile(rel))) continue;
     const dst = join(target, rel);
     const shown = relative(target, dst);
     if (rel === join(".claude", "settings.json") && (existsSync(dst) || omit.length)) {

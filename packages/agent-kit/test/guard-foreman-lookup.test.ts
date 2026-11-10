@@ -1,8 +1,8 @@
 // The guard asks the repo's own packages/foreman before any foreman on the PATH.
-import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), "guard-lookup-")));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -52,4 +52,68 @@ test("FOREMAN_BIN still comes first", () => {
   chmodSync(fake, 0o755);
   expect(edit("bin/a.ts", { FOREMAN_BIN: fake })).toBe(0);
   expect(edit("src/a.ts", { FOREMAN_BIN: fake })).toBe(2);
+});
+
+// trustedOnPath: a foreman on the PATH is used only if it is foreman's own CLI (D0035).
+describe("trustedOnPath", () => {
+  const scope = join(import.meta.dir, "..", "templates/claude/hooks/scope.ts");
+  let n = 0;
+  /** A PATH dir (at `rel` under a fresh folder) holding `foreman`: a link to `target`, or a script when target is null. */
+  const pathDir = (rel: string, target: string | null) => {
+    const dir = join(tmp, `path-${++n}`, rel);
+    mkdirSync(dir, { recursive: true });
+    if (target) symlinkSync(target, join(dir, "foreman"));
+    else writeFileSync(join(dir, "foreman"), "#!/bin/sh\necho not foreman\n");
+    if (!target) chmodSync(join(dir, "foreman"), 0o755);
+    return dir;
+  };
+  /** A cli.ts at `rel` under a fresh folder, executable so Bun.which finds a link to it. */
+  const cli = (rel: string) => {
+    const file = join(tmp, `cli-${++n}`, rel);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "#!/usr/bin/env bun\n");
+    chmodSync(file, 0o755);
+    return file;
+  };
+  /** trustedOnPath("foreman") in a bun run with PATH set to `dir` alone (Bun.which reads the PATH a process starts with). */
+  const withPath = (dir: string): string | null => {
+    const p = Bun.spawnSync([process.execPath, "-e", `const { trustedOnPath } = await import(${JSON.stringify(scope)}); console.log(JSON.stringify(trustedOnPath("foreman")))`], {
+      env: { HOME: process.env.HOME ?? tmp, PATH: dir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (p.exitCode !== 0) throw new Error(p.stderr.toString());
+    return JSON.parse(p.stdout.toString());
+  };
+
+  test("a link to a checkout's packages/foreman/src/cli.ts is trusted", () => {
+    const dir = pathDir("bin", cli("checkout/packages/foreman/src/cli.ts"));
+    expect(withPath(dir)).toBe(join(dir, "foreman"));
+  });
+
+  test("a link to an installed package's cli.ts is trusted, under either scope", () => {
+    for (const rel of ["node_modules/@foreman-kit/foreman/src/cli.ts", "node_modules/@meta-repo/foreman/src/cli.ts"]) {
+      const dir = pathDir("bin", cli(`global/${rel}`));
+      expect(withPath(dir), rel).toBe(join(dir, "foreman"));
+    }
+  });
+
+  test("a foreman in a node_modules/.bin folder is refused, even when it links to foreman's cli.ts", () => {
+    const real = cli("checkout/packages/foreman/src/cli.ts");
+    expect(withPath(pathDir("app/node_modules/.bin", real))).toBeNull();
+    expect(withPath(pathDir("app/node_modules/.bin", cli("app/node_modules/@foreman-kit/foreman/src/cli.ts")))).toBeNull();
+  });
+
+  test("a foreman that is some other script, or links to some other cli.ts, is refused", () => {
+    expect(withPath(pathDir("bin", null))).toBeNull();
+    expect(withPath(pathDir("bin", cli("evil/src/cli.ts")))).toBeNull();
+    expect(withPath(pathDir("bin", cli("evil/packages/foreman/src/cli.ts.bak")))).toBeNull();
+  });
+
+  test("no foreman on the PATH gives null, and so does a dangling link", () => {
+    const empty = join(tmp, `path-${++n}`);
+    mkdirSync(empty);
+    expect(withPath(empty)).toBeNull();
+    expect(withPath(pathDir("bin", join(tmp, "gone/packages/foreman/src/cli.ts")))).toBeNull();
+  });
 });
