@@ -190,13 +190,21 @@ export function mayTouchProtected(paths: string[], protectedPaths: string[]): bo
   return paths.some((p) => protectedPaths.some((q) => sameFiles(p, q) || reaches(p, q)));
 }
 
+/** The decision log. Tasks add files here with reserved numbers, and its index is generated. */
+const DECISIONS = "docs/decisions/";
+
+/** Does the glob only match files in the decision log? */
+const inDecisions = (g: string) => prefix(g).startsWith(DECISIONS);
+
 /**
  * Could two tasks edit the same file? A task that declares no paths could touch
  * anything, so it overlaps every task (the dispatcher keeps it apart from the rest).
+ * Two globs that both stay inside docs/decisions/ don't count (D0037): new decision
+ * files take reserved numbers and the index is regenerated, so they never clash.
  */
 export function pathsOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return true;
-  return a.some((p) => b.some((q) => globsOverlap(p, q)));
+  return a.some((p) => b.some((q) => !(inDecisions(p) && inDecisions(q)) && globsOverlap(p, q)));
 }
 
 /** Runs a command: its trimmed stdout, or null if it failed. gh and git go through one, so tests need no network. */
