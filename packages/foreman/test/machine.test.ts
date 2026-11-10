@@ -12,6 +12,10 @@ for (const k of ["GIT_AUTHOR", "GIT_COMMITTER"]) {
   process.env[`${k}_EMAIL`] = "test@example.invalid";
 }
 
+// Every test that calls fm() spawns the real CLI, and `fm setup` spawns bun, git, gh and claude in turn.
+// In a full parallel run that passes bun's default 5 s, so each such test names its own timeout (T-0106).
+const SPAWN_MS = 30_000;
+
 function fm(args: string[], cwd: string, home: string) {
   const p = Bun.spawnSync(["bun", CLI, ...args], {
     cwd,
@@ -52,7 +56,7 @@ describe("fm create, init, sync", () => {
     expect(all.out).toContain(`== ${app}`);
     expect(all.out).toContain(`== ${ex}`);
     expect(all.out).toContain("2 projects, 0 failed");
-  });
+  }, 2 * SPAWN_MS);
 
   test("sync --all reports a project that is gone and exits 1; create without a dir fails", () => {
     const home = mkdtempSync(join(base, "home-"));
@@ -61,7 +65,7 @@ describe("fm create, init, sync", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain("failed:");
     expect(fm(["create"], base, home).code).toBe(1);
-  });
+  }, SPAWN_MS);
 });
 
 function env(over: Partial<Env> & { cmds?: Record<string, RunResult | null>; files?: Record<string, string> } = {}): Env {
@@ -151,7 +155,7 @@ describe("fm setup", () => {
     expect(Array.isArray(j.items)).toBe(true);
     expect(j.items.map((i: { id: string }) => i.id)).toContain("bun");
     expect(j.items.find((i: { id: string }) => i.id === "bun").ok).toBe(true);
-  });
+  }, SPAWN_MS);
 });
 
 test("help groups the commands", () => {
@@ -160,4 +164,4 @@ test("help groups the commands", () => {
   expect(at.every((n) => n > 0)).toBe(true);
   expect([...at].sort((a, b) => a - b)).toEqual(at);
   expect(r.out).toContain("sync --all");
-});
+}, SPAWN_MS);
