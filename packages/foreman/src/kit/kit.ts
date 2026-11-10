@@ -1,18 +1,17 @@
 // What create, init and sync share: the kit's files, the record of what was installed
-// (.foreman-kit/installed.json, D0018, D0026), and the kit's packages a preset app vendors.
+// (.foreman-kit/installed.json, D0018, D0026), and the kit's packages a project takes by version.
 import { SCOPE, TEMPLATES, templateFiles, templateSettings } from "./install";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { OWN_TEMPLATES, packageDir, VERSION } from "./paths";
+import { OWN_TEMPLATES, VERSION } from "./paths";
 import { FILE_PIECES, type Piece, pieceOfFile } from "./pieces";
 
 export { CHECKOUT, OWN_TEMPLATES, PRESETS } from "./paths";
 export const RECORD = join(".foreman-kit", "installed.json");
-/** Where the record was before D0026. A project made then keeps it there; moving it is sync's migration (T-0086). */
+/** Where the record was before D0026. A project made then keeps it there until sync moves it (migrate.ts). */
 export const LEGACY_RECORD = join(".meta-repo", "installed.json");
-/** Vendored kit packages, as tarballs named by content hash (D0018). */
-export const VENDOR = ".meta-repo/packages";
+/** Where a project made before D0026 vendored the kit's packages, as tarballs named by content hash (D0018). Only sync's migration reads it. */
+export const LEGACY_VENDOR = ".meta-repo/packages";
 /** The scope the kit's packages had before D0026. A project made then still depends on them by it. */
 export const OLD_SCOPE = "@meta-repo";
 export const SETTINGS = ".claude/settings.json";
@@ -34,7 +33,7 @@ export interface Installed {
 }
 
 export interface Change {
-  action: "created" | "updated" | "merged" | "kept" | "deleted" | "removed" | "skipped";
+  action: "created" | "updated" | "merged" | "kept" | "moved" | "deleted" | "removed" | "skipped";
   path: string;
   note?: string;
 }
@@ -66,7 +65,8 @@ export function readInstalled(dir: string): Installed | null {
   return data;
 }
 
-export function writeInstalled(dir: string, rec: Installed) {
+/** Write the record: where it is now (the pre-D0026 path until sync moves it), or `at`. */
+export function writeInstalled(dir: string, rec: Installed, at = recordPath(dir)) {
   const files = Object.fromEntries(Object.entries(rec.files).sort(([a], [b]) => a.localeCompare(b)));
   const out = {
     $comment: "Written by foreman's create, init and sync: the hash of each kit file as installed, so sync can tell the project's changes from the kit's. Delete an entry to let sync restore a file you deleted.",
@@ -76,7 +76,7 @@ export function writeInstalled(dir: string, rec: Installed) {
     files,
     ...(rec.hooks && Object.keys(rec.hooks).length ? { hooks: Object.fromEntries(Object.entries(rec.hooks).sort(([a], [b]) => a.localeCompare(b))) } : {}),
   };
-  write(dir, recordPath(dir), JSON.stringify(out, null, 2) + "\n");
+  write(dir, at, JSON.stringify(out, null, 2) + "\n");
 }
 
 export function write(dir: string, path: string, data: Uint8Array | string) {
@@ -119,27 +119,10 @@ export function matchingKitFiles(dir: string, templates = TEMPLATES, pieces: Pie
   return out;
 }
 
-/** Can this copy of foreman vendor `<scope>/<pkg>`? foreman itself always; the others only from the checkout. */
-export const canPack = (pkg: string) => packageDir(pkg) !== null;
-
-/** `bun pm pack` a kit package: its tarball, named `<pkg>-<hash>.tgz` so a new version gets a new path. */
-export function pack(pkg: string): { path: string; data: Uint8Array } {
-  const cwd = packageDir(pkg);
-  if (!cwd) throw new Error(`can't vendor ${SCOPE}/${pkg}: this foreman isn't run from its checkout, and only the checkout has the other kit packages`);
-  const out = mkdtempSync(join(tmpdir(), "foreman-pack-"));
-  try {
-    const p = Bun.spawnSync(["bun", "pm", "pack", "--destination", out, "--quiet"], { cwd, stdout: "pipe", stderr: "pipe" });
-    if (p.exitCode !== 0) throw new Error(`bun pm pack failed in ${cwd}: ${p.stderr.toString()}`);
-    const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
-    if (!tgz) throw new Error(`bun pm pack wrote no tarball for ${cwd}`);
-    const data = readFileSync(join(out, tgz));
-    return { path: `${VENDOR}/${pkg}-${sha256(data).slice(0, 12)}.tgz`, data };
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-}
-
 const scopeRe = (scope: string) => scope.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
+/** The kit's packages a project can depend on. foreman itself is the person's own fm, never a dependency (D0026). */
+export const KIT_PACKAGES = ["docs-check", "test-kit", "design-kit"] as const;
 
 /** The kit packages a package.json takes from the workspace (`"@foreman-kit/x": "workspace:*"`). */
 export function workspaceDeps(packageJson: string): string[] {
@@ -156,27 +139,36 @@ export function workspaceDeps(packageJson: string): string[] {
 }
 
 /**
- * Point `<scope>/<pkg>` at a vendored tarball, editing only that value so the file's
- * formatting stays. Rewrites a `workspace:` spec or an earlier tarball of ours; leaves anything else.
- * A project made before D0026 names the package by OLD_SCOPE, and keeps that name.
- */
-export function pointDep(packageJson: string, pkg: string, tarball: string): string {
-  const scopes = `(?:${scopeRe(SCOPE)}|${scopeRe(OLD_SCOPE)})`;
-  const re = new RegExp(`("${scopes}/${pkg}"\\s*:\\s*)"(workspace:[^"]*|file:\\.meta-repo/packages/${pkg}-[0-9a-f]+\\.tgz)"`, "g");
-  return packageJson.replace(re, `$1"file:${tarball}"`);
-}
-
-/**
- * Point `<scope>/<pkg>` at a version from the registry instead of the workspace, for a kit package
- * this copy can't vendor. Only a `workspace:` spec is rewritten.
+ * Point `<scope>/<pkg>` at a version from the registry instead of the workspace, editing only that
+ * value so the file's formatting stays (D0020). Only a `workspace:` spec is rewritten.
  */
 export function versionDep(packageJson: string, pkg: string, version: string): string {
   const re = new RegExp(`("${scopeRe(SCOPE)}/${pkg}"\\s*:\\s*)"workspace:[^"]*"`, "g");
   return packageJson.replace(re, `$1"${version}"`);
 }
 
-/** Vendored package name from a tarball path under VENDOR. */
-export const vendoredName = (path: string) => /^\.meta-repo\/packages\/([a-z0-9-]+)-[0-9a-f]+\.tgz$/.exec(path)?.[1];
+/** A dependency spec that is a version (`0.1.0`, `^0.1.0`, `~0.1.0-rc.1`): the only kind sync raises. */
+const VERSION_SPEC = /^([~^]?)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+
+/**
+ * Each `<scope>/<kit package>` given by a version lower than `version`, set to it as a text edit, so
+ * the rest of package.json stays (D0020). A `^` or `~` is kept. Any other spec (`workspace:`, `file:`,
+ * `link:`, a tag) is the project's own choice and left alone, and so is a higher version.
+ */
+export function raiseKitDeps(packageJson: string, version: string): { text: string; raised: string[] } {
+  const raised: string[] = [];
+  const re = new RegExp(`("(${scopeRe(SCOPE)}/(?:${KIT_PACKAGES.join("|")}))"\\s*:\\s*)"([^"]*)"`, "g");
+  const text = packageJson.replace(re, (all, head: string, name: string, spec: string) => {
+    const m = VERSION_SPEC.exec(spec);
+    if (!m || Bun.semver.order(m[2]!, version) >= 0) return all;
+    raised.push(`${name} ${spec} -> ${m[1]}${version}`);
+    return `${head}"${m[1]}${version}"`;
+  });
+  return { text, raised };
+}
+
+/** The indent of a JSON file's first nested line, so a rewrite keeps its style (default two spaces). */
+export const indentOf = (text: string) => /\n([ \t]+)"/.exec(text)?.[1] ?? "  ";
 
 export type HookGroup = { matcher?: string; hooks: { command: string }[] };
 const hookGroups = (settings: { hooks?: unknown }) => Object.entries((settings.hooks ?? {}) as Record<string, HookGroup[]>);
