@@ -7,7 +7,6 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { generate, NAME } from "./generate";
 import {
-  canPack,
   type Change,
   FOREMAN_SERVER,
   type Installed,
@@ -15,14 +14,12 @@ import {
   matchingKitHooks,
   MCP,
   OWN_TEMPLATES,
+  indentOf,
   ownTemplate,
-  pack,
-  pointDep,
   PRESETS,
   readInstalled,
   recordPath,
   SETTINGS,
-  sha256,
   source,
   write,
   writeInstalled,
@@ -98,31 +95,20 @@ export function create(dir: string, opts: CreateOptions = {}): Change[] {
 
   const changes: Change[] = [];
   const files = generate(presetSources().get(preset)!, name);
-  // The preset takes the kit's packages from the workspace; outside it they're vendored (D0018).
-  const vendored: Record<string, string> = {};
+  // The preset takes the kit's packages from the workspace; a project takes them by this foreman's version (D0026).
   let pkgJson = files.get("package.json")!;
-  for (const pkg of workspaceDeps(pkgJson)) {
-    if (!canPack(pkg)) {
-      // An installed foreman can't pack the other kit packages; they come from the registry (D0032).
-      pkgJson = versionDep(pkgJson, pkg, source());
-      changes.push({ action: "skipped", path: `${SCOPE}/${pkg}`, note: `not vendored (no foreman checkout): package.json takes ${source()} from the registry` });
-      continue;
-    }
-    const { path, data } = pack(pkg);
-    write(target, path, data);
-    vendored[path] = sha256(data);
-    pkgJson = pointDep(pkgJson, pkg, path);
-    changes.push({ action: "created", path, note: `${SCOPE}/${pkg}, vendored` });
-  }
+  const kitDeps = workspaceDeps(pkgJson);
+  for (const pkg of kitDeps) pkgJson = versionDep(pkgJson, pkg, source());
   files.set("package.json", pkgJson);
   for (const [path, text] of files) write(target, path, text);
   changes.push({ action: "created", path: `${files.size} files`, note: `from preset ${preset}` });
+  if (kitDeps.length) changes.push({ action: "created", path: "package.json", note: `${kitDeps.map((p) => `${SCOPE}/${p}`).join(", ")} at ${source()}, from the registry` });
 
   changes.push(...fromInstall(install(target)));
   writeOnce(target, "foreman.json", foremanJson(), changes);
   const db = name.replace(/\W/g, "_");
   writeOnce(target, CI_PATH, ownTemplate(PRESET_CI[preset] ?? "ci-bun.yml").replaceAll("{{db}}", db), changes);
-  writeInstalled(target, { source: source(), preset, pieces: [...PIECES], files: { ...matchingKitFiles(target), ...vendored }, hooks: matchingKitHooks(target) });
+  writeInstalled(target, { source: source(), preset, pieces: [...PIECES], files: matchingKitFiles(target), hooks: matchingKitHooks(target) });
   changes.push({ action: "created", path: recordPath(target) });
 
   if (opts.install !== false) {
@@ -266,7 +252,7 @@ function addPiece(target: string, piece: Piece, rec: Installed, opts: { today?: 
       writeOnce(target, "docs/decisions/D0001-agent-kit.md", ownTemplate("D0001.md").replaceAll("{{date}}", date), changes);
     }
     if (existsSync(join(target, "package.json"))) {
-      addKitPackage(target, "docs-check", rec, changes);
+      addKitPackage(target, "docs-check", changes);
       addScript(target, "docs:check", "docs-check", changes);
     }
   } else if (piece === "ci") {
@@ -275,8 +261,8 @@ function addPiece(target: string, piece: Piece, rec: Installed, opts: { today?: 
     if (existsSync(workflows) && readdirSync(workflows).some((f) => /\.ya?ml$/.test(f))) changes.push({ action: "kept", path: ".github/workflows/", note: "already has a workflow" });
     else if (!readPackageJson(target)?.pkg.scripts?.check) changes.push({ action: "skipped", path: CI_PATH, note: "package.json has no check script for CI to run" });
     else writeOnce(target, CI_PATH, ownTemplate("ci-bun.yml"), changes);
-  } else if (piece === "test-kit") addKitPackage(target, "test-kit", rec, changes);
-  else if (piece === "design") addKitPackage(target, "design-kit", rec, changes);
+  } else if (piece === "test-kit") addKitPackage(target, "test-kit", changes);
+  else if (piece === "design") addKitPackage(target, "design-kit", changes);
 }
 
 const DEP_KEYS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
@@ -318,7 +304,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  * A JSON object's text with one entry added to its `key` object (made if missing), so the rest of
  * the file (order, line endings, inline arrays) is untouched. Falls back to a JSON rewrite if the edit doesn't parse.
  */
-function addEntry(text: string, key: string, name: string, value: string): string {
+export function addEntry(text: string, key: string, name: string, value: string): string {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const ind = indentOf(text);
   const entry = `${JSON.stringify(name)}: ${JSON.stringify(value)}`;
@@ -347,26 +333,18 @@ function addEntry(text: string, key: string, name: string, value: string): strin
 /** package.json with one devDependency added as text (see addEntry). */
 export const addDevDependency = (text: string, name: string, spec: string) => addEntry(text, "devDependencies", name, spec);
 
-/** The indent of a JSON file's first nested line, so a rewrite keeps its style (default two spaces). */
-const indentOf = (text: string) => /\n([ \t]+)"/.exec(text)?.[1] ?? "  ";
 const withNewline = (text: string) => (text === "" || text.endsWith("\n") ? text : `${text}\n`);
 
 /**
- * A kit package as a devDependency: vendored from the checkout (and recorded, so sync updates it),
- * or by version from the registry when this foreman is installed (D0032). Kept if the repo already depends on it.
+ * A kit package as a devDependency, at this foreman's version (D0026): sync raises it with the kit.
+ * Kept if the repo already depends on it.
  */
-function addKitPackage(target: string, pkg: string, rec: Installed, changes: Change[]) {
+function addKitPackage(target: string, pkg: string, changes: Change[]) {
   const name = `${SCOPE}/${pkg}`;
   const p = readPackageJson(target)!;
   if (DEP_KEYS.some((k) => p.pkg[k]?.[name] !== undefined)) return changes.push({ action: "kept", path: "package.json", note: `already depends on ${name}` });
-  if (canPack(pkg)) {
-    const { path, data } = pack(pkg);
-    write(target, path, data);
-    rec.files[path] = sha256(data);
-    write(target, "package.json", addDevDependency(p.text, name, `file:${path}`));
-    changes.push({ action: "created", path, note: `${name}, vendored` });
-  } else write(target, "package.json", addDevDependency(p.text, name, source()));
-  changes.push({ action: "merged", path: "package.json", note: `${name} added as a devDependency: run bun install` });
+  write(target, "package.json", addDevDependency(p.text, name, source()));
+  changes.push({ action: "merged", path: "package.json", note: `${name} ${source()} added as a devDependency: run bun install` });
 }
 
 function addScript(target: string, script: string, cmd: string, changes: Change[]) {

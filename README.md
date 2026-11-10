@@ -28,6 +28,8 @@ fm setup              # checks gh and claude, links fm, says how to fix what is 
 
 Then `fm` works from anywhere: `fm create ~/x` starts a project, `fm init` sets up foreman in the repo you are in, in any language, and offers the rest of the kit as pieces to pick (`--with docs,guardrails` or `--all` to choose without asking, `fm add <piece>` for one later), `fm sync --all` takes the kit's updates in every project fm has seen, and `fm help` lists the rest. See [packages/foreman](packages/foreman/README.md).
 
+Projects take the kit's packages (`@foreman-kit/docs-check`, `test-kit`, `design-kit`) by version from the npm registry, and `fm sync` keeps them at the version of the `fm` that runs it ([KIT.md](packages/foreman/KIT.md)). They aren't published yet, so until the first release a new project's `bun install` can't find them. This repo's CI works around that in the `create` job only: `packages/foreman/scripts/local-kit.ts` packs them from the checkout and adds `overrides` to the test project's `package.json` that point at those tarballs.
+
 Status: steps M0–M7 of [the plan](docs/research-plan.md) are done; M8 is a private pilot.
 
 License: [MIT](LICENSE).

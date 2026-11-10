@@ -13,7 +13,8 @@ export const USAGE = `  create <dir> [--preset ${DEFAULT_PRESET}] [--name n] [--
   add <piece>... [--name n]
                      add kit pieces to a repo that has foreman, like init --with. Any other words file a task
   sync [dir] [--dry-run]
-                     update the kit's files to this foreman version; keeps every file the project changed`;
+                     update the kit to this foreman version: its files (keeping every one the project changed),
+                     the @foreman-kit/* versions and foreman.json; moves a project made before D0026 off its tarballs`;
 
 export interface KitCommandOptions {
   preset?: string;
@@ -74,7 +75,7 @@ export function runKitCommand(cmd: string, dir: string | undefined, o: KitComman
     log(`kit ${r.from} -> ${r.to}${o.dryRun ? " (dry run: nothing written)" : ""}`);
     if (r.changes.length) show(r.changes, log);
     else log("up to date");
-    if (r.reinstall) log("\nVendored packages changed: run bun install.");
+    if (r.reinstall) log("\npackage.json changed: run bun install.");
     if (!o.dryRun && r.changes.some((c) => c.action === "updated" || c.action === "created" || c.action === "merged")) {
       log("Nothing was committed: review with git diff.");
     }
