@@ -2,8 +2,9 @@
 // The CLI and the MCP server are thin layers over this; nothing here knows
 // which agent tool is calling (D0005).
 import type { Database } from "bun:sqlite";
-import { gitPolicy, highestOnDisk, isProtected, mayTouchProtected, type Policy, prRepo } from "./policy";
+import { type Config, gitPolicy, loadConfig, highestOnDisk, isProtected, mayTouchProtected, type Policy, prRepo } from "./policy";
 import { dbPath, openDb, repoRoot } from "./store";
+import { VERSION } from "./kit/paths";
 
 export type Risk = "auto" | "review" | "human";
 export type Status =
@@ -73,6 +74,36 @@ export class ForemanError extends Error {
   ) {
     super(message);
   }
+}
+
+export const UPGRADE = "bun add -g @foreman-kit/foreman@latest";
+
+const VERSION_PART = String.raw`v?\d+(?:\.(?:\d+|x|\*)){0,2}(?:-[0-9A-Za-z.-]+)?`;
+const COMPARATOR = new RegExp(`^(?:\\^|~|[<>]=?|=)?${VERSION_PART}$`);
+const HYPHEN = new RegExp(`^${VERSION_PART}\\s+-\\s+${VERSION_PART}$`);
+
+/** A semver range: `||`-separated sets, each a hyphen range or space-separated comparators like `>=0.2.0` or `^1.2`. */
+export function isVersionRange(range: string): boolean {
+  return range.split("||").every((set) => {
+    const t = set.trim();
+    if (!t) return false;
+    if (HYPHEN.test(t)) return true;
+    return t.split(/\s+/).every((c) => COMPARATOR.test(c));
+  });
+}
+
+/**
+ * Refuses a repo whose foreman.json needs a newer foreman than this one (its `foreman` range, D0026),
+ * naming the upgrade command. A repo with no range, or no foreman.json, is accepted.
+ */
+export function checkVersion(root: string | null, version = VERSION, config: Config = loadConfig(root)): void {
+  const range = config.foreman;
+  if (range === undefined) return;
+  if (typeof range !== "string" || !range.trim()) throw new ForemanError("invalid", `foreman.json "foreman" must be a version range like ">=0.2.0", got ${JSON.stringify(range)}`);
+  // Bun.semver.satisfies accepts nonsense ("abc" is satisfied), so the range is checked first.
+  if (!isVersionRange(range)) throw new ForemanError("invalid", `foreman.json "foreman" is not a version range: ${JSON.stringify(range)}`);
+  // A prerelease fm (0.2.0-rc.1) counts as its release: semver would refuse it for every plain range.
+  if (!Bun.semver.satisfies(version.replace(/-.*$/, ""), range)) throw new ForemanError("too_old", `this repo needs foreman ${range} (foreman.json), and this fm is ${version}: upgrade with ${UPGRADE}`);
 }
 
 export const DEFAULT_LEASE_MINUTES = 30;
@@ -184,6 +215,7 @@ export class Foreman {
 
   static open(cwd = process.cwd()): Foreman {
     const root = repoRoot(cwd);
+    checkVersion(root);
     return new Foreman(openDb(dbPath(cwd)), root, Date.now, gitPolicy(root));
   }
 

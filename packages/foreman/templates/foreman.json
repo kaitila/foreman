@@ -4,6 +4,7 @@
     ".claude/**",
     "**/.claude/**",
     ".github/**",
+    ".foreman-kit/**",
     ".meta-repo/**",
     ".mcp.json",
     "foreman.json",
