@@ -71,10 +71,10 @@ function setupQueue() {
     if (cmd[0] !== "gh" || cmd[1] !== "pr") return null;
     const p = prs.get(cmd[3]!);
     if (!p) return null;
-    if (cmd[2] === "view" && cmd[5] === "headRefOid,mergeable,isDraft,statusCheckRollup") {
+    if (cmd[2] === "view" && cmd[5] === "headRefOid,mergeable,isDraft,statusCheckRollup,state") {
       const v = p.views[0]!;
       if (p.views.length > 1) p.views.shift();
-      return JSON.stringify({ headRefOid: v.headSha, mergeable: v.mergeable, isDraft: v.isDraft ?? false, statusCheckRollup: v.checks });
+      return JSON.stringify({ headRefOid: v.headSha, mergeable: v.mergeable, isDraft: v.isDraft ?? false, statusCheckRollup: v.checks, ...(v.state ? { state: v.state } : {}) });
     }
     if (cmd[2] === "view" && cmd[5] === "state") return p.merged ? "MERGED" : (p.stateAfterFail ?? "OPEN");
     if (cmd[2] === "merge") {
@@ -162,6 +162,33 @@ describe("judgeChecks", () => {
 // ---------------------------------------------------------------- the queue
 
 describe("merge queue (T-0033)", () => {
+  test("a PR already merged on GitHub at the verified head marks the task done, without merging again (T-0102)", async () => {
+    const q = setupQueue();
+    const a = q.approved([green(), { ...green(), mergeable: "UNKNOWN", state: "MERGED" }]);
+    a.fake.views.shift(); // the verified read is past: GitHub now says MERGED, mergeable UNKNOWN
+    expect(await q.pass()).toEqual([{ id: a.id, pr: a.pr, action: "merged", reason: expect.stringContaining("already merged on GitHub") }]);
+    expect(q.f.get(a.id).status).toBe("done");
+    expect(q.merges()).toEqual([]);
+    expect(q.sleeps).toEqual([]); // no waiting on a mergeable that GitHub never works out
+  });
+
+  test("merged at another head, or closed, is skipped and stays approved (T-0102)", async () => {
+    const q = setupQueue();
+    const moved = q.approved([green(), { ...green("cccc3333dddd4444"), mergeable: "UNKNOWN", state: "MERGED" }]);
+    moved.fake.views.shift();
+    const closed = q.approved([green(), { ...green(), state: "CLOSED" }]);
+    closed.fake.views.shift();
+    const r = await q.pass();
+    expect(r.map((e) => [e.id, e.action, e.reason])).toEqual([
+      [moved.id, "skipped", expect.stringContaining("merged on GitHub at cccc3333, not the verified aaaa1111: a person decides")],
+      [closed.id, "skipped", expect.stringContaining("closed on GitHub without merging")],
+    ]);
+    expect(q.f.get(moved.id).status).toBe("approved");
+    expect(q.f.get(closed.id).status).toBe("approved");
+    expect(q.merges()).toEqual([]);
+    expect((await q.pass({ dryRun: true })).map((e) => e.action)).toEqual(["skipped", "skipped"]);
+  });
+
   test("a task sent back or cancelled while its checks settle is not merged (T-0101)", async () => {
     for (const change of ["rework", "cancel"] as const) {
       const q = setupQueue();
@@ -251,7 +278,7 @@ describe("merge queue (T-0033)", () => {
   describe("waits out GitHub's lazy mergeability (T-0094)", () => {
     const unknown = (): PrState => ({ ...green(), mergeable: "UNKNOWN" });
     const conflicting = (): PrState => ({ ...green(), mergeable: "CONFLICTING" });
-    const reads = (q: ReturnType<typeof setupQueue>) => q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup").length;
+    const reads = (q: ReturnType<typeof setupQueue>) => q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup,state").length;
 
     test("UNKNOWN on the first read, then MERGEABLE: re-read after the wait, then merged", async () => {
       const q = setupQueue();
@@ -327,7 +354,7 @@ describe("merge queue (T-0033)", () => {
       const a = q.approved();
       const b = q.approved();
       await q.pass();
-      const views = q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup").map((c) => c[3]);
+      const views = q.calls.filter((c) => c[2] === "view" && c[5] === "headRefOid,mergeable,isDraft,statusCheckRollup,state").map((c) => c[3]);
       expect(views.slice(0, 3)).toEqual([a.pr, b.pr, a.pr]);
     });
 
