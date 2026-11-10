@@ -179,11 +179,31 @@ describe("plans", () => {
     ]);
   });
 
+  test("intake files a plan and puts its own tasks in it, and nothing more", () => {
+    const { f, plans } = setup();
+    const intake: Actor = { name: "intake-abc", kind: "agent" };
+    const other = plans.create(twoSteps, ada);
+    const p = plans.create(twoSteps, intake);
+    expect(p.createdBy).toBe("intake-abc");
+    const mine = plans.createTask({ title: "Mine", acceptance: ["cmd: true"] }, { plan: p.id, step: 1 }, intake);
+    expect(plans.placement(mine.id)).toEqual({ plan: p.id, step: 1 });
+    const loose = f.create({ title: "Loose" }, intake).id;
+    expect(plans.add(loose, p.id, 2, intake).steps[1]!.tasks.map((t) => t.id)).toEqual([loose]);
+    // Not someone else's plan, nor someone else's task.
+    expect(code(() => plans.createTask({ title: "x" }, { plan: other.id, step: 1 }, intake))).toBe("not_allowed");
+    expect(code(() => plans.add(loose, other.id, 1, intake))).toBe("not_allowed");
+    expect(code(() => plans.add(taskIn(f, "ready"), p.id, 1, intake))).toBe("not_allowed");
+    // No editing, cancelling or taking tasks out.
+    expect(code(() => plans.edit(p.id, intake, { title: "x" }))).toBe("not_allowed");
+    expect(code(() => plans.cancel(p.id, intake, "why"))).toBe("not_allowed");
+    expect(code(() => plans.remove(loose, intake))).toBe("not_allowed");
+  });
+
   test("dispatched sessions can't shape plans from any door, but a worker can file a task into one", () => {
     const { f, plans } = setup();
     const p = plans.create(twoSteps, ada);
     const t = taskIn(f, "ready");
-    for (const name of ["worker-T-0001", "verifier-T-0001", "intake-abc"]) {
+    for (const name of ["worker-T-0001", "verifier-T-0001"]) {
       const agent: Actor = { name, kind: "agent" };
       expect(code(() => plans.create(twoSteps, agent))).toBe("not_allowed");
       expect(code(() => plans.edit(p.id, agent, { title: "x" }))).toBe("not_allowed");
