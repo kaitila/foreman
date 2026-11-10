@@ -305,6 +305,7 @@ describe("the page", () => {
       "Enter / o": ['e.key === "Enter"', 'e.key === "o"'],
       "g n": ['e.key === "g"', 'e.key === "n"'],
       "g a": ['e.key === "g"', 'e.key === "a"'],
+      "g p": ['e.key === "g"', 'e.key === "p"', "setPlans()"],
       "g 1": ['e.key === "g"', "/^[1-9]$/.test(e.key)"],
       v: ['e.key === "v"'],
       a: ['e.key === "a"'],
