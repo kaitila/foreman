@@ -10,7 +10,7 @@
 - The rule lives only in `pathsOverlap`; prompts still ask for `docs/decisions/**` when a task may add a decision.
 
 **Why:**
-- New decision files can't collide: their numbers come from `reserve_number`, and `docs/decisions/README.md` is generated (`bun run docs:check --write-index`), regenerated on merge rather than hand-merged.
+- New decision files can't collide: their numbers come from `reserve_number`, and they share no index file: the generated one is no longer committed ([D0040](D0040-no-decision-index.md)).
 - Two tasks editing the same existing decision file is rare, and the clash is in prose. The merge queue sends a PR that conflicts with main back to work ([D0012](D0012-merge-queue-conflict-send-back.md)), which handles it.
 
 **Revisit if:** tasks often edit the same existing decision files, or another shared folder (migrations, changelogs) starts serialising tasks the same way.
