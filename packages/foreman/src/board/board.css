@@ -124,6 +124,22 @@ kbd + kbd { margin-left: var(--space-0); }
 .notice { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--color-attn-soft); color: var(--color-attn); font-size: var(--text-sm); border-bottom: var(--border-width) solid var(--color-line); }
 .content { flex: 1; min-height: 0; overflow: auto; position: relative; }
 
+/* Dispatcher strip: the dispatchers running now, or one quiet line saying none is. Read-only. */
+.dstrip { flex: none; padding: var(--space-2) var(--space-4); border-bottom: var(--border-width) solid var(--color-line); color: var(--color-ink-muted); font-size: var(--text-sm); }
+.dstrip.none { color: var(--color-ink-faint); font-size: var(--text-xs); }
+.dstrip code { padding: 0 var(--space-1); border-radius: var(--radius-sm); background: var(--color-sunk); color: var(--color-ink-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.disp-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.disp { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; }
+.disp strong { color: var(--color-ink); font-weight: var(--weight-medium); }
+.disp-slots { color: var(--color-ink); white-space: nowrap; }
+.disp-scope, .disp-by { white-space: nowrap; }
+.disp-flag { flex: none; padding: 0 var(--space-2); border: var(--border-width) solid var(--color-line); border-radius: var(--radius-full); font-size: var(--text-xs); line-height: var(--kbd-size); white-space: nowrap; }
+.disp-tasks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; }
+.disp-task { white-space: nowrap; font-size: var(--text-xs); }
+.disp-task .id { color: var(--color-ink); }
+.disp-mark { flex: none; display: inline-flex; align-items: center; color: var(--color-ink-faint); font-size: var(--text-xs); font-weight: var(--weight-regular); }
+.disp-mark svg { color: var(--color-go); }
+
 /* Status glyphs: one shape per state, colour only where it means something */
 .si { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--color-ink-faint); }
 .si .ring { fill: none; stroke: currentColor; stroke-width: 1.5; }
@@ -484,6 +500,7 @@ kbd + kbd { margin-left: var(--space-0); }
   .dialog-foot .why { display: none; }
   .group-head { padding-left: var(--space-3); }
   .group-note, .group-out { padding-left: var(--space-4); }
+  .disp-list { gap: var(--space-2); }
   .step-check { padding-left: var(--space-4); }
   .plan-row .side .progress { display: none; }
   .qnote-list .qr { flex-basis: 100%; }

@@ -76,6 +76,11 @@ export function ago(ms: number, now: number): string {
   return Math.round(h / 24) + " d ago";
 }
 
+/** Who started a dispatcher: the person, or the session that did, its id shortened. */
+export function starterText(s: { name: string; kind: string; session?: string }): string {
+  return s.kind === "human" || !s.session ? s.name : "session " + s.session.slice(0, 8);
+}
+
 /** Seconds between the click and the request, while Undo still stops it. */
 export const UNDO_SECONDS = 5;
 
@@ -117,6 +122,7 @@ const JS = `
 ${prNumber.toString()}
 ${nextAction.toString()}
 ${ago.toString()}
+${starterText.toString()}
 const UNDO_MS = ${UNDO_SECONDS * 1000};
 const SHORTCUTS = ${JSON.stringify(SHORTCUTS)};
 const LABELS = ${JSON.stringify(LABEL_COLORS)};
@@ -147,6 +153,10 @@ const STEP_NAMES = { empty: "Empty", waiting: "Waiting", in_progress: "In progre
 const STEP_GLYPH = { empty: "draft", waiting: "ready", in_progress: "in_progress", done: "done" };
 const tagPlans = (name, ps) => ps.map((p) => ({ ...p, project: name, k: "plan:" + name + "/" + p.id }));
 let plans = (S.projects || []).flatMap((p) => tagPlans(p.name, p.plans || []));
+// The dispatchers running in each project (T-0116), read-only: the board never starts or stops one.
+const DISP = new Map((S.projects || []).map((p) => [p.name, p.dispatchers || []]));
+// What the page shows of them: everything but the last-seen time, which moves on every tick.
+const dispKey = (ds) => JSON.stringify(ds.map((d) => ({ ...d, lastSeen: 0 })));
 // view: "all" or one project's name. inbox: only what needs the person. mode: "list" or "board".
 // plansView: the Plans view is showing; openPlan: the plan whose steps show (its key), or null for the list.
 let openId = null, sel = null, filter = "", live = true, token = "", view = "all", inbox = false, mode = "list";
@@ -211,6 +221,7 @@ const PATHS = {
   check: "M3.5 8.5l3 3 6-7",
   undo: "M5.5 3.5L2.5 6.5l3 3M2.5 6.5H10a3.5 3.5 0 0 1 0 7H7",
   key: "M2 5.5h12v6H2zM4.5 8.5h7",
+  dispatch: "M5 3.5l7 4.5-7 4.5z",
   eye: "M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8ZM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
 };
 function icon(name, cls) {
@@ -931,6 +942,7 @@ function render() {
   box.replaceChildren();
   const mine = inView(), shown = visible();
   nav();
+  renderDispatchers(now);
   if (plansView) renderPlans(box, now);
   else if (!shown.length && !(inbox && !filter)) {
     const e = el("div", "blank");
@@ -947,6 +959,61 @@ function render() {
   else $("#total").textContent = filter ? shown.length + " of " + mine.length : String(mine.length);
   if (openId) { const t = byKey(openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t, false)].filter(Boolean)); }
   restoreFocus(fk);
+}
+
+// The dispatcher strip: each dispatcher running in the projects in view, or one quiet line saying none is.
+// Rebuilt only when what it says changes, so a link in it keeps the focus across re-renders.
+let dispSig = "";
+function dispatcherLine(project, d, now) {
+  const li = el("li", "disp");
+  li.dataset.pid = String(d.pid);
+  const dot = el("span", "dot");
+  dot.title = "Running, pid " + d.pid;
+  const slots = el("span", "disp-slots", d.sessions.length + " of " + d.max + " slots");
+  slots.title = d.sessions.length + " sessions running, at most " + d.max + " at once (--max)";
+  li.append(dot, el("strong", "", "Dispatcher"));
+  if (multi && view === "all") li.append(projChip(project));
+  li.append(el("span", "disp-scope", d.scope), slots);
+  if (d.flags.verifyOnly) { const f = el("span", "disp-flag", "verify only"); f.title = "--verify-only: it verifies submitted tasks and claims nothing new"; li.append(f); }
+  if (d.flags.once) { const f = el("span", "disp-flag", "once"); f.title = "--once: it exits when nothing more can start"; li.append(f); }
+  const by = el("span", "disp-by", "by " + starterText(d.starter));
+  by.title = "Started by " + d.starter.name + (d.starter.kind === "agent" ? " (an agent)" : "") + (d.starter.session ? ", session " + d.starter.session : "");
+  const at = el("time", "ago", "started " + ago(d.startedAt, now));
+  at.title = new Date(d.startedAt).toLocaleString();
+  li.append(by, at);
+  const on = el("span", "disp-tasks");
+  if (!d.sessions.length) on.append(el("span", "why", "nothing in flight"));
+  for (const s of d.sessions) {
+    const t = byKey(project + "/" + s.task);
+    const a = el(t ? "a" : "span", "disp-task");
+    a.append(el("span", "id", s.task), document.createTextNode(" " + s.role));
+    if (t) {
+      a.href = hashFor(t);
+      a.title = s.task + " " + t.title;
+      a.addEventListener("click", (e) => { e.preventDefault(); goToTask(t); });
+    }
+    on.append(a);
+  }
+  li.append(on);
+  return li;
+}
+function renderDispatchers(now) {
+  const box = $("#dispatchers");
+  const names = PROJECTS.filter((n) => view === "all" || n === view);
+  const running = names.flatMap((n) => (DISP.get(n) || []).map((d) => [n, d]));
+  const sig = JSON.stringify([view, running.map(([n, d]) => n + dispKey([d])), running.map(([n, d]) => [ago(d.startedAt, now), d.sessions.map((s) => !!byKey(n + "/" + s.task))])]);
+  if (sig === dispSig && box.childNodes.length) return;
+  dispSig = sig;
+  box.classList.toggle("none", !running.length);
+  if (!running.length) {
+    const p = el("p", "disp-none");
+    p.append(document.createTextNode("No dispatcher is running" + (multi && view !== "all" ? " in " + view : "") + ", so no new session will start. Start one from the terminal: "), el("code", "", "fm dispatch"));
+    box.replaceChildren(p);
+    return;
+  }
+  const ul = el("ul", "disp-list");
+  for (const [n, d] of running) ul.append(dispatcherLine(n, d, now));
+  box.replaceChildren(ul);
 }
 
 // The sidebar: the two views, then each project, each with what waits for the person there.
@@ -993,6 +1060,14 @@ function nav() {
     const i = PROJECTS.indexOf(value);
     b.title = value === "all" ? "Every project" : name + (i < 9 ? " (g " + (i + 1) + ")" : "");
     if (n) { const d = el("span", "attn-dot"); d.title = n + " waiting for you"; b.append(d); }
+    // A dispatcher runs in this project: its slots in use, as a small marker.
+    const ds = value === "all" ? [] : DISP.get(value) || [];
+    if (ds.length) {
+      const m = el("span", "disp-mark");
+      m.append(icon("dispatch"), el("span", "", ds.reduce((a, d) => a + d.sessions.length, 0) + "/" + ds.reduce((a, d) => a + d.max, 0)));
+      m.title = (ds.length > 1 ? ds.length + " dispatchers running: " : "A dispatcher is running: ") + m.textContent.replace("/", " of ") + " slots in use";
+      b.append(m);
+    }
     b.append(el("span", "count", ts.length));
     b.addEventListener("click", () => { if (multi) setView(value); });
     if (value === "all") return b;
@@ -1461,6 +1536,7 @@ async function refresh() {
     lastEvents.set(n, Math.max(lastEvents.get(n) || 0, s.lastEvent));
     tasks.push(...tag(n, s.tasks));
     COLORS.set(n, s.color || null);
+    DISP.set(n, s.dispatchers || []);
     S.canApprove = s.canApprove;
   }
   render();
@@ -1479,7 +1555,11 @@ async function poll() {
     setLive(true);
     let changed = false;
     for (const [n, r] of rs) if (r.events.length) { lastEvents.set(n, r.lastEvent); changed = true; }
+    // A dispatcher that started or exited wrote no event: every poll carries the running ones.
+    let moved = false;
+    for (const [n, r] of rs) if (r.dispatchers && dispKey(r.dispatchers) !== dispKey(DISP.get(n) || [])) { DISP.set(n, r.dispatchers); moved = true; }
     if (changed) await refresh();
+    else if (moved) { nav(); renderDispatchers(Date.now()); }
   } catch { setLive(false); }
   setTimeout(poll, 2000);
 }
@@ -1647,6 +1727,7 @@ export function pageHtml(nonce: string, initial: unknown): string {
 <div class="seg" role="group" aria-label="Layout"><button type="button" data-mode="list" title="List (v)"><span class="label">List</span></button><button type="button" data-mode="board" title="Board (v)"><span class="label">Board</span></button></div>
 </header>
 <p class="notice" id="notice" hidden></p>
+<section class="dstrip" id="dispatchers" aria-label="Dispatchers"></section>
 <main class="content" id="content"></main>
 </div>
 </div>
