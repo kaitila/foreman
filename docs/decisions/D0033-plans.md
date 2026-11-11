@@ -1,6 +1,6 @@
 # D0033. Plans are ordered steps with a check each, and their progress comes from the tasks (2026-11-09)
 
-**Status:** Active
+**Status:** Amended by D0042
 
 **Context:** Foreman tracked tasks one by one. Work that spans several, like D0026's six publishing tasks (T-0083 to T-0088), was tied together only by `discovered_from` and a decision file, so nobody could ask the board "how far along is this?". Tasks have had a `parent` field since the start, but nothing reads it. This repo's own rule for plans is ordered steps with a check each, no dates or estimates.
 

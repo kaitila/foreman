@@ -1,7 +1,8 @@
 // Dispatcher (D0011): claim ready tasks, give each its own worktree and a worker
 // session, then a fresh verifier once it is submitted. `fm dispatch` runs it.
 // - At most `max` sessions at once (workers and verifiers both count).
-// - Never two tasks with overlapping declared paths in flight at once.
+// - Never two tasks with overlapping declared paths in flight at once: it starts a task only
+//   when waitsOn (waiting.ts) is empty, the rule next_tasks and claim read too.
 // - Each session's lease is pinned to its PID: alive keeps the claim, dead releases it.
 // - Workers and verifiers run as `claude --bg` sessions the person sees in `claude agents`
 //   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
@@ -11,7 +12,8 @@ import { join } from "node:path";
 import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
 import { type DispatcherSession, registerDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
-import { loadConfig, loadShared, pathsOverlap } from "./policy";
+import { loadConfig } from "./policy";
+import { reasonText, waitsOn } from "./waiting";
 import { removeFinishedSessions } from "./janitor";
 
 /** What the dispatcher needs back from a session. */
@@ -105,8 +107,7 @@ export function gitWorktree(base = "origin/main"): WorktreeMaker {
   };
 }
 
-/** Tasks whose paths are taken: someone is working on them or their PR is being checked. */
-export const ACTIVE: Status[] = ["claimed", "in_progress", "in_review", "verifying"];
+export { ACTIVE } from "./waiting";
 
 const CLI = join(import.meta.dir, "cli.ts");
 
@@ -242,11 +243,6 @@ export interface SessionRecord {
   error?: string;
 }
 
-/** Overlap of two tasks' declared paths, or none. Paths that are both shared don't count (D0037, D0043). */
-function clashes(t: Task, others: Task[], shared: string[]): Task | undefined {
-  return others.find((o) => o.id !== t.id && pathsOverlap(t.paths, o.paths, shared));
-}
-
 export class Dispatcher {
   readonly max: number;
   private running = new Map<string, { role: Role; done: Promise<void>; rec: SessionRecord }>();
@@ -342,20 +338,17 @@ export class Dispatcher {
     // Every in_review task gets a verifier, whoever submitted it; --once only limits new workers.
     if (this.opts.verifyOnly || (this.opts.once && !this.first)) return;
     this.first = false;
-    const active = this.f.list({ status: ACTIVE });
-    // Read each pass, and only when a task is ready, so a change to foreman.json on main needs no restart.
-    let shared: string[] | undefined;
     for (const t of this.f.ready("agent")) {
       if (!free()) break;
       if (this.running.has(t.id) || this.triedRole(t.id, "worker")) continue;
-      shared ??= loadShared(this.f.root);
-      const clash = clashes(t, active, shared);
-      if (clash) {
-        this.log(`${t.id} waits: its paths overlap ${clash.id}'s`);
+      // Asked again for each task, so a worker started a moment ago in this pass counts.
+      // What is left for a claimable task is an overlap with a task in flight (waiting.ts).
+      const waits = waitsOn(this.f, t.id);
+      if (waits.length) {
+        this.log(`${t.id} waits: ${reasonText(waits[0]!)}`);
         continue;
       }
-      const started = this.startWorker(t);
-      if (started) active.push(started);
+      this.startWorker(t);
     }
   }
 

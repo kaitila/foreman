@@ -6,6 +6,13 @@ import { type Actor, type Foreman, ForemanError, type Task } from "../core";
 
 /** Every flag of every command: parseArgs wants them in one table. */
 export function parse(argv: string[]) {
+  // `show --path` takes no value, but --path is a glob flag elsewhere: take it out before parsing.
+  const treeOnly = argv.find((a) => !a.startsWith("-")) === "show" && argv.includes("--path");
+  const parsed = parseFlags(treeOnly ? argv.filter((a) => a !== "--path") : argv);
+  return { ...parsed, values: { ...parsed.values, treeOnly } };
+}
+
+function parseFlags(argv: string[]) {
   return parseArgs({
     args: argv,
     allowPositionals: true,
@@ -35,6 +42,7 @@ export function parse(argv: string[]) {
       out: { type: "string" },
       title: { type: "string" },
       "remove-check": { type: "string", multiple: true },
+      unblock: { type: "string", multiple: true },
       "add-path": { type: "string", multiple: true },
       port: { type: "string" },
       queue: { type: "boolean" },

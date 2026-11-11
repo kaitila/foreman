@@ -5,6 +5,7 @@ import type { Database } from "bun:sqlite";
 import { type Config, gitPolicy, loadConfig, highestOnDisk, isProtected, mayTouchProtected, type Policy, prRepo } from "./policy";
 import { dbPath, openDb, repoRoot } from "./store";
 import { VERSION } from "./kit/paths";
+import { cycleThrough, holdsClaim, reasonText, snapshot, waitsOn } from "./waiting";
 
 export type Risk = "auto" | "review" | "human";
 export type Status =
@@ -182,6 +183,9 @@ export interface EditInput {
   /** Add paths (the one change a holder may make while working). */
   addPaths?: string[];
   risk?: Risk;
+  /** Tasks this one must wait for. Only on a draft or ready task; a cycle is refused. */
+  addBlockedBy?: string[];
+  removeBlockedBy?: string[];
 }
 
 export interface CreateInput {
@@ -256,12 +260,14 @@ export class Foreman {
     return (rows as Row[]).map(toEvent);
   }
 
-  /** Ready tasks whose blockers are all done. Unknown blockers count as not done (fail closed). */
+  /**
+   * Ready tasks this kind of actor can claim now: nothing in waitsOn (waiting.ts) holds
+   * the claim. Blockers done (unknown ones count as not done: fail closed), every earlier
+   * step of its plan done (D0042), and for an agent, not risk "human".
+   */
   ready(forKind: Actor["kind"] = "agent"): Task[] {
-    const done = new Set(this.list({ status: ["done"] }).map((t) => t.id));
-    return this.list({ status: ["ready"] }).filter(
-      (t) => t.blockedBy.every((b) => done.has(b)) && (forKind === "human" || t.risk !== "human"),
-    );
+    const s = snapshot(this);
+    return s.order.filter((t) => t.status === "ready" && holdsClaim(waitsOn(s, t.id), forKind).length === 0);
   }
 
   // ---- writing (every write is one IMMEDIATE transaction plus an event) ----
@@ -376,12 +382,12 @@ export class Foreman {
       const t = id ? this.get(id) : this.ready(actor.kind)[0];
       if (!t) throw new ForemanError("none_ready", "no ready task to claim");
       this.expect(t, ["ready"], "claim");
-      if (t.risk === "human" && actor.kind !== "human") {
+      // The same answer next_tasks and the dispatcher get (waiting.ts).
+      const held = holdsClaim(waitsOn(this, t.id), actor.kind);
+      if (held.some((r) => r.kind === "human")) {
         throw new ForemanError("human_only", `${t.id} is risk "human": a person does it, not an agent`);
       }
-      if (!this.ready("human").some((r) => r.id === t.id)) {
-        throw new ForemanError("blocked", `${t.id} is waiting on ${t.blockedBy.join(", ")}`);
-      }
+      if (held.length) throw new ForemanError("blocked", `${t.id} can't be claimed yet: ${held.map(reasonText).join("; ")}`);
       this.set(t.id, {
         status: "claimed",
         assignee: actor.name,
@@ -562,7 +568,8 @@ export class Foreman {
    * edit a claimed task. Once claimed, the holder may only add paths (work turned out to
    * touch more files: the diff still decides who signs off). Nobody edits a task under
    * review: send it back with rework first. Only a person lowers risk, and a ready task
-   * keeps at least one check.
+   * keeps at least one check. What it is blocked by changes only before work starts,
+   * and never into a cycle.
    */
   edit(id: string, actor: Actor, c: EditInput): Task {
     return this.tx(() => {
@@ -598,6 +605,18 @@ export class Foreman {
       }
       let paths = c.paths ?? t.paths;
       if (c.addPaths?.length) paths = [...new Set([...paths, ...c.addPaths])];
+      let blockedBy = t.blockedBy;
+      if (c.addBlockedBy?.length || c.removeBlockedBy?.length) {
+        if (!open) throw new ForemanError("bad_status", `can't change what ${id} waits on: it is ${t.status} (only a draft or ready task)`);
+        const gone = (c.removeBlockedBy ?? []).filter((b) => !blockedBy.includes(b));
+        if (gone.length) throw new ForemanError("invalid", `${id} isn't blocked by ${gone.join(", ")}`);
+        blockedBy = blockedBy.filter((b) => !c.removeBlockedBy?.includes(b));
+        for (const b of c.addBlockedBy ?? []) {
+          if (b === id) throw new ForemanError("cycle", `${id} can't be blocked by itself`);
+          this.get(b);
+        }
+        blockedBy = [...new Set([...blockedBy, ...(c.addBlockedBy ?? [])])];
+      }
       const fields: Record<string, string | number | null> = {};
       if (c.title !== undefined) {
         if (!c.title.trim()) throw new ForemanError("invalid", "a task needs a title");
@@ -607,8 +626,14 @@ export class Foreman {
       if (c.risk) fields.risk = c.risk;
       if (JSON.stringify(acceptance) !== JSON.stringify(t.acceptance)) fields.acceptance = JSON.stringify(acceptance);
       if (JSON.stringify(paths) !== JSON.stringify(t.paths)) fields.paths = JSON.stringify(paths);
+      if (JSON.stringify(blockedBy) !== JSON.stringify(t.blockedBy)) fields.blocked_by = JSON.stringify(blockedBy);
       if (!Object.keys(fields).length) return t;
       this.set(id, fields);
+      if (fields.blocked_by) {
+        // Thrown inside the transaction, so the change is undone. Plan steps count: they gate too.
+        const loop = cycleThrough(this, id);
+        if (loop) throw new ForemanError("cycle", `that would make a cycle: ${loop.join(" waits on ")}`);
+      }
       this.event(id, actor, "edited", c);
       return this.get(id);
     });

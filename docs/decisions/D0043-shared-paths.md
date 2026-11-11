@@ -7,7 +7,7 @@
 **Chosen:**
 - **`sharedPaths` in `foreman.json`:** a list of paths or globs. In `pathsOverlap` (`packages/foreman/src/policy.ts`), a pair of globs that both stay inside shared paths is not an overlap. `docs/decisions/**` is always on the list (D0037), and the repo's list adds to it.
 - **Inside means:** a plain path that a shared glob matches, the same glob, or any glob under a shared whole folder (`docs/changelog/**`). A glob that reaches past the shared path (`docs/**`, `**/*.md`) still overlaps it, and a task that declares no paths still overlaps every task.
-- **Read on each dispatcher pass**, from main like the rest of `foreman.json`, so a change needs no restart. A value that isn't a list of globs stops the pass with an error naming the key.
+- **One rule reads it:** `waitsOn` in `packages/foreman/src/waiting.ts` ([D0042](D0042-plan-steps-gate.md)), so the dispatcher, `fm next`, `fm list` and `fm show` agree on whether a task waits for paths. It is read from main like the rest of `foreman.json`, each time the rule runs and two tasks' paths overlap at all, so a change needs no restart. A value that isn't a list of globs is refused with an error naming the key.
 - **Here:** `packages/foreman/README.md` and `AGENTS.md`.
 - **The CLI is split by command** for the same reason: `packages/foreman/src/cli.ts` was declared by 11 of those 45 tasks. Each command, or small group of them, has its own file in `src/cli/` with its `fm help` lines, so two tasks changing different commands declare different files. That overlap was real, so it is removed, not declared shared.
 
