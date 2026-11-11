@@ -188,6 +188,69 @@ describe("fm serve --queue merges without a click", () => {
   });
 });
 
+describe("the --queue loop cleans finished tasks' sessions (T-0099)", () => {
+  test("cleanSessions runs after each project's pass, with that project's foreman, and sees the merge the pass made", async () => {
+    const gh = fakeGitHub();
+    const fa = foreman(gh), fb = foreman(gh);
+    const a = approvedTask(fa, gh, 21);
+    const order: string[] = [];
+    const cleaned: { project: string; status: string }[] = [];
+    start({
+      projects: [
+        { name: "alpha", foreman: fa, dir: "/a" },
+        { name: "beta", foreman: fb, dir: "/b" },
+      ],
+      port: 0,
+      approver: null,
+      queue: { run: gh.run, settleSeconds: 0, sleep: () => Promise.resolve() },
+      autoQueue: {
+        actor: queueActor,
+        intervalMs: 20,
+        onPass: (p) => order.push(`pass ${p}`),
+        cleanSessions: (f) => {
+          const project = f === fa ? "alpha" : f === fb ? "beta" : "?";
+          order.push(`clean ${project}`);
+          cleaned.push({ project, status: project === "alpha" ? f.get(a).status : "-" });
+        },
+      },
+    });
+    expect(await until(() => cleaned.length >= 4)).toBe(true);
+    expect(order.slice(0, 4)).toEqual(["pass alpha", "clean alpha", "pass beta", "clean beta"]);
+    // The pass merged alpha's task, then the clean saw it done: its sessions can go in the same tick.
+    expect(cleaned[0]).toEqual({ project: "alpha", status: "done" });
+  });
+
+  test("a cleanSessions that throws doesn't stop the loop: later passes still run and merge", async () => {
+    const gh = fakeGitHub();
+    const f = foreman(gh);
+    const passes: QueueEntry[][] = [];
+    let cleans = 0;
+    start({
+      foreman: f,
+      port: 0,
+      approver: null,
+      queue: { run: gh.run, settleSeconds: 0, sleep: () => Promise.resolve() },
+      autoQueue: {
+        actor: queueActor,
+        intervalMs: 20,
+        onPass: (_p, e) => passes.push(e),
+        onError: () => {
+          throw new Error("onError should not see a cleanSessions failure");
+        },
+        cleanSessions: () => {
+          cleans++;
+          throw new Error("claude rm exploded");
+        },
+      },
+    });
+    expect(await until(() => cleans >= 1)).toBe(true);
+    const id = approvedTask(f, gh, 22);
+    expect(await until(() => f.get(id).status === "done")).toBe(true);
+    expect(await until(() => cleans >= 3)).toBe(true);
+    expect(passes.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("a tick and a click never run two passes on one project at once", () => {
   /** A board whose settle wait blocks while `hold` is on, until the test calls `release`. */
   function heldBoard(approver: Actor | null, intervalMs: number) {

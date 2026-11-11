@@ -34,10 +34,14 @@ Fan out only for a **large** change (a new feature, or many files across areas) 
 
 They split the work by path: test-writer edits tests and is the only one that runs them; docs-writer edits docs; reviewer only reads. Don't edit their paths or run the tests while they work.
 
-## 4. Fold in their reports (if you fanned out)
+A change to what the user sees (a page, a component, styles, the tokens file): spawn **design-critic** too, even when the change is too small to fan out the other three. The verifier doesn't look at the pages, so nobody repeats this review. Give it the task and the pages you changed. If you're fanning out, spawn it in the same message.
+
+## 4. Fold in their reports (if you spawned agents)
+- A finding from design-critic: fix it with the token it names, rerun the design lint, and message it (by name) to look again if the fix changed the layout.
 - A code bug from test-writer or a finding from reviewer: fix it, then send test-writer a message (by name, so it keeps its context) to rerun, until the tests pass.
 - Reviewer says "needs security-review", or you touched auth, sessions, secrets, CI or deploy files: run the `security-review` skill and fix what it confirms.
 - docs-writer says the code looks wrong: fix the code, or tell it to document the behaviour as intended.
+- Once a helper's report is folded in and you won't message it again, stop it (by name), so finished helpers don't crowd the person's sessions list.
 - Commit everything. `report_progress`.
 
 ## 5. Gate
