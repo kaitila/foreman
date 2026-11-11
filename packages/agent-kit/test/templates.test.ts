@@ -92,4 +92,10 @@ describe("well-formed", () => {
     expect(ship).toContain("never verify or approve your own task");
     expect(ship).not.toMatch(/record_verdict|start_verify|foreman approve/);
   });
+  test("ship spawns the design-critic for a UI change, and folds in what it finds", () => {
+    const ship = readFileSync(join(TEMPLATES, "claude/skills/ship/SKILL.md"), "utf8");
+    const step = (n: number) => ship.split(/^## /m).find((s) => s.startsWith(`${n}. `)) ?? "";
+    expect(step(3)).toMatch(/what the user sees[^\n]*spawn \*\*design-critic\*\*[^\n]*even when the change is too small to fan out/);
+    expect(step(4)).toMatch(/finding from design-critic[^\n]*fix it/);
+  });
 });
