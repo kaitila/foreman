@@ -3,10 +3,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { type Actor, Foreman, ForemanError, type Status } from "./core";
+import { type Actor, Foreman, ForemanError, type Status, type Task } from "./core";
 import { toMarkdown } from "./export";
 import { VERSION } from "./kit/paths";
 import { planText, Plans } from "./plans";
+import { holdsUp, pathOf, snapshot, waitingText, waitShort } from "./waiting";
 
 const STATUSES = [
   "draft", "ready", "claimed", "in_progress", "in_review", "verifying",
@@ -36,21 +37,42 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
   const id = { id: z.string().describe("Task id, e.g. T-0001") };
   const plans = new Plans(f);
   const step = z.object({ title: z.string(), check: z.string().describe("What shows the step is done") });
+  /** Tasks with the short form of what each waits on (waiting.ts), where it waits. */
+  const withWaits = (ts: Task[]) => {
+    const s = snapshot(f);
+    return ts.map((t) => {
+      const waits = waitShort(s, t.id);
+      return waits ? { ...t, waits } : t;
+    });
+  };
 
   server.registerTool(
     "list_tasks",
-    { description: "List tasks, optionally by status.", inputSchema: { status: z.array(z.enum(STATUSES)).optional() } },
-    wrap(({ status }: { status?: Status[] }) => f.list({ status })),
+    {
+      description: "List tasks, optionally by status. A task that waits carries `waits`: what it waits on and where that path ends, e.g. \"waits: T-0112 <- T-0110 (in progress)\". show_task has the whole path.",
+      inputSchema: { status: z.array(z.enum(STATUSES)).optional() },
+    },
+    wrap(({ status }: { status?: Status[] }) => withWaits(f.list({ status }))),
   );
   server.registerTool(
     "next_tasks",
-    { description: "Ready tasks whose blockers are done: what an agent can claim now.", inputSchema: {} },
-    wrap(() => f.ready("agent")),
+    {
+      description: "Ready tasks an agent can claim now: blockers done and every earlier step of its plan done. `waits` on one means its paths overlap a task in flight: the dispatcher holds it back until that finishes.",
+      inputSchema: {},
+    },
+    wrap(() => withWaits(f.ready("agent"))),
   );
   server.registerTool(
     "show_task",
-    { description: "One task as markdown: spec, acceptance checks, history.", inputSchema: id },
-    wrap(({ id }: { id: string }) => toMarkdown(f.get(id), f.events(id), plans.placement(id))),
+    {
+      description:
+        "One task as markdown: spec, acceptance checks, history. Then what it waits on, as a tree followed to the end (blockers, earlier plan steps, overlapping paths, a person), what has to move first, and the tasks it holds up.",
+      inputSchema: id,
+    },
+    wrap(({ id }: { id: string }) => {
+      const s = snapshot(f);
+      return `${toMarkdown(f.get(id), f.events(id), plans.placement(id))}\n${waitingText(pathOf(s, id), holdsUp(s, id))}`;
+    }),
   );
   server.registerTool(
     "create_task",
@@ -144,7 +166,7 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
   server.registerTool(
     "claim_task",
     {
-      description: "Claim a task (or the next ready one if id is omitted). Keep it alive with heartbeat or progress.",
+      description: "Claim a task (or the next ready one if id is omitted). Refused while it waits on a blocker or an earlier step of its plan. Keep it alive with heartbeat or progress.",
       inputSchema: { id: z.string().optional(), leaseMinutes: z.number().int().positive().optional() },
     },
     wrap(({ id, leaseMinutes }: { id?: string; leaseMinutes?: number }) => f.claim(id ?? null, me, leaseMinutes)),
@@ -206,7 +228,7 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
     "edit_task",
     {
       description:
-        "Change a task. Before work starts, anything (only a person lowers risk). While you hold it, you may only add paths, when the work turns out to touch more files. Not while under review: use rework_task first.",
+        "Change a task. Before work starts, anything (only a person lowers risk), what it is blocked by included (a cycle is refused). While you hold it, you may only add paths, when the work turns out to touch more files. Not while under review: use rework_task first.",
       inputSchema: {
         ...id,
         title: z.string().optional(),
@@ -216,6 +238,8 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
         paths: z.array(z.string()).optional(),
         addPaths: z.array(z.string()).optional(),
         risk: z.enum(["auto", "review", "human"]).optional(),
+        addBlockedBy: z.array(z.string()).optional().describe("Tasks it must wait for (draft or ready tasks only)"),
+        removeBlockedBy: z.array(z.string()).optional(),
       },
     },
     wrap(({ id, ...c }: { id: string } & Parameters<Foreman["edit"]>[2]) => f.edit(id, me, c)),

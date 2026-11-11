@@ -1,6 +1,6 @@
 # D0011. Foreman runs the loop: dispatch workers, launch fresh verifiers, merge one at a time, reap (2026-10-31)
 
-**Status:** Amended by D0012, D0022, D0037, D0041
+**Status:** Amended by D0012, D0022, D0037, D0041, D0042
 
 **Context:** Up to M5, a person (or one session acting as orchestrator) did by hand what foreman should do: pick tasks, start a worker in a worktree, start a fresh verifier, merge approved PRs in order, and clean up. Step M6 of the [research plan](../research-plan.md). It borrows from [R5.1](../research/R5.1-prior-art.md), [R5.1b](../research/R5.1b-delegatus-yylo.md) and [R2](../research/R2-claude-code-codex.md).
 

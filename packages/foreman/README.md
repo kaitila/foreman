@@ -47,7 +47,9 @@ fm help
 
 foreman add "Add a stage filter" --check "cmd: bun test" --check "the filter shows on /investors" \
   --path "web/src/pages/**" --risk review --ready
-foreman next                       # what can be claimed now
+foreman next                       # what can be claimed now (blockers done, earlier plan steps done)
+foreman show T-0003                # the task, then what it waits on, followed to the end, and what it holds up
+foreman show T-0003 --path         # only that tree
 foreman claim                      # claim the next ready task (or: foreman claim T-0001)
 foreman progress T-0001 --branch t-0001 --note "filter wired"
 foreman submit T-0001 --pr https://github.com/me/repo/pull/12 --summary "..."
@@ -57,6 +59,7 @@ foreman approve                    # people only, in a terminal: everything wait
 foreman approve T-0001 T-0002      # or just these
 foreman merged T-0001              # refused if the PR moved after it was verified
 foreman edit T-0001 --add-path "docs/**"   # while working: the holder may only add paths
+foreman edit T-0003 --blocked-by T-0001    # before work starts: add a blocker (--unblock removes one; a cycle is refused)
 foreman rework T-0001 --reason "gap found after the verdict"   # back to ready; verify again (an agent can't, once a person approved)
 foreman reserve decision           # next free Dnnnn, so parallel PRs never clash
 foreman policy --actor worker-T-1  # the deny rules foreman.json gives that agent (see Role rules)
@@ -75,9 +78,38 @@ fm serve --queue                   # the board, plus the merge queue every 60 s 
 
 Every command takes `--json`.
 
+## Why a task waits
+
+One function, `waitsOn` in `src/waiting.ts`, says what a draft or ready task waits on ([D0042](../../docs/decisions/D0042-plan-steps-gate.md)). `next_tasks`, `claim` and the dispatcher all read it, so they can't disagree.
+
+- **The direct reasons:** `draft` (not marked ready), `blocked` (a `blockedBy` task that isn't done), `step` (an earlier step of its plan isn't done), `paths` (its paths overlap a task that is claimed, in progress, in review or verifying) and `human` (risk human: a person does it). None means it can start now.
+- **Who each one holds:** `draft`, `blocked` and `step` refuse a claim by anyone; `human` refuses an agent. `paths` holds only the dispatcher: `fm next` still lists the task, with the overlap beside it, and a person or their own session may claim it knowingly.
+- **The whole path:** `fm show <task>` and `show_task` follow those reasons through the tasks they name, to the end, and print a tree. Each place the path stops says who has to act:
+  - `running`: a worker or verifier holds it; names the holder and whether its session is live.
+  - `needs a person`: verified and waiting for approval, risk human, or a draft nobody marked ready.
+  - `can start`: nothing has picked it up yet (a ready task with nothing to wait on, a submitted task with no verifier, an approved task not yet merged).
+  - `stuck`: failed verification or sent back and waiting for a new run, a blocker that was cancelled or doesn't exist, or a cycle.
+
+  ```
+  ## Waits on
+  T-0004  ready  Publish the docs
+    T-0003  ready  Release workflow  [blocker]
+      T-0002  ready  Rename the packages  [step 1 of P-0001 "Rename"]
+        T-0001  in progress  Move the sources  [paths overlap]  => running: T-0001 is finished by worker-T-0001 (in progress, session live)
+
+  moves when: T-0001 is finished by worker-T-0001 (in progress, session live)
+  depth: 3
+  ```
+
+  A task reached twice is shown once in full, then as a reference. A loop is reported as a cycle and not followed.
+- **The reverse:** under the tree, `fm show` lists everything the task holds up, the tasks that wait on it directly and the ones that wait through others, with a count.
+- **In lists:** `fm list`, `list_tasks` and `next_tasks` carry the short form on a waiting task, the first reason and where its path ends: `waits: T-0112 <- T-0110 (in progress)`.
+- **As data:** `fm show --json` has the tree as `waits` (`root`, `leaves`, `depth`, `summary`) and the reverse as `holdsUp`; `fm show --path --json` is the tree alone.
+- **Changing blockers:** `fm edit --blocked-by` / `--unblock` and `edit_task` `addBlockedBy` / `removeBlockedBy`, on a draft or ready task. A change that would make a cycle is refused (`cycle`).
+
 ## Plans
 
-A plan ties several tasks into one piece of work ([D0033](../../docs/decisions/D0033-plans.md)). It has a title, a goal and **ordered steps, each with a check**: the statement that says the step is done. Each task sits in at most one plan, at one step; tasks that can run side by side share a step.
+A plan ties several tasks into one piece of work ([D0033](../../docs/decisions/D0033-plans.md)). It has a title, a goal and **ordered steps, each with a check**: the statement that says the step is done. Each task sits in at most one plan, at one step; tasks that can run side by side share a step. **The order holds** ([D0042](../../docs/decisions/D0042-plan-steps-gate.md)): a task can't be claimed, by `next_tasks`, `claim_task` or the dispatcher, until every task in the earlier steps that isn't cancelled is done. So a plan's tasks don't need `blockedBy` to repeat the step order. A cancelled plan holds nothing back, and a task can't go in a step earlier than a task it is blocked by.
 
 ```sh
 fm plan new "Publish foreman" --goal "Ship it to npm" \
@@ -291,6 +323,7 @@ What must hold:
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.
+- **What it starts:** only a ready task with nothing to wait on, by the rule everything else reads (see [Why a task waits](#why-a-task-waits)): blockers done, every earlier step of its plan done, not risk human, no overlap. For a task it holds back it logs the reason.
 - **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task. Paths that both stay inside `docs/decisions/` don't count: new decision files take reserved numbers and the index is generated (D0037).
 - **A worker per task:** the dispatcher claims the task as `worker-<task>` and makes `.claude/worktrees/<task>` on a new branch `<task>-<title>` from `origin/main`. It records both with `progress`, then starts a worker with the `ship` skill. A task back for rework keeps its worktree, or its branch if the worktree is gone. If the worktree can't be made, the task goes back to `ready`. A newly made worktree is prepared once with the `setup` command from `foreman.json` (e.g. `"setup": "bun install && bun install --cwd web"`) before the worker starts, and the prompt says so; a failed setup is reported to the worker, not fatal. Without `setup` the prompt tells the session to run `bun install`.
 - **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists, whoever submitted them (an interactive session, a person), with or without `--once`.
