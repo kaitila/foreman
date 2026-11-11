@@ -1,8 +1,10 @@
 // Plans (D0033): ordered steps, each with a check, and the tasks that make each step.
+// The order holds: a task can't be claimed until every earlier step is done (D0042, waiting.ts).
 // Progress is never stored: it comes from the tasks' statuses every time it's read.
 // The tables are additive (store.ts), so an older foreman on the same database ignores them.
 import { type Actor, type CreateInput, type Foreman, ForemanError, type Status, type Task } from "./core";
 import { roleOf } from "./roles";
+import { cycleThrough } from "./waiting";
 
 export type StepState = "empty" | "waiting" | "in_progress" | "done";
 export type PlanState = "active" | "done" | "cancelled";
@@ -285,6 +287,9 @@ export class Plans {
       this.db
         .query(`INSERT OR REPLACE INTO plan_tasks (task_id, plan_id, step) VALUES (?, ?, ?)`)
         .run(taskId, planId, step);
+      // Steps gate (D0042): a task blocked by one in a later step would wait on itself.
+      const loop = cycleThrough(this.f, taskId);
+      if (loop) throw new ForemanError("cycle", `${taskId} can't go in step ${step} of ${planId}: that would make a cycle (${loop.join(" waits on ")})`);
       if (was && was.plan !== planId) this.touch(was.plan);
       this.touch(planId);
       this.event(taskId, actor, "planned", { plan: planId, step, ...(was ? { from: was } : {}) });

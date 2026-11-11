@@ -20,6 +20,7 @@ import { listProjects, recordProject } from "./projects";
 import { mergeQueue, type QueueEntry } from "./queue";
 import { checkMachine, formatItems, realEnv } from "./setup";
 import { repoRoot } from "./store";
+import { holdsUp, pathOf, pathText, snapshot, waitingText, waitShort } from "./waiting";
 
 function num(v: string | undefined, fallback: number, flag: string): number {
   if (v === undefined) return fallback;
@@ -53,14 +54,20 @@ Tasks
   add <title> [--spec md] [--check "cmd: bun test"]... [--path glob]... [--risk auto|review|human]
               [--parent T-1] [--blocked-by T-2]... [--from T-3] [--plan P-1 --step n] [--ready]
   ready-up <id>                 draft -> ready (needs at least one check)
-  list [--status s]... [--mine]  (* marks a task with a live session; ends with a line per running dispatcher)
-  next                          ready tasks whose blockers are done
-  show <id>                     task, checks and history
+  list [--status s]... [--mine]  (* marks a task with a live session; a waiting task says what it waits on
+                                and where that ends: "waits: T-2 <- T-1 (in progress)"; ends with a line per
+                                running dispatcher)
+  next                          ready tasks you can claim now: blockers done, earlier plan steps done
+  show <id> [--path]            task, checks and history, then what it waits on as a tree followed to the
+                                end (blockers, earlier plan steps, overlapping paths, a person), what moves
+                                it, and the tasks it holds up; --path: only the tree
   logs <id> [--role worker|verifier] [-f]
                                 what the task's dispatched sessions did: tool calls, text, results, cost;
                                 -f keeps printing new lines while a session runs
   edit <id> [--title t] [--spec md] [--check "cmd: ..."]... [--remove-check c2]... [--path g]... [--add-path g]... [--risk r]
-                                before work: anything; while claimed: the holder may only --add-path
+                                [--blocked-by T-2]... [--unblock T-2]...
+                                before work: anything (a blocker that would make a cycle is refused);
+                                while claimed: the holder may only --add-path
   rework <id> --reason text     send a submitted, verified or approved task back to work (verify again after)
   cancel <id> --reason text
   intake <request> [--ready] [--model m] [--budget usd]
@@ -146,6 +153,11 @@ function line(t: Task): string {
   return `${t.id}  ${t.status.padEnd(14)} ${t.risk.padEnd(6)} ${t.title}${who}`;
 }
 
+/** The task's line, with what it waits on when it waits. */
+function waiting(t: Task, waits: string | null | undefined): string {
+  return waits ? `${line(t)}  (${waits})` : line(t);
+}
+
 function parseResult(s: string): CheckResult {
   const m = /^([^:]+):(pass|fail):(.*)$/s.exec(s);
   if (!m) throw new ForemanError("invalid", `--result must be check:pass|fail:evidence, got "${s}"`);
@@ -154,8 +166,10 @@ function parseResult(s: string): CheckResult {
 
 /** Returns the exit code, or null when the process must keep running (the MCP server). */
 export async function main(argv: string[]): Promise<number | null> {
+  // `show --path` takes no value, but --path is a glob flag elsewhere: take it out before parsing.
+  const treeOnly = argv.find((a) => !a.startsWith("-")) === "show" && argv.includes("--path");
   const { values: o, positionals } = parseArgs({
-    args: argv,
+    args: treeOnly ? argv.filter((a) => a !== "--path") : argv,
     allowPositionals: true,
     options: {
       json: { type: "boolean" },
@@ -183,6 +197,7 @@ export async function main(argv: string[]): Promise<number | null> {
       out: { type: "string" },
       title: { type: "string" },
       "remove-check": { type: "string", multiple: true },
+      unblock: { type: "string", multiple: true },
       "add-path": { type: "string", multiple: true },
       port: { type: "string" },
       queue: { type: "boolean" },
@@ -481,18 +496,26 @@ export async function main(argv: string[]): Promise<number | null> {
       const live = new Set(ts.filter((t) => hasLiveSession(f, t.id)).map((t) => t.id));
       // One line per running dispatcher at the end (D0041). --json stays the task array: fm dispatchers --json has them.
       const running = o.json ? [] : runningDispatchers(f).map((d) => `dispatcher ${dispatcherLine(d)}`);
-      const text = [ts.map((t) => `${live.has(t.id) ? "*" : " "} ${line(t)}`).join("\n") || "no tasks", ...running].join("\n");
-      return out(ts.map((t) => ({ ...t, live: live.has(t.id) })), text), 0;
+      const s = snapshot(f);
+      const waits = new Map(ts.map((t) => [t.id, waitShort(s, t.id)]));
+      const text = [ts.map((t) => `${live.has(t.id) ? "*" : " "} ${waiting(t, waits.get(t.id))}`).join("\n") || "no tasks", ...running].join("\n");
+      return out(ts.map((t) => ({ ...t, live: live.has(t.id), waits: waits.get(t.id) ?? null })), text), 0;
     }
     case "next": {
-      const ts = f.ready(me.kind);
-      return out(ts, ts.map(line).join("\n") || "nothing ready"), 0;
+      // Claimable now. One the dispatcher would still hold back (overlapping paths) says so.
+      const s = snapshot(f);
+      const ts = f.ready(me.kind).map((t) => ({ ...t, waits: waitShort(s, t.id) }));
+      return out(ts, ts.map((t) => waiting(t, t.waits)).join("\n") || "nothing ready"), 0;
     }
     case "show": {
       const t = f.get(need(0, "task id"));
+      const s = snapshot(f);
+      const path = pathOf(s, t.id);
+      if (treeOnly) return out(path, pathText(path)), 0;
+      const held = holdsUp(s, t.id);
       const ev = f.events(t.id);
       const placed = new Plans(f).placement(t.id);
-      return out({ ...t, plan: placed, events: ev }, toMarkdown(t, ev, placed)), 0;
+      return out({ ...t, plan: placed, events: ev, waits: path, holdsUp: held }, `${toMarkdown(t, ev, placed)}\n${waitingText(path, held)}`), 0;
     }
     case "plan": {
       const plans = new Plans(f);
@@ -559,6 +582,8 @@ export async function main(argv: string[]): Promise<number | null> {
             paths: o.path,
             addPaths: o["add-path"],
             risk,
+            addBlockedBy: o["blocked-by"],
+            removeBlockedBy: o.unblock,
           }),
         ),
         0
