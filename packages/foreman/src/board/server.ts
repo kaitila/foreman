@@ -235,7 +235,6 @@ export function startBoard(opts: BoardOptions): Board {
       waiting: ts.filter((t) => t.status === "needs_approval").length,
       toMerge: ts.filter((t) => t.status === "approved").length,
       total: ts.length,
-      dispatchers: runningDispatchers(c.f).length,
     };
   };
 

@@ -92,10 +92,9 @@ describe("the board's state carries the running dispatchers", () => {
         sessions: [{ task: ids.a, role: "worker" }, { task: ids.b, role: "verifier" }],
       },
     ]);
-    // Per project: the other project's state has none, and the list of projects counts them.
+    // Per project: the other project's state has none.
     expect((await api("/api/p/busy/tasks")).body.dispatchers).toHaveLength(1);
     expect((await api("/api/p/idle/tasks")).body.dispatchers).toEqual([]);
-    expect((await api("/api/projects")).body.projects.map((p: any) => [p.name, p.dispatchers])).toEqual([["busy", 1], ["idle", 0]]);
 
     // It exits cleanly (its record removed): gone from the next read.
     unregisterDispatcher(busy, 7001);
@@ -107,7 +106,6 @@ describe("the board's state carries the running dispatchers", () => {
     alive.delete(7002);
     expect((await api("/api/tasks")).body.dispatchers).toEqual([]);
     expect(busy.db.query(`SELECT count(*) AS n FROM dispatchers`).get()).toEqual({ n: 0 });
-    expect((await api("/api/projects")).body.projects[0].dispatchers).toBe(0);
   });
 
   test("the poll carries them too, since starting or exiting writes no event", async () => {
