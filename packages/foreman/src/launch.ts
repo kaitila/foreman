@@ -584,8 +584,9 @@ export function withoutForeman(env: Record<string, string>): Record<string, stri
 /**
  * The caller's env minus a parent session's variables, so `claude` doesn't think it is nested,
  * and minus foreman's, which Claude Code's background service would keep (T-0100).
+ * The janitor's `claude rm` uses it too (T-0099).
  */
-function callerEnv(): Record<string, string> {
+export function callerEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !STRIPPED_ENV.includes(k)) env[k] = v;
   return withoutForeman(env);

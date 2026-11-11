@@ -1,12 +1,13 @@
 // Background mode (D0022): `claude --bg` sessions watched through a fake
 // `claude agents --json --all` and a transcript the fake writes. No Claude Code runs.
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Actor, Foreman, type Task } from "../src/core";
+import { type Actor, type Event, Foreman, type Task } from "../src/core";
 import { branchFor, Dispatcher, launchModeFrom } from "../src/dispatch";
 import { toMarkdown } from "../src/export";
+import { janitor, removeFinishedSessions, SESSIONS_BACKOFF_MS, SESSIONS_PER_RUN, sessionsToRemove } from "../src/janitor";
 import {
   type AgentEntry,
   type BgCli,
@@ -19,7 +20,7 @@ import {
   summarizeTranscript,
   transcriptPath,
 } from "../src/launch";
-import { DEFAULT_PROTECTED, type Policy } from "../src/policy";
+import { DEFAULT_PROTECTED, type Policy, type Run } from "../src/policy";
 import { openDb } from "../src/store";
 
 const dir = mkdtempSync(join(tmpdir(), "foreman-bg-"));
@@ -342,6 +343,379 @@ describe("the janitor and background sessions", () => {
       ["claude", "rm", "abc00000"],
       ["claude", "rm", "abc00001"],
     ]);
+  });
+});
+
+describe("finished tasks' sessions leave the sessions list (T-0099)", () => {
+  const ada: Actor = { name: "ada", kind: "human" };
+  const janitorActor: Actor = { name: "janitor", kind: "agent" };
+  const ev = (type: string, data: Record<string, unknown>) => ({ id: 0, taskId: "T-1", at: 1, actor: "a", actorKind: "agent", type, data }) as Event;
+
+  test("sessionsToRemove: lease_pinned hex ids of 6+ chars, once each, minus the ones already removed", () => {
+    expect(
+      sessionsToRemove([
+        ev("lease_pinned", { pid: 1, session: "abc00000" }),
+        ev("lease_pinned", { pid: 2 }), // a print-mode session: no id
+        ev("lease_pinned", { pid: 3, session: "abc00000" }), // the same one again
+        ev("lease_pinned", { pid: 4, session: "abc1" }), // too short
+        ev("lease_pinned", { pid: 5, session: "not-hex-zz" }),
+        ev("lease_pinned", { pid: 6, session: "ABC00000" }), // not lower-case hex
+        ev("lease_pinned", { pid: 7, session: 1234567 }),
+        ev("lease_pinned", { pid: 8, session: "def00001" }),
+        ev("lease_pinned", { pid: 9, session: "fed00002" }),
+        ev("sessions_removed", { sessions: ["def00001"] }),
+        ev("claimed", { session: "aaa00003" }), // only lease_pinned names a session
+      ]),
+    ).toEqual(["abc00000", "fed00002"]);
+    expect(sessionsToRemove([])).toEqual([]);
+    expect(sessionsToRemove([ev("lease_pinned", { session: "abc00000" }), ev("sessions_removed", { sessions: ["abc00000"] })])).toEqual([]);
+  });
+
+  /** A foreman with tasks in each state, each with background sessions pinned. */
+  function setup() {
+    const root = fresh("sroot");
+    const policy: Policy = { protectedPaths: DEFAULT_PROTECTED, changedFiles: () => ["src/x.ts"] };
+    const f = new Foreman(openDb(":memory:"), root, () => Date.now(), policy, () => false);
+    const add = (title: string, path: string) => f.create({ title, acceptance: ["cmd: true"], paths: [path], risk: "auto", ready: true }, ada);
+    const actor = (role: string, id: string): Actor => ({ name: `${role}-${id}`, kind: "agent" });
+    /** Done, through a worker and a verifier session; its worktree is `worktree` (missing by default). */
+    const done = (worktree = join(root, "gone", "wt")) => {
+      const t = add("done", `src/d${n++}/**`);
+      const w = actor("worker", t.id), v = actor("verifier", t.id);
+      f.claim(t.id, w);
+      f.progress(t.id, w, { branch: `b-${t.id}`, worktree });
+      f.pinLease(t.id, w, 100, { session: `a0${t.id.slice(2)}00`, name: `${t.id} worker` });
+      f.submit(t.id, w, { pr: "https://example.com/pull/1" });
+      f.startVerify(t.id, v);
+      f.pinLease(t.id, v, 101, { session: `a0${t.id.slice(2)}01`, name: `${t.id} verifier` });
+      f.recordVerify(t.id, v, f.get(t.id).acceptance.map((c) => ({ check: c.id, pass: true, evidence: "ok" })));
+      f.merged(t.id, ada, "https://example.com/pull/1");
+      expect(f.get(t.id).status).toBe("done");
+      return t;
+    };
+    const cancelled = () => {
+      const t = add("cancelled", `src/c${n++}/**`);
+      const w = actor("worker", t.id);
+      f.claim(t.id, w);
+      f.pinLease(t.id, w, 102, { session: `b0${t.id.slice(2)}00`, name: `${t.id} worker` });
+      f.cancel(t.id, ada, "not needed");
+      return t;
+    };
+    const working = () => {
+      const t = add("working", `src/w${n++}/**`);
+      const w = actor("worker", t.id);
+      f.claim(t.id, w);
+      f.progress(t.id, w, { note: "on it" });
+      f.pinLease(t.id, w, 103, { session: `c0${t.id.slice(2)}00`, name: `${t.id} worker` });
+      return t;
+    };
+    /** A fake `claude rm`: what each id answers ("ok", or the stderr of a failure). Anything else succeeds. */
+    const answers = new Map<string, string>();
+    const ran: string[][] = [];
+    const run: Run = (cmd) => {
+      ran.push(cmd);
+      if (cmd[0] === "claude" && cmd[1] === "rm") {
+        const a = answers.get(cmd[2]!) ?? "ok";
+        run.lastError = a === "ok" ? undefined : a;
+        return a === "ok" ? "" : null;
+      }
+      if (cmd.join(" ") === "git worktree list --porcelain") return `worktree ${root}`;
+      return "";
+    };
+    const rms = () => ran.filter((c) => c[0] === "claude").map((c) => c[2]);
+    const removedEvents = (id: string) => f.events(id).filter((e) => e.type === "sessions_removed");
+    return { root, f, done, cancelled, working, answers, run, ran, rms, removedEvents };
+  }
+
+  test("removes a done task's (worktree gone) and a cancelled task's sessions once, records them, and leaves an in_progress task alone", () => {
+    const env = setup();
+    const d = env.done();
+    const c = env.cancelled();
+    const w = env.working();
+    const dIds = sessionsToRemove(env.f.events(d.id));
+    const cIds = sessionsToRemove(env.f.events(c.id));
+    expect(dIds).toHaveLength(2);
+    expect(cIds).toHaveLength(1);
+
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([
+      { id: d.id, sessions: dIds },
+      { id: c.id, sessions: cIds },
+    ]);
+    expect(env.ran).toEqual([...dIds, ...cIds].map((id) => ["claude", "rm", id]));
+    expect(env.removedEvents(d.id)).toEqual([expect.objectContaining({ actor: "janitor", data: { sessions: dIds } })]);
+    expect(env.removedEvents(c.id)).toEqual([expect.objectContaining({ data: { sessions: cIds } })]);
+    // The task still running keeps its session and gets no event.
+    expect(env.removedEvents(w.id)).toEqual([]);
+    expect(env.f.get(w.id).status).toBe("in_progress");
+
+    // A second pass has nothing left to do: no claude rm, no new events.
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([]);
+    expect(env.ran).toEqual([]);
+    expect(env.removedEvents(d.id)).toHaveLength(1);
+  });
+
+  test("a session already gone (No job matching) counts as removed; another failure ends the run and pauses removals for 10 minutes", () => {
+    const env = setup();
+    const d = env.done();
+    const later = env.done();
+    const laterIds = sessionsToRemove(env.f.events(later.id));
+    const [first, second] = sessionsToRemove(env.f.events(d.id)) as [string, string];
+    env.answers.set(first, `Error: No job matching "${first}"`);
+    env.answers.set(second, "Error: session is running");
+    const t0 = 1_000_000_000;
+
+    // first counts as removed; second fails, so the run stops there: the later task isn't tried.
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t0)).toEqual([{ id: d.id, sessions: [first] }]);
+    expect(env.rms()).toEqual([first, second]);
+    expect(env.removedEvents(d.id).map((e) => e.data.sessions)).toEqual([[first]]);
+    expect(env.removedEvents(later.id)).toEqual([]);
+    expect(sessionsToRemove(env.f.events(d.id))).toEqual([second]);
+
+    // Paused: nothing runs until SESSIONS_BACKOFF_MS has passed.
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t0 + SESSIONS_BACKOFF_MS - 1)).toEqual([]);
+    expect(env.ran).toEqual([]);
+    expect(SESSIONS_BACKOFF_MS).toBe(10 * 60_000);
+
+    // After the pause it's tried again; still failing, nothing recorded, paused again.
+    const t1 = t0 + SESSIONS_BACKOFF_MS;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t1)).toEqual([]);
+    expect(env.rms()).toEqual([second]);
+    expect(env.removedEvents(d.id)).toHaveLength(1);
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t1 + 60_000)).toEqual([]);
+    expect(env.ran).toEqual([]);
+
+    // Stopped now: removed and recorded, the later task's go too, and none is tried again.
+    env.answers.delete(second);
+    const t2 = t1 + SESSIONS_BACKOFF_MS;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t2)).toEqual([
+      { id: d.id, sessions: [second] },
+      { id: later.id, sessions: laterIds },
+    ]);
+    expect(env.removedEvents(d.id).map((e) => e.data.sessions)).toEqual([[first], [second]]);
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root, t2 + 1)).toEqual([]);
+    expect(env.ran).toEqual([]);
+  });
+
+  test("at most SESSIONS_PER_RUN (5) claude rm calls a run; the rest go on the next run", () => {
+    const env = setup();
+    const tasks = [env.done(), env.done(), env.done()]; // 6 sessions
+    expect(SESSIONS_PER_RUN).toBe(5);
+    const lastIds = sessionsToRemove(env.f.events(tasks[2]!.id)) as [string, string];
+    const first = removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(env.rms()).toHaveLength(5);
+    expect(first.map((r) => [r.id, r.sessions.length])).toEqual([
+      [tasks[0]!.id, 2],
+      [tasks[1]!.id, 2],
+      [tasks[2]!.id, 1],
+    ]);
+    env.ran.length = 0;
+    const second = removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(second).toEqual([{ id: tasks[2]!.id, sessions: [lastIds[1]] }]);
+    expect(env.rms()).toEqual([lastIds[1]]);
+    expect(tasks.every((t) => sessionsToRemove(env.f.events(t.id)).length === 0)).toBe(true);
+    env.ran.length = 0;
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([]);
+    expect(env.ran).toEqual([]);
+  });
+
+  test("the default runner runs claude rm without the parent session's variables", () => {
+    const env = setup();
+    const d = env.done();
+    const ids = sessionsToRemove(env.f.events(d.id));
+    const saved = { NODE_ENV: process.env.NODE_ENV, CLAUDECODE: process.env.CLAUDECODE, CLAUDE_JOB_DIR: process.env.CLAUDE_JOB_DIR };
+    const calls: { cmd: string[]; env: Record<string, string> }[] = [];
+    // No real process: the spy answers every spawn as a success.
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[], o: { env: Record<string, string> }) => {
+      calls.push({ cmd, env: o.env });
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    }) as never);
+    try {
+      delete process.env.NODE_ENV;
+      process.env.CLAUDECODE = "1";
+      process.env.CLAUDE_JOB_DIR = "/tmp/job.example";
+      expect(removeFinishedSessions(env.f, janitorActor)).toHaveLength(1);
+    } finally {
+      spawn.mockRestore();
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    expect(String(process.env.NODE_ENV)).toBe("test"); // restored
+    expect(calls.map((c) => c.cmd)).toEqual(ids.map((id) => ["claude", "rm", id]));
+    expect(sessionsToRemove(env.f.events(d.id))).toEqual([]);
+    for (const c of calls) {
+      expect(c.env.CLAUDECODE).toBeUndefined();
+      expect(c.env.CLAUDE_JOB_DIR).toBeUndefined();
+      expect(c.env.PATH).toBe(process.env.PATH);
+    }
+  });
+
+  test("FOREMAN_KEEP_SESSIONS=1 keeps every session: no claude rm, no events", () => {
+    const env = setup();
+    const d = env.done();
+    const before = process.env.FOREMAN_KEEP_SESSIONS;
+    process.env.FOREMAN_KEEP_SESSIONS = "1";
+    try {
+      expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env.FOREMAN_KEEP_SESSIONS;
+      else process.env.FOREMAN_KEEP_SESSIONS = before;
+    }
+    expect(env.ran).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    // Turned back on, the sessions go.
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toHaveLength(1);
+  });
+
+  test("under bun test with no runner given it runs nothing, so a test never removes a real session", () => {
+    expect(process.env.NODE_ENV).toBe("test");
+    const env = setup();
+    const d = env.done();
+    // If the guard failed, the default runner would spawn: catch that instead of running claude.
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation((() => {
+      throw new Error("spawned a process");
+    }) as never);
+    try {
+      expect(removeFinishedSessions(env.f, janitorActor)).toEqual([]);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      spawn.mockRestore();
+    }
+    expect(env.removedEvents(d.id)).toEqual([]);
+  });
+
+  test("janitor: a done task whose worktree is outside the repository is kept, but its sessions still go", async () => {
+    const env = setup();
+    const outside = fresh("outside-wt");
+    const d = env.done(outside);
+    const ids = sessionsToRemove(env.f.events(d.id));
+    const report = await janitor(env.f, janitorActor, { run: env.run, root: env.root, releasePorts: async () => false });
+    expect(report.kept).toEqual([expect.objectContaining({ id: d.id, reason: "not inside the repository: left alone" })]);
+    expect(report.removed).toEqual([]);
+    expect(report.sessions).toEqual([{ id: d.id, sessions: ids }]);
+    expect(env.rms()).toEqual(ids);
+    expect(env.removedEvents(d.id)).toHaveLength(1);
+    // A second run: nothing more to remove.
+    env.ran.length = 0;
+    expect((await janitor(env.f, janitorActor, { run: env.run, root: env.root, releasePorts: async () => false })).sessions).toEqual([]);
+    expect(env.rms()).toEqual([]);
+  });
+
+  test("a session whose pinned process is still alive is skipped until it's gone", () => {
+    const env = setup();
+    const d = env.done();
+    const c = env.cancelled();
+    // A finished task has no lease any more, so the check reads the pid each session's
+    // lease_pinned event recorded: mark d's as alive.
+    const alive = new Set(env.f.events(d.id).filter((e) => e.type === "lease_pinned").map((e) => e.data.pid as number));
+    expect(alive.size).toBeGreaterThan(0);
+    env.f.isAlive = (pid: number) => alive.has(pid);
+    const cIds = sessionsToRemove(env.f.events(c.id));
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: c.id, sessions: cIds }]);
+    expect(env.rms()).toEqual(cIds);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    alive.clear();
+    env.ran.length = 0;
+    const ids = sessionsToRemove(env.f.events(d.id));
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: d.id, sessions: ids }]);
+    expect(env.rms()).toEqual(ids);
+  });
+
+  test("a finished task with nothing left to remove isn't read again on later calls (per foreman)", () => {
+    const env = setup();
+    const d = env.done();
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toHaveLength(1);
+    const reads: string[] = [];
+    const events = env.f.events.bind(env.f);
+    env.f.events = (id: string) => (reads.push(id), events(id));
+    // The call that finds it empty marks it; after that it's skipped without reading its events.
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    reads.length = 0;
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    removeFinishedSessions(env.f, janitorActor, env.run, env.root);
+    expect(reads).not.toContain(d.id);
+    expect(env.rms()).toHaveLength(2);
+    // A task finished later is still picked up.
+    const later = env.cancelled();
+    expect(removeFinishedSessions(env.f, janitorActor, env.run, env.root)).toEqual([{ id: later.id, sessions: [expect.stringMatching(/^b0/)] }]);
+    expect(reads).not.toContain(d.id);
+  });
+
+  test("janitor --dry-run attaches the sessions to the worktree it would remove, like a real run", async () => {
+    const env = setup();
+    const wt = join(env.root, ".claude", "worktrees", "T-dry");
+    mkdirSync(wt, { recursive: true });
+    const d = env.done(wt);
+    const ids = sessionsToRemove(env.f.events(d.id));
+    const run: Run = (cmd, cwd) => (cmd.join(" ") === "git worktree list --porcelain" ? `worktree ${env.root}\nworktree ${wt}` : env.run(cmd, cwd));
+    const dry = await janitor(env.f, janitorActor, { run, root: env.root, dryRun: true, releasePorts: async () => false });
+    expect(dry.removed).toEqual([{ id: d.id, worktree: wt, branchDeleted: false, portsReleased: false, sessions: ids }]);
+    expect(dry.sessions).toEqual([{ id: d.id, sessions: ids }]);
+    expect(env.rms()).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    const real = await janitor(env.f, janitorActor, { run, root: env.root, releasePorts: async () => false });
+    expect(real.removed).toEqual([expect.objectContaining({ id: d.id, worktree: wt, sessions: ids })]);
+    expect(real.sessions).toEqual(dry.sessions);
+  });
+
+  test("janitor --dry-run lists the sessions it would remove without running claude rm or recording anything", async () => {
+    const env = setup();
+    const d = env.done();
+    const c = env.cancelled();
+    env.working();
+    const report = await janitor(env.f, janitorActor, { run: env.run, root: env.root, dryRun: true, releasePorts: async () => false });
+    expect(report.sessions).toEqual([
+      { id: d.id, sessions: sessionsToRemove(env.f.events(d.id)) },
+      { id: c.id, sessions: sessionsToRemove(env.f.events(c.id)) },
+    ]);
+    expect(report.sessions.flatMap((s) => s.sessions)).toHaveLength(3);
+    expect(env.rms()).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    expect(env.removedEvents(c.id)).toEqual([]);
+  });
+
+  test("janitor --dry-run with FOREMAN_KEEP_SESSIONS=1 lists no sessions", async () => {
+    const env = setup();
+    env.done();
+    const before = process.env.FOREMAN_KEEP_SESSIONS;
+    process.env.FOREMAN_KEEP_SESSIONS = "1";
+    try {
+      const report = await janitor(env.f, janitorActor, { run: env.run, root: env.root, dryRun: true, releasePorts: async () => false });
+      expect(report.sessions).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env.FOREMAN_KEEP_SESSIONS;
+      else process.env.FOREMAN_KEEP_SESSIONS = before;
+    }
+    expect(env.rms()).toEqual([]);
+  });
+
+  test("janitor with no runner under bun test removes no sessions: no claude rm, no events", async () => {
+    expect(process.env.NODE_ENV).toBe("test");
+    const env = setup();
+    const d = env.done(); // its worktree is missing, so the janitor's only real command is `git worktree list`, in a temp dir
+    const real = Bun.spawnSync;
+    const claude: string[][] = [];
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[], o: object) => {
+      if (cmd[0] === "claude") {
+        claude.push(cmd);
+        throw new Error("spawned claude");
+      }
+      return real(cmd, o as never);
+    }) as never);
+    try {
+      const report = await janitor(env.f, janitorActor, { root: env.root, releasePorts: async () => false });
+      expect(report.sessions).toEqual([]);
+    } finally {
+      spawn.mockRestore();
+    }
+    expect(claude).toEqual([]);
+    expect(env.removedEvents(d.id)).toEqual([]);
+    expect(sessionsToRemove(env.f.events(d.id))).toHaveLength(2);
   });
 });
 

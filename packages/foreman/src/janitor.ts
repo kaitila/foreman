@@ -5,6 +5,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { type Actor, type Event, Foreman, type Status, type Task } from "./core";
 import { defaultRun, type Run } from "./policy";
+import { callerEnv } from "./launch";
 
 export interface JanitorOptions {
   run?: Run;
@@ -19,10 +20,98 @@ export interface JanitorOptions {
   releasePorts?: (worktree: string) => Promise<boolean>;
 }
 
+/** A finished task's recorded background sessions not yet removed (lease_pinned minus sessions_removed). */
+export function sessionsToRemove(events: Event[]): string[] {
+  const all = new Set<string>(), removed = new Set<string>();
+  for (const e of events) {
+    if (e.type === "lease_pinned" && typeof e.data.session === "string") all.add(e.data.session);
+    if (e.type === "sessions_removed" && Array.isArray(e.data.sessions)) for (const s of e.data.sessions) removed.add(String(s));
+  }
+  return [...all].filter((id) => /^[0-9a-f]{6,}$/.test(id) && !removed.has(id));
+}
+
+/** `claude` with the caller's env minus a parent session's variables, like every other foreman call to it. */
+const claudeRun: Run = (cmd, cwd) => {
+  try {
+    const p = Bun.spawnSync(cmd, { cwd, env: callerEnv(), stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 15_000 });
+    claudeRun.lastError = p.exitCode === 0 ? undefined : p.stderr.toString().trim();
+    return p.exitCode === 0 ? p.stdout.toString().trim() : null;
+  } catch {
+    claudeRun.lastError = undefined;
+    return null;
+  }
+};
+
+/** At most this many `claude rm` calls per run, so a backlog never stalls a tick or the board. */
+export const SESSIONS_PER_RUN = 5;
+/** After a failure that isn't "already gone", wait this long before trying again. */
+export const SESSIONS_BACKOFF_MS = 10 * 60_000;
+// Per foreman: tasks known to have nothing left to remove (done and cancelled are final), and when to try again after a failure.
+const clean = new WeakMap<Foreman, Set<string>>();
+const pausedUntil = new WeakMap<Foreman, number>();
+
+/**
+ * Removes the background sessions of done or cancelled tasks with `claude rm` (T-0099), whatever
+ * happened to their worktrees, so they leave the person's sessions list.
+ * - A session that is already gone counts as removed; each removal is recorded (sessions_removed).
+ * - A session still running (the process its lease_pinned event recorded is alive) is left for later.
+ * - At most SESSIONS_PER_RUN removals a run. The first failure that isn't "already gone" ends the
+ *   run and pauses removals for SESSIONS_BACKOFF_MS, so a stuck `claude` can't stall anything.
+ * - FOREMAN_KEEP_SESSIONS=1 turns it off. Under `bun test` it does nothing unless given a runner.
+ */
+export function removeFinishedSessions(f: Foreman, actor: Actor, run?: Run, cwd = f.root ?? process.cwd(), now = Date.now()): { id: string; sessions: string[] }[] {
+  if (process.env.FOREMAN_KEEP_SESSIONS === "1") return [];
+  if (!run && process.env.NODE_ENV === "test") return [];
+  if ((pausedUntil.get(f) ?? 0) > now) return [];
+  const exec = run ?? claudeRun;
+  const done = clean.get(f) ?? clean.set(f, new Set()).get(f)!;
+  const out: { id: string; sessions: string[] }[] = [];
+  let budget = SESSIONS_PER_RUN;
+  for (const t of f.list({ status: ["done", "cancelled"] })) {
+    if (done.has(t.id)) continue;
+    const events = f.events(t.id);
+    const pending = sessionsToRemove(events);
+    if (!pending.length) {
+      done.add(t.id);
+      continue;
+    }
+    // A session whose process is still alive (a verifier wrapping up after a quick merge, a worker
+    // on a task just cancelled) is left until it ends. Its pid is on the event that pinned it: the
+    // task's lease is gone once it is done or cancelled, so f.leasePid can't say.
+    const pids = new Map<string, number>();
+    for (const e of events) if (e.type === "lease_pinned" && typeof e.data.session === "string" && typeof e.data.pid === "number") pids.set(e.data.session, e.data.pid);
+    const ids = pending.filter((id) => !(pids.has(id) && f.isAlive(pids.get(id)!)));
+    const gone: string[] = [];
+    let failed = false;
+    for (const id of ids) {
+      if (budget <= 0) break;
+      budget--;
+      if (exec(["claude", "rm", id], cwd) !== null || /no job matching/i.test(exec.lastError ?? "")) gone.push(id);
+      else {
+        failed = true;
+        break;
+      }
+    }
+    if (gone.length) {
+      f.sessionsRemoved(t.id, actor, gone);
+      out.push({ id: t.id, sessions: gone });
+      if (gone.length === pending.length) done.add(t.id);
+    }
+    if (failed) {
+      pausedUntil.set(f, now + SESSIONS_BACKOFF_MS);
+      break;
+    }
+    if (budget <= 0) break;
+  }
+  return out;
+}
+
 export interface JanitorReport {
   reclaimed: string[];
   /** sessions: the task's Claude Code background sessions removed with `claude rm` (D0022). */
   removed: { id: string; worktree: string; branchDeleted: boolean; portsReleased: boolean; sessions?: string[] }[];
+  /** Every finished task's sessions removed this run, whatever happened to its worktree (T-0099). */
+  sessions: { id: string; sessions: string[] }[];
   kept: { id: string; worktree: string; reason: string }[];
   stuck: { id: string; status: Status; since: number; hours: number; assignee: string | null }[];
 }
@@ -83,7 +172,7 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
   const root = real(opts.root ?? f.root ?? process.cwd());
   const now = (opts.now ?? Date.now)();
   const release = opts.releasePorts ?? testKitRelease;
-  const report: JanitorReport = { reclaimed: [], removed: [], kept: [], stuck: [] };
+  const report: JanitorReport = { reclaimed: [], removed: [], kept: [], stuck: [], sessions: [] };
 
   report.reclaimed = opts.dryRun
     ? f
@@ -135,10 +224,18 @@ export async function janitor(f: Foreman, actor: Actor, opts: JanitorOptions = {
       );
       if (merged) branchDeleted = run(["git", "branch", "-D", t.branch], root) !== null;
     }
-    // Its background sessions (D0022) leave the person's `claude agents --all` with it.
-    const ids = new Set(f.events(t.id).flatMap((e) => (e.type === "lease_pinned" && typeof e.data.session === "string" ? [e.data.session] : [])));
-    const sessions = [...ids].filter((id) => /^[0-9a-f]+$/.test(id) && run(["claude", "rm", id], root) !== null);
-    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased, ...(sessions.length ? { sessions } : {}) });
+    report.removed.push({ id: t.id, worktree: wt, branchDeleted, portsReleased });
+  }
+
+  // Their background sessions (D0022, T-0099) leave the person's `claude agents --all`, worktree or not.
+  // The caller's runner only: under `bun test` without one, removeFinishedSessions touches nothing real.
+  if (!opts.dryRun) report.sessions = removeFinishedSessions(f, actor, opts.run, root, now);
+  else if (process.env.FOREMAN_KEEP_SESSIONS !== "1") {
+    report.sessions = f.list({ status: ["done", "cancelled"] }).map((t) => ({ id: t.id, sessions: sessionsToRemove(f.events(t.id)) })).filter((x) => x.sessions.length);
+  }
+  for (const r of report.removed) {
+    const s = report.sessions.find((x) => x.id === r.id);
+    if (s) r.sessions = s.sessions;
   }
 
   const limit = (opts.stuckHours ?? 24) * 3_600_000;

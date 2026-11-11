@@ -12,6 +12,7 @@ import { asyncRunner, GITHUB_PR } from "../policy";
 import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
 import { pageHtml } from "./page";
 import { hasLiveSession, recentActivity, taskSessions } from "../activity";
+import { removeFinishedSessions } from "../janitor";
 import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
 import { Plans } from "../plans";
 import { type DispatcherInfo, runningDispatchers } from "../dispatchers";
@@ -66,6 +67,8 @@ export interface BoardOptions {
     intervalMs: number;
     onPass?: (project: string, entries: QueueEntry[]) => void;
     onError?: (project: string, error: unknown) => void;
+    /** Removes finished tasks' sessions after each pass (T-0099). Default: the janitor's removeFinishedSessions. */
+    cleanSessions?: (f: Foreman) => void;
   };
 }
 
@@ -419,6 +422,12 @@ export function startBoard(opts: BoardOptions): Board {
           auto.onPass?.(c.name, await pass(c, auto.actor));
         } catch (e) {
           auto.onError?.(c.name, e);
+        }
+        // Finished tasks' sessions leave the person's sessions list (T-0099). Never breaks the loop.
+        try {
+          (auto.cleanSessions ?? ((f: Foreman) => removeFinishedSessions(f, auto.actor)))(c.f);
+        } catch {
+          /* tried again next pass */
         }
       }
     };
