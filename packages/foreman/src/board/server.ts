@@ -1,6 +1,7 @@
 // The local board (T-0035, T-0067): one Bun.serve on 127.0.0.1, a read-only JSON API over
 // the same Foreman core, and one page with inline CSS/JS (no external assets, works offline).
 // Plans (D0033) are read here too, from the plans core; the board never writes them.
+// Running dispatchers (D0041) are read too: the board shows them and never starts or stops one.
 // The writes are approve, merge and run-queue. Each needs the token `fm serve` prints to its
 // own terminal, in the fragment of the URL it prints (never in a page or an API response),
 // and, when the browser sends one, our own Origin (D0021).
@@ -14,6 +15,7 @@ import { hasLiveSession, recentActivity, taskSessions } from "../activity";
 import { removeFinishedSessions } from "../janitor";
 import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
 import { Plans } from "../plans";
+import { type DispatcherInfo, runningDispatchers } from "../dispatchers";
 
 export const LANES: Status[] = [
   "draft",
@@ -98,6 +100,23 @@ function sameToken(given: string | null, token: string): boolean {
 /** A task as the board lists it. */
 export function card(t: Task) {
   return { id: t.id, title: t.title, status: t.status, risk: t.risk, assignee: t.assignee, pr: t.pr, updatedAt: t.updatedAt };
+}
+
+/**
+ * A running dispatcher as the board shows it (T-0116): what `runningDispatchers` records, less
+ * the working directory and the sessions' pids and ids, which the page has no use for.
+ */
+export function dispatcherCard(d: DispatcherInfo) {
+  return {
+    pid: d.pid,
+    scope: d.scope,
+    max: d.max,
+    flags: { once: d.flags.once, verifyOnly: d.flags.verifyOnly },
+    starter: d.starter,
+    startedAt: d.startedAt,
+    lastSeen: d.lastSeen,
+    sessions: d.sessions.map((s) => ({ task: s.task, role: s.role })),
+  };
 }
 
 /**
@@ -193,6 +212,9 @@ export function startBoard(opts: BoardOptions): Board {
   const fail = (status: number, error: string, message: string) => json({ error, message }, status);
 
   const labels = opts.labels ?? { get: (dir: string) => readColors()[dir] ?? null, set: (dir: string, c: LabelColor | null) => setColor(dir, c) };
+  // Read on every state and every poll: a dispatcher that starts or exits writes no event,
+  // so the page learns of it from here. A read drops the record of one whose process is gone.
+  const dispatchers = (c: Ctx) => runningDispatchers(c.f).map(dispatcherCard);
   const state = (c: Ctx) => {
     // The history is read once per request: grouped by task for the flags, and for the last id.
     const evs = c.f.events();
@@ -205,6 +227,7 @@ export function startBoard(opts: BoardOptions): Board {
       tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) })),
       lastEvent: evs.at(-1)?.id ?? 0,
       canApprove: token !== null,
+      dispatchers: dispatchers(c),
     };
   };
   const summary = (c: Ctx) => {
@@ -335,7 +358,7 @@ export function startBoard(opts: BoardOptions): Board {
           if (path === "/api/events") {
             const since = Number(url.searchParams.get("since") ?? 0) || 0;
             const events = f.events().filter((e) => e.id > since);
-            return json({ events, lastEvent: events.at(-1)?.id ?? since });
+            return json({ events, lastEvent: events.at(-1)?.id ?? since, dispatchers: dispatchers(ctx) });
           }
           const pr = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/pr$/.exec(path);
           if (pr) return json(await prState(ctx, f.get(pr[1]!)));
