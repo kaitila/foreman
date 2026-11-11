@@ -270,6 +270,12 @@ export class Foreman {
     return this.db.transaction(fn).immediate();
   }
 
+  /** Records that a finished task's background sessions were removed (T-0099), so each is removed once. */
+  sessionsRemoved(id: string, actor: Actor, sessions: string[]): void {
+    this.get(id);
+    this.event(id, actor, "sessions_removed", { sessions });
+  }
+
   private event(taskId: string | null, actor: Actor, type: string, data: object = {}) {
     this.db
       .query(

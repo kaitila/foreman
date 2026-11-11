@@ -12,6 +12,7 @@ import { type Actor, type Event, Foreman, ForemanError, type Status, type Task }
 import { type DispatcherSession, registerDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { loadConfig, pathsOverlap } from "./policy";
+import { removeFinishedSessions } from "./janitor";
 
 /** What the dispatcher needs back from a session. */
 export interface SessionResult {
@@ -219,6 +220,8 @@ export interface DispatchOptions {
   mode?: LaunchMode;
   /** Who started it: reclaims dead leases, and is the registry's starter. Default: "dispatcher" (agent). */
   actor?: Actor;
+  /** Removes finished tasks' sessions each tick (T-0099). Default: the janitor's removeFinishedSessions. */
+  cleanSessions?: (f: Foreman) => void;
   /** The Claude Code session that started it, for the registry. Default: CLAUDE_CODE_SESSION_ID. */
   starterSession?: string;
   /** The clock for the registry's times. Default: Date.now. */
@@ -320,6 +323,12 @@ export class Dispatcher {
 
   private pass(): void {
     this.f.reclaim(this.actor);
+    // Finished tasks' sessions leave the person's sessions list (T-0099). A convenience: never break a tick.
+    try {
+      (this.opts.cleanSessions ?? ((f: Foreman) => removeFinishedSessions(f, this.actor)))(this.f);
+    } catch {
+      /* tried again next tick */
+    }
     const free = () => this.running.size < this.max;
 
     // Finish work before starting more: submitted tasks get a verifier first.
