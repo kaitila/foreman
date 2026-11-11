@@ -74,7 +74,9 @@ describe("listing", () => {
     expect(byId[draft].status).toBe("draft");
     expect(byId[waiting].status).toBe("needs_approval");
     expect(byId[evil].status).toBe("ready");
-    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "id", "live", "pr", "risk", "status", "title", "undone", "updatedAt"]);
+    expect(Object.keys(byId[waiting]).sort()).toEqual(["assignee", "holds", "id", "live", "pr", "risk", "status", "title", "undone", "updatedAt", "wait"]);
+    // Nothing waits on it and it waits on nothing: the short form is empty (T-0118, board-waiting.test.ts).
+    expect([byId[waiting].wait, byId[waiting].holds]).toEqual([null, { count: 0, tasks: [] }]);
     expect(body.lastEvent).toBe(f.events().at(-1)!.id);
   });
 
