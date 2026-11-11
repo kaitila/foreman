@@ -1,6 +1,6 @@
 # D0037. New decision files don't count as overlapping paths (2026-11-09)
 
-**Status:** Active
+**Status:** Amended by D0043
 
 **Context:** The dispatcher of [D0011](D0011-foreman-dispatch.md) keeps a ready task waiting while its declared paths overlap those of a task in flight. Nearly every task lists `docs/decisions/**`, in case it adds a decision file, so tasks that share nothing else still ran one after another (T-0083 to T-0087, among others). Found while measuring session speed for T-0090.
 

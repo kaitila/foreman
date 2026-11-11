@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
 import { type DispatcherSession, registerDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
-import { loadConfig, pathsOverlap } from "./policy";
+import { loadConfig, loadShared, pathsOverlap } from "./policy";
 import { removeFinishedSessions } from "./janitor";
 
 /** What the dispatcher needs back from a session. */
@@ -242,9 +242,9 @@ export interface SessionRecord {
   error?: string;
 }
 
-/** Overlap of two tasks' declared paths, or none. */
-function clashes(t: Task, others: Task[]): Task | undefined {
-  return others.find((o) => o.id !== t.id && pathsOverlap(t.paths, o.paths));
+/** Overlap of two tasks' declared paths, or none. Paths that are both shared don't count (D0037, D0043). */
+function clashes(t: Task, others: Task[], shared: string[]): Task | undefined {
+  return others.find((o) => o.id !== t.id && pathsOverlap(t.paths, o.paths, shared));
 }
 
 export class Dispatcher {
@@ -343,10 +343,13 @@ export class Dispatcher {
     if (this.opts.verifyOnly || (this.opts.once && !this.first)) return;
     this.first = false;
     const active = this.f.list({ status: ACTIVE });
+    // Read each pass, and only when a task is ready, so a change to foreman.json on main needs no restart.
+    let shared: string[] | undefined;
     for (const t of this.f.ready("agent")) {
       if (!free()) break;
       if (this.running.has(t.id) || this.triedRole(t.id, "worker")) continue;
-      const clash = clashes(t, active);
+      shared ??= loadShared(this.f.root);
+      const clash = clashes(t, active, shared);
       if (clash) {
         this.log(`${t.id} waits: its paths overlap ${clash.id}'s`);
         continue;

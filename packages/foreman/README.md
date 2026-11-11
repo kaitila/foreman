@@ -14,7 +14,7 @@ Status: MVP (step M3), plus M6: the launch adapter, the dispatcher, intake, the 
   - `auto` tasks are approved once every check passes.
   - `review` tasks also need a person's `approve`.
   - `human` tasks are claimed and finished only by people.
-  - **Default risk:** a task is `auto` unless its declared paths touch the `protectedPaths` in `foreman.json` (guardrails, CI, foreman itself).
+  - **Default risk:** a task is `auto` unless its declared paths touch the `protectedPaths` in `foreman.json`: guardrails, CI, and the files of foreman that enforce sign-off (`core.ts`, `store.ts`, `policy.ts`, `roles.ts`, `launch.ts`, `queue.ts`, `mcp.ts`, `board/server.ts`, `cli/approve.ts`; the rest of foreman's source merges on a passing verdict, [D0044](../../docs/decisions/D0044-protect-enforcement-files.md)).
   - **The diff decides:** when an `auto` task passes, foreman diffs its branch against main. If any protected file changed, or the diff can't be seen, the task goes to a person instead.
 - **Reserving numbers:** `reserve <kind>` hands out the highest number on disk or reserved before, plus one. On disk means `docs/decisions/D*` file names for `decision`, and nothing for other kinds, unless `foreman.json` names a source for the kind. The pattern's first capture group is the number, and paths are relative to the repo root:
   ```json
@@ -74,6 +74,8 @@ fm serve --queue                   # the board, plus the merge queue every 60 s 
 ```
 
 Every command takes `--json`.
+
+The commands live in `src/cli/`, one file per command or small group of them (`plan.ts`, `serve.ts`, `dispatch.ts`, …), each with its own `fm help` lines. `src/cli.ts` lists the files and `src/cli/help.ts` orders the help, so a new command is a new file plus one line in each. Flags are declared in `src/cli/context.ts`.
 
 ## Plans
 
@@ -291,7 +293,7 @@ What must hold:
 The design and its rules are in [D0011](../../docs/decisions/D0011-foreman-dispatch.md).
 
 - **Slots:** at most `--max` sessions at once, workers and verifiers together. Submitted tasks get a verifier before new tasks get a worker.
-- **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task. Paths that both stay inside `docs/decisions/` don't count: new decision files take reserved numbers and the index is generated (D0037).
+- **No clashes:** a ready task waits while its declared paths overlap those of a task that is `claimed`, `in_progress`, `in_review` or `verifying`. A task that declares no paths overlaps every task. Paths that both stay inside `docs/decisions/` don't count: new decision files take reserved numbers and the index is generated (D0037). Neither do paths that both stay inside `foreman.json`'s `sharedPaths`, for files most tasks touch, e.g. `"sharedPaths": ["packages/foreman/README.md", "AGENTS.md"]` ([D0043](../../docs/decisions/D0043-shared-paths.md)): tasks that share nothing else run side by side, and if two edits do collide the merge queue sends the second PR back. A glob that reaches past a shared path (`docs/**`) still overlaps it. The list is read on each pass, so a change on main needs no restart.
 - **A worker per task:** the dispatcher claims the task as `worker-<task>` and makes `.claude/worktrees/<task>` on a new branch `<task>-<title>` from `origin/main`. It records both with `progress`, then starts a worker with the `ship` skill. A task back for rework keeps its worktree, or its branch if the worktree is gone. If the worktree can't be made, the task goes back to `ready`. A newly made worktree is prepared once with the `setup` command from `foreman.json` (e.g. `"setup": "bun install && bun install --cwd web"`) before the worker starts, and the prompt says so; a failed setup is reported to the worker, not fatal. Without `setup` the prompt tells the session to run `bun install`.
 - **A verifier when it's submitted:** once the worker has exited and the task is `in_review`, the dispatcher takes it with `start_verify` as `verifier-<task>` and starts a verifier with the `verify` skill in the same worktree. It also verifies other `in_review` tasks whose recorded worktree exists, whoever submitted them (an interactive session, a person), with or without `--once`.
 - **Leases follow the process:** each session's lease is pinned to its PID (`pinLease`). While the PID lives, the lease doesn't time out; once it's gone, `reclaim` releases the task (`ready`, or `in_review` for a verifier). A new holder ends the pin. The pins live in their own table, so an older foreman on the same database still works.

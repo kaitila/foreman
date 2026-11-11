@@ -1,6 +1,6 @@
 # D0008. A person approves only guardrail changes; the real diff decides (2026-10-30)
 
-**Status:** Amended by D0009
+**Status:** Amended by D0009, D0044
 
 **Context:** Arttu: "I dont want to manually approve everything." Every task so far defaulted to `review`, so each one waited for a person after a fresh verifier had already passed it. Amends [D0006](D0006-foreman-mvp-rules.md).
 
