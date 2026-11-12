@@ -1,12 +1,44 @@
 // The registry of running dispatchers (D0041): each `fm dispatch` keeps one row here
 // while it runs, so `fm dispatchers`, `fm list` and the board can say what is running
 // without looking for the process. A row whose process is gone is dropped on read.
-import type { Actor, Foreman } from "./core";
+// The scope (D0045) says which tasks it takes: everything, or the tasks of named plans.
+import { type Actor, type Foreman, ForemanError } from "./core";
 import type { Role } from "./launch";
 import { duration } from "./setup";
 
-/** What a dispatcher takes work from. Only "everything" for now; plans come later. */
+/**
+ * What a dispatcher takes work from (D0045): "everything", or the plans it was started
+ * for, sorted and joined with commas ("P-0004", "P-0004,P-0007").
+ */
 export type DispatcherScope = string;
+
+export const EVERYTHING: DispatcherScope = "everything";
+
+/** The scope for `--plan` given these times: none means everything. */
+export function scopeOf(plans: string[] = []): DispatcherScope {
+  const ids = [...new Set(plans.map((p) => p.trim()).filter(Boolean))].sort();
+  return ids.length ? ids.join(",") : EVERYTHING;
+}
+
+/** The plans a scope names, or null for everything. */
+export function scopePlans(scope: DispatcherScope): string[] | null {
+  return scope === EVERYTHING ? null : scope.split(",");
+}
+
+/** Does the scope take a task that sits in this plan (undefined: in no plan)? */
+export function scopeCovers(scope: DispatcherScope, plan: string | undefined): boolean {
+  const plans = scopePlans(scope);
+  return plans === null || (plan !== undefined && plans.includes(plan));
+}
+
+/**
+ * Would this dispatcher start a worker for a ready task in that plan? Not with
+ * --verify-only, and not with --once: that one starts what fits on its first pass and
+ * nothing after.
+ */
+export function startsWorkers(d: Pick<DispatcherInfo, "scope" | "flags">, plan: string | undefined): boolean {
+  return !d.flags.once && !d.flags.verifyOnly && scopeCovers(d.scope, plan);
+}
 
 export interface DispatcherFlags {
   once: boolean;
@@ -102,11 +134,32 @@ export function registerDispatcher(
       d.starter.kind,
       d.starter.session ?? null,
       d.cwd,
-      d.scope ?? "everything",
+      d.scope ?? EVERYTHING,
       d.startedAt,
       d.startedAt,
       JSON.stringify(d.sessions ?? []),
     );
+}
+
+/**
+ * Record a dispatcher that is starting, unless one with the same scope already runs
+ * (D0045): that one is named by pid in the refusal. Checked and written in one
+ * transaction, so two that start together can't both pass.
+ */
+export function startDispatcher(f: Foreman, d: Parameters<typeof registerDispatcher>[1]): void {
+  const scope = d.scope ?? EVERYTHING;
+  f.db
+    .transaction(() => {
+      const other = runningDispatchers(f).find((o) => o.pid !== d.pid && o.scope === scope);
+      if (other) {
+        throw new ForemanError(
+          "already_running",
+          `a dispatcher for ${scope} is already running: pid ${other.pid}, started by ${other.starter.name} (fm dispatch --stop ${other.pid} stops it)`,
+        );
+      }
+      registerDispatcher(f, d);
+    })
+    .immediate();
 }
 
 /** A tick: what the dispatcher has running now, and that it was seen. Nothing if it isn't registered. */
@@ -124,17 +177,89 @@ export function unregisterDispatcher(f: Foreman, pid: number): void {
  * check as a pinned lease, `f.isAlive`) is deleted here and not returned, so a killed
  * dispatcher never shows as running.
  */
-export function runningDispatchers(f: Foreman): DispatcherInfo[] {
+export function runningDispatchers(f: Foreman, o: { drop?: boolean } = {}): DispatcherInfo[] {
   const rows = f.db.query(`SELECT * FROM dispatchers ORDER BY started_at, pid`).all() as Row[];
   const running: DispatcherInfo[] = [];
   for (const r of rows) {
     if (f.isAlive(r.pid)) running.push(toInfo(r));
-    else unregisterDispatcher(f, r.pid);
+    else if (o.drop !== false) unregisterDispatcher(f, r.pid);
   }
   return running;
 }
 
-/** `pid 4242  everything  2/3 slots  by ada  up 5 min  T-0001 worker, T-0002 verifier` */
+/**
+ * The running dispatcher `fm dispatch --stop` means: by pid, by a plan its scope names,
+ * or "everything". Only a dispatcher in the registry is ever found, so --stop can't
+ * signal some other process.
+ */
+export function findDispatcher(f: Foreman, target: string): DispatcherInfo {
+  const all = runningDispatchers(f);
+  const want = target.trim();
+  const hits = /^\d+$/.test(want)
+    ? all.filter((d) => d.pid === Number(want))
+    : all.filter((d) => d.scope === want || (scopePlans(d.scope) ?? []).includes(want));
+  const running = all.length ? `running: ${all.map((d) => `pid ${d.pid} (${d.scope})`).join(", ")}` : "no dispatcher is running";
+  if (!hits.length) throw new ForemanError("not_found", `no running dispatcher for "${want}": give a pid or a plan id (${running})`);
+  if (hits.length > 1) throw new ForemanError("invalid", `"${want}" matches ${hits.length} dispatchers: give the pid (${running})`);
+  return hits[0]!;
+}
+
+export interface StopOptions {
+  /** Sends the signal. Default: process.kill. */
+  signal?: (pid: number, sig: NodeJS.Signals) => void;
+  /** How long to wait for the dispatcher and its sessions to go. Default 15 s. */
+  waitMs?: number;
+  pollMs?: number;
+}
+
+export interface Stopped {
+  pid: number;
+  scope: DispatcherScope;
+  /** What it had running when it was told to stop. */
+  sessions: DispatcherSession[];
+  /** Tasks of those sessions whose leases were released: back to ready, or in_review for a verifier. */
+  released: string[];
+  /** Session pids still alive when the wait ran out. */
+  stillRunning: number[];
+}
+
+/**
+ * Stop a running dispatcher the way Ctrl-C does (D0045): SIGTERM, which makes it stop its
+ * sessions and remove its record as it exits. Then wait for it and its sessions to be
+ * gone and release their leases here, so the tasks are free when this returns and don't
+ * wait for the next reclaim.
+ */
+export async function stopDispatcher(f: Foreman, target: string, actor: Actor, o: StopOptions = {}): Promise<Stopped> {
+  const d = findDispatcher(f, target);
+  if (d.pid === process.pid) throw new ForemanError("invalid", "a dispatcher can't stop itself this way: end its run");
+  const signal = o.signal ?? ((pid, sig) => process.kill(pid, sig));
+  try {
+    signal(d.pid, "SIGTERM");
+  } catch (e) {
+    // Gone between the read and the signal: what is left to do is the cleanup below.
+    if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw new ForemanError("not_allowed", `can't signal pid ${d.pid}: ${(e as Error).message}`);
+  }
+  const pids = d.sessions.map((s) => s.pid).filter((p): p is number => p !== null && p !== d.pid);
+  const left = () => pids.filter((p) => f.isAlive(p));
+  const deadline = Date.now() + (o.waitMs ?? 15_000);
+  while ((f.isAlive(d.pid) || left().length) && Date.now() < deadline) await new Promise((r) => setTimeout(r, o.pollMs ?? 50));
+  if (f.isAlive(d.pid)) throw new ForemanError("timeout", `pid ${d.pid} got SIGTERM and is still running: look at it, or kill it by hand`);
+  unregisterDispatcher(f, d.pid);
+  const mine = new Set(d.sessions.map((s) => s.task));
+  const released = f.reclaim(actor).filter((id) => mine.has(id));
+  return { pid: d.pid, scope: d.scope, sessions: d.sessions, released, stillRunning: left() };
+}
+
+/** What `fm dispatch --stop` prints. */
+export function stoppedText(s: Stopped, statusOf: (task: string) => string): string {
+  const lines = [`stopped dispatcher pid ${s.pid} (${s.scope})`];
+  for (const x of s.sessions) lines.push(`${x.task} ${x.role} stopped: task is ${statusOf(x.task).replace(/_/g, " ")}`);
+  if (!s.sessions.length) lines.push("it had nothing in flight");
+  if (s.stillRunning.length) lines.push(`still running after the wait: pid ${s.stillRunning.join(", ")} (their tasks are released once they are gone)`);
+  return lines.join("\n");
+}
+
+/** `pid 4242  everything  2/3 slots (a plan dispatcher: `P-0004` in place of `everything`)  by ada  up 5 min  T-0001 worker, T-0002 verifier` */
 export function dispatcherLine(d: DispatcherInfo, now: number = Date.now()): string {
   const flags = [d.flags.once && "--once", d.flags.verifyOnly && "--verify-only", d.flags.print && "--print"].filter(Boolean).join(" ");
   const tasks = d.sessions.map((s) => `${s.task} ${s.role}`).join(", ") || "nothing in flight";
