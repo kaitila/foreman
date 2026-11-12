@@ -75,6 +75,11 @@ Live check: `bun run live-test` runs real headless Claude sessions against both 
   - It runs every `cmd` check itself and wants concrete evidence for each statement; a statement it can't confirm fails.
   - It checks the changed files against the task's `paths`.
   - It records one verdict per check, and lists weaknesses even when the checks pass.
+- **`templates/claude/skills/run-plan/`, for the session the person talks to** ([D0048](../../docs/decisions/D0048-who-starts-a-dispatcher.md)).
+  - It shapes a request of several tasks into a plan: steps with a check each, tasks with a spec, checks and the narrowest paths.
+  - It shows the plan and marks the tasks ready only on the person's yes, then starts the plan's dispatcher with `run_plan`.
+  - It follows it with a loop of `watch_plan` calls, reports each outcome in a line, and gives a task that failed verification one more run.
+  - It stops when every task is approved or waits on the person, and names what they have to sign off. It never does a plan task itself, verifies or approves.
 - **`templates/claude/agents/`: `test-writer`, `docs-writer`, `reviewer` and `design-critic`.**
   - They split the work by path: only test-writer runs the tests, docs-writer only edits docs, and the reviewer is read-only (no edit tools).
   - design-critic is read-only too, for UI changes. It reviews the changed pages against the project's `docs/design.md`. It screenshots them at phone and desktop width, light and dark, when playwright-core is installed; otherwise it reviews the served markup and styles. <!-- docs-check: elsewhere -->

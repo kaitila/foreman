@@ -26,6 +26,7 @@ test("the expected templates exist", () => {
     "claude/hooks/session-start.ts",
     "claude/skills/ship/SKILL.md",
     "claude/skills/verify/SKILL.md",
+    "claude/skills/run-plan/SKILL.md",
     "claude/agents/test-writer.md",
     "claude/agents/docs-writer.md",
     "claude/agents/reviewer.md",
