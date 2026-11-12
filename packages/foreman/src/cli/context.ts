@@ -51,6 +51,7 @@ function parseFlags(argv: string[]) {
       project: { type: "string" },
       max: { type: "string" },
       once: { type: "boolean" },
+      watch: { type: "boolean" },
       "verify-only": { type: "boolean" },
       "no-verify": { type: "boolean" },
       print: { type: "boolean" },

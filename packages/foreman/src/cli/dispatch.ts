@@ -6,7 +6,7 @@ import { refuseDispatched } from "../run-plan";
 import type { Module } from "./context";
 
 export const help = {
-  dispatch: `  dispatch [--plan P-0001]... [--max 3] [--once] [--verify-only] [--model m] [--budget usd] [--print]
+  dispatch: `  dispatch [--plan P-0001]... [--max 3] [--once | --watch] [--verify-only] [--model m] [--budget usd] [--print]
   dispatch --stop <pid|plan>
                                 claim ready tasks into worktrees, run a worker for each and a fresh
                                 verifier once it is submitted; at most --max sessions at once, never two
@@ -15,6 +15,10 @@ export const help = {
                                 gets a verifier); --verify-only: verifiers for submitted tasks, no new
                                 work; --budget: each session's limit in USD. Stopping the dispatcher
                                 stops every session it started.
+                                --watch: don't end when nothing can start; keep looking, so a task
+                                unblocked by a merge or an approval, or filed later, is picked up. A
+                                task sent back (rework, failed verdict) gets a new worker, one that
+                                crashed doesn't. Ends with Ctrl-C or --stop.
                                 Sessions run as Claude Code background sessions: watch them with
                                 "claude agents", "claude attach <name>"; --print (or
                                 FOREMAN_LAUNCH=print) runs headless "claude -p" instead.
@@ -48,6 +52,7 @@ export const commands: Module["commands"] = {
     const sessions = await dispatch(f, {
       max: positive(o.max, "max"),
       once: o.once,
+      watch: o.watch,
       verifyOnly: o["verify-only"],
       plans: o.plans,
       model: o.model,

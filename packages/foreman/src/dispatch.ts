@@ -217,6 +217,14 @@ export interface DispatchOptions {
    */
   reverify?: boolean;
   /**
+   * Don't end when nothing can start (D0049): keep looking every `pollMs` until stopped,
+   * so work that turns up later (a merge that unblocks a task, an approval, a new task)
+   * is picked up. Tries are then counted per round, not per run: a verifier per submission
+   * (as `reverify`), and a worker again only after the task was sent back (a rework or a
+   * failed verdict). A worker that crashed or ran out of budget is not started again.
+   */
+  watch?: boolean;
+  /**
    * Take only these plans' tasks (D0045): workers for their ready tasks, verifiers for
    * their submitted ones. It then stays up until nothing of the plans is left that could
    * start without a person. None: the whole board.
@@ -267,6 +275,13 @@ export class Dispatcher {
   private tried = new Map<string, Set<Role>>();
   /** With `reverify`: the submission (its event id) each task's verifier was last started for. */
   private verifiedAt = new Map<string, number>();
+  /** With `watch`: the send-back (its event id, 0 for none) each task's worker was last started after. */
+  private workedAt = new Map<string, number>();
+  /** The last "waits" line logged per task, so a long wait is said once, not every pass. */
+  private waitLogged = new Map<string, string>();
+  private idle = false;
+  /** `watch`, until endWatch(). */
+  private watching: boolean;
   private first = true;
   readonly sessions: SessionRecord[] = [];
   /** Most sessions running at the same time, for the summary and the tests. */
@@ -282,6 +297,8 @@ export class Dispatcher {
   ) {
     this.max = opts.max ?? 3;
     if (!Number.isInteger(this.max) || this.max < 1) throw new ForemanError("invalid", `--max must be a whole number of at least 1, got ${opts.max}`);
+    if (opts.watch && opts.once) throw new ForemanError("invalid", "--watch and --once don't go together: one keeps running, the other stops after one round");
+    this.watching = opts.watch === true;
     this.scope = scopeOf(opts.plans);
     for (const id of scopePlans(this.scope) ?? []) {
       const plan = f.db.query(`SELECT status FROM plans WHERE id = ?`).get(id) as { status: string } | null;
@@ -308,10 +325,21 @@ export class Dispatcher {
     return this.f.events(id).findLast((e) => e.type === "submitted")?.id ?? 0;
   }
 
-  /** Has this task had its verifier: in this run, or with `reverify` for its latest submission? */
+  /** Has this task had its verifier: in this run, or with `reverify` or `watch` for its latest submission? */
   private triedVerifier(id: string): boolean {
-    if (!this.opts.reverify) return this.triedRole(id, "verifier");
+    if (!this.opts.reverify && !this.opts.watch) return this.triedRole(id, "verifier");
     return this.verifiedAt.get(id) === this.submission(id);
+  }
+
+  /** The last time the task was sent back to work on purpose, as its event id (0: never). */
+  private sentBack(id: string): number {
+    return this.f.events(id).findLast((e) => e.type === "rework" || e.type === "verify_failed")?.id ?? 0;
+  }
+
+  /** Has this task had its worker: in this run, or with `watch` since it was last sent back? */
+  private triedWorker(id: string): boolean {
+    if (!this.opts.watch) return this.triedRole(id, "worker");
+    return this.workedAt.get(id) === this.sentBack(id);
   }
 
   private mark(id: string, role: Role) {
@@ -379,15 +407,19 @@ export class Dispatcher {
     this.first = false;
     for (const t of this.f.ready("agent")) {
       if (!free()) break;
-      if (!mine(t) || this.running.has(t.id) || this.triedRole(t.id, "worker")) continue;
+      if (!mine(t) || this.running.has(t.id) || this.triedWorker(t.id)) continue;
       // Asked again for each task, so a worker started a moment ago in this pass counts.
       // What is left for a claimable task is an overlap with a task in flight (waiting.ts),
       // another dispatcher's included. "no dispatcher" isn't a hold: this is one.
       const waits = holdsDispatch(waitsOn(this.f, t.id));
       if (waits.length) {
-        this.log(`${t.id} waits: ${reasonText(waits[0]!)}`);
+        // Said once per reason: a pass runs every few seconds, and a wait can last hours.
+        const why = reasonText(waits[0]!);
+        if (this.waitLogged.get(t.id) !== why) this.log(`${t.id} waits: ${why}`);
+        this.waitLogged.set(t.id, why);
         continue;
       }
+      this.waitLogged.delete(t.id);
       this.startWorker(t);
     }
   }
@@ -401,6 +433,7 @@ export class Dispatcher {
       return null;
     }
     this.mark(t.id, "worker");
+    if (this.opts.watch) this.workedAt.set(t.id, this.sentBack(t.id));
     let wt: Worktree;
     try {
       wt = this.worktrees(this.f.get(t.id), this.root());
@@ -430,7 +463,7 @@ export class Dispatcher {
   private startVerifier(t: Task) {
     const actor: Actor = { name: actorFor("verifier", t.id), kind: "agent" };
     this.mark(t.id, "verifier");
-    if (this.opts.reverify) this.verifiedAt.set(t.id, this.submission(t.id));
+    if (this.opts.reverify || this.opts.watch) this.verifiedAt.set(t.id, this.submission(t.id));
     let task: Task;
     try {
       task = this.f.startVerify(t.id, actor);
@@ -500,7 +533,8 @@ export class Dispatcher {
   }
 
   /**
-   * Run until nothing is running and nothing more can start. For that time the dispatcher
+   * Run until nothing is running and nothing more can start, or with `watch` until it is
+   * stopped (D0049). For that time the dispatcher
    * is in the registry (D0041): the record goes when run() ends, and when the process
    * exits or is interrupted. A kill that skips both leaves a record the next read drops.
    * Refused when a dispatcher with the same scope already runs (D0045).
@@ -521,7 +555,7 @@ export class Dispatcher {
       pid,
       scope: this.scope,
       max: this.max,
-      flags: { once: this.opts.once === true, verifyOnly: this.opts.verifyOnly === true, print: launchModeFrom(this.opts.mode) === "print" },
+      flags: { once: this.opts.once === true, verifyOnly: this.opts.verifyOnly === true, print: launchModeFrom(this.opts.mode) === "print", ...(this.opts.watch ? { watch: true } : {}) },
       starter: { name: this.actor.name, kind: this.actor.kind, session: this.opts.starterSession ?? (process.env.CLAUDE_CODE_SESSION_ID || undefined) },
       cwd: process.cwd(),
       startedAt: this.now(),
@@ -583,11 +617,21 @@ export class Dispatcher {
     });
   }
 
+  /** Stop watching: run() then ends as it does without `watch`, once nothing runs and nothing more can start. */
+  endWatch(): void {
+    this.watching = false;
+  }
+
   private async loop(): Promise<SessionRecord[]> {
     const pollMs = this.opts.pollMs ?? 10_000;
     for (;;) {
       this.tick();
-      if (this.running.size === 0 && !this.moreToCome()) return this.sessions;
+      if (this.running.size === 0) {
+        if (!this.watching && !this.moreToCome()) return this.sessions;
+        // --watch: stay up. Said once each time it goes quiet, not on every look.
+        if (this.watching && !this.idle) this.log("nothing to start: watching for work (Ctrl-C or fm dispatch --stop ends it)");
+      }
+      this.idle = this.running.size === 0;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const poll = new Promise<void>((res) => {
         timer = setTimeout(res, pollMs);

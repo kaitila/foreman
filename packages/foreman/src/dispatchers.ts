@@ -44,6 +44,8 @@ export interface DispatcherFlags {
   once: boolean;
   verifyOnly: boolean;
   print: boolean;
+  /** Stays up when nothing can start (D0049). Left out when false, so older records read the same. */
+  watch?: boolean;
 }
 
 /** One session a dispatcher has running. */
@@ -107,7 +109,7 @@ function toInfo(r: Row): DispatcherInfo {
     pid: r.pid,
     scope: r.scope,
     max: r.max,
-    flags: { once: flags.once === true, verifyOnly: flags.verifyOnly === true, print: flags.print === true },
+    flags: { once: flags.once === true, verifyOnly: flags.verifyOnly === true, print: flags.print === true, ...(flags.watch === true ? { watch: true } : {}) },
     starter: { name: r.starter, kind: r.starter_kind === "human" ? "human" : "agent", ...(r.starter_session ? { session: r.starter_session } : {}) },
     cwd: r.cwd,
     startedAt: r.started_at,
@@ -261,7 +263,7 @@ export function stoppedText(s: Stopped, statusOf: (task: string) => string): str
 
 /** `pid 4242  everything  2/3 slots  by ada  up 5 min  T-0001 worker, T-0002 verifier`; a plan dispatcher has its plans (`P-0004`) in place of `everything`. */
 export function dispatcherLine(d: DispatcherInfo, now: number = Date.now()): string {
-  const flags = [d.flags.once && "--once", d.flags.verifyOnly && "--verify-only", d.flags.print && "--print"].filter(Boolean).join(" ");
+  const flags = [d.flags.once && "--once", d.flags.watch && "--watch", d.flags.verifyOnly && "--verify-only", d.flags.print && "--print"].filter(Boolean).join(" ");
   const tasks = d.sessions.map((s) => `${s.task} ${s.role}`).join(", ") || "nothing in flight";
   const parts = [
     `pid ${d.pid}`,

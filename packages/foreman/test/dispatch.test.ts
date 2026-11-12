@@ -62,7 +62,7 @@ function setup(onLaunch?: (s: Session) => void) {
   const add = (title: string, paths: string[]) =>
     f.create({ title, acceptance: ["cmd: true"], paths, risk: "auto", ready: true }, human);
   const log: string[] = [];
-  const dispatcher = (o: { max?: number; once?: boolean; verifyOnly?: boolean; reverify?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
+  const dispatcher = (o: { max?: number; once?: boolean; watch?: boolean; verifyOnly?: boolean; reverify?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
     new Dispatcher(f, { ...o, launcher, worktrees, pollMs: 5, log: (l) => log.push(l) });
   return { f, sessions, alive, add, dispatcher, log, peak: () => peak, tick: (ms: number) => (clock += ms) };
 }
@@ -234,6 +234,110 @@ describe("dispatch", () => {
     expect(env.f.get(theirs.id).status).toBe("approved");
     expect(env.f.get(ready.id).status).toBe("ready");
     expect(env.f.events(ready.id).some((e) => e.type === "claimed")).toBe(false);
+  });
+
+  describe("--watch (D0049)", () => {
+    /** What a verifier does when the work is wrong: fail every check, then exit. */
+    const fail = (f: Foreman, s: Session) => {
+      const t = f.get(s.opts.taskId!);
+      f.recordVerify(t.id, s.actor, t.acceptance.map((c) => ({ check: c.id, pass: false, evidence: "broken" })));
+      s.end();
+    };
+    const roles = (env: ReturnType<typeof setup>) => env.sessions.map((s) => `${s.opts.taskId} ${s.opts.role}`);
+
+    test("stays up with nothing to start, picks up a task made ready later, and ends once told to", async () => {
+      const env = setup((s) => {
+        setTimeout(() => (s.opts.role === "worker" ? submit(env.f, s) : pass(env.f, s)), 2);
+      });
+      const d = env.dispatcher({ watch: true });
+      let ended = false;
+      const run = d.run().then((r) => ((ended = true), r));
+      await new Promise((r) => setTimeout(r, 40));
+      expect(ended).toBe(false);
+      expect(env.sessions).toEqual([]);
+      // Said once, however many times it looked.
+      expect(env.log.filter((l) => l.includes("watching for work"))).toHaveLength(1);
+
+      const late = env.add("filed later", ["src/late/**"]);
+      await new Promise((r) => setTimeout(r, 60));
+      expect(env.f.get(late.id).status).toBe("approved");
+      expect(ended).toBe(false);
+      expect(env.log.filter((l) => l.includes("watching for work"))).toHaveLength(2);
+
+      d.endWatch();
+      const done = await run;
+      expect(done.map((s) => `${s.task} ${s.role}`)).toEqual([`${late.id} worker`, `${late.id} verifier`]);
+    });
+
+    test("a task whose verdict failed gets a new worker and then a new verifier", async () => {
+      const env = setup();
+      const t = env.add("a", ["src/a/**"]);
+      const d = env.dispatcher({ watch: true });
+      d.tick();
+      submit(env.f, env.sessions[0]!);
+      await flush();
+      d.tick();
+      fail(env.f, env.sessions[1]!);
+      await flush();
+      expect(env.f.get(t.id).status).toBe("ready");
+      d.tick();
+      submit(env.f, env.sessions[2]!);
+      await flush();
+      d.tick();
+      expect(roles(env)).toEqual([`${t.id} worker`, `${t.id} verifier`, `${t.id} worker`, `${t.id} verifier`]);
+      // Without --watch the same task is left for the next run.
+      const env2 = setup();
+      const u = env2.add("a", ["src/a/**"]);
+      const d2 = env2.dispatcher();
+      d2.tick();
+      submit(env2.f, env2.sessions[0]!);
+      await flush();
+      d2.tick();
+      fail(env2.f, env2.sessions[1]!);
+      await flush();
+      d2.tick();
+      expect(roles(env2)).toEqual([`${u.id} worker`, `${u.id} verifier`]);
+    });
+
+    test("a task sent back with rework gets a new worker", async () => {
+      const env = setup();
+      const t = env.add("a", ["src/a/**"]);
+      const d = env.dispatcher({ watch: true });
+      d.tick();
+      submit(env.f, env.sessions[0]!);
+      await flush();
+      env.f.rework(t.id, human, "conflicts with main: merge main and verify again");
+      d.tick();
+      expect(roles(env)).toEqual([`${t.id} worker`, `${t.id} worker`]);
+    });
+
+    test("a worker that ends without submitting is not started again", async () => {
+      const env = setup();
+      const t = env.add("a", ["src/a/**"]);
+      const d = env.dispatcher({ watch: true });
+      d.tick();
+      env.sessions[0]!.end({ ...OK, exitCode: 1, isError: true, result: "out of budget" });
+      await flush();
+      expect(env.f.get(t.id).status).toBe("ready");
+      d.tick();
+      d.tick();
+      expect(roles(env)).toEqual([`${t.id} worker`]);
+    });
+
+    test("--watch with --once is refused", () => {
+      expect(() => setup().dispatcher({ watch: true, once: true })).toThrow("--watch and --once");
+    });
+  });
+
+  test("a task that keeps waiting is logged once per reason, not on every pass", () => {
+    const env = setup();
+    env.add("a", ["src/a/**"]);
+    const b = env.add("b", ["src/a/b.ts"]);
+    const d = env.dispatcher({ max: 3 });
+    d.tick();
+    d.tick();
+    d.tick();
+    expect(env.log.filter((l) => l.startsWith(`${b.id} waits`))).toHaveLength(1);
   });
 
   // What a long-lived verify-only dispatcher (the fm serve --queue loop, D0046) needs.
