@@ -1,7 +1,8 @@
 // The local board (T-0035, T-0067): one Bun.serve on 127.0.0.1, a read-only JSON API over
 // the same Foreman core, and one page with inline CSS/JS (no external assets, works offline).
 // Plans (D0033) are read here too, from the plans core; the board never writes them.
-// Running dispatchers (D0041) are read too: the board shows them and never starts or stops one.
+// Running dispatchers (D0041) are read too: the board shows them, the plans each covers and the
+// ready tasks none covers (D0045), and never starts or stops one.
 // The writes are approve, merge and run-queue. Each needs the token `fm serve` prints to its
 // own terminal, in the fragment of the URL it prints (never in a page or an API response),
 // and, when the browser sends one, our own Origin (D0021).
@@ -16,7 +17,7 @@ import { removeFinishedSessions } from "../janitor";
 import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
 import { type Plan, Plans } from "../plans";
 import { holdsUp, type PathNode, pathOf, pathText, type Reason, snapshot, type Snapshot, waitsOn } from "../waiting";
-import { type DispatcherInfo, runningDispatchers } from "../dispatchers";
+import { type DispatcherInfo, runningDispatchers, scopeCovers, startsWorkers } from "../dispatchers";
 import { Dispatcher, type DispatchOptions } from "../dispatch";
 
 export const LANES: Status[] = [
@@ -179,10 +180,10 @@ export function placement(f: Foreman, taskId: string) {
 }
 
 /**
- * The board doesn't say yet which ready tasks no dispatcher covers (D0045): it reads the
- * rule without that reason, so a free task still shows as "can start". T-0120 adds it.
+ * The rule as the board reads it (T-0120): with the running dispatchers, so a ready task
+ * that none would start carries the `no dispatcher` reason (D0045), as `fm list` says it.
  */
-const boardSnapshot = (f: Foreman): Snapshot => snapshot(f, { dispatchers: false });
+const boardSnapshot = (f: Foreman): Snapshot => snapshot(f);
 
 /**
  * What a waiting task's row shows (T-0118), all of it from waiting.ts (D0042): the first direct
@@ -243,14 +244,42 @@ export function waitDetail(s: Snapshot, id: string) {
 }
 
 /**
+ * Which running dispatchers cover a plan (T-0120, D0045): the ones whose scope takes its
+ * tasks, each with its slots in use and whether it starts new workers (`starts`: not with
+ * --once or --verify-only), and `uncovered`, the plan's ready tasks that can start but that
+ * none of them would start. null for a plan that isn't active: nothing of it would start.
+ */
+export function planDispatch(s: Snapshot, running: DispatcherInfo[], p: Plan) {
+  if (p.state !== "active") return null;
+  return {
+    dispatchers: running
+      .filter((d) => scopeCovers(d.scope, p.id))
+      .map((d) => ({
+        pid: d.pid,
+        scope: d.scope,
+        max: d.max,
+        inUse: d.sessions.length,
+        flags: { once: d.flags.once, verifyOnly: d.flags.verifyOnly },
+        starter: d.starter,
+        starts: startsWorkers(d, p.id),
+      })),
+    uncovered: p.steps.flatMap((step) => step.tasks.filter((t) => waitsOn(s, t.id).some((r) => r.kind === "no dispatcher")).map((t) => t.id)),
+  };
+}
+
+/**
  * Plans for the board: each step also says which earlier steps it waits on and their
  * unfinished tasks, read from what one of its own waiting tasks waits on (D0042). A step with
- * no task that waits (empty, or already started) names none.
+ * no task that waits (empty, or already started) names none. Each plan also carries
+ * `dispatch`: the running dispatchers that cover it and its ready tasks nothing covers.
  */
 export function plansWithWaits(f: Foreman, plans: Plan[]) {
   const s = boardSnapshot(f);
+  // Read without dropping dead records, like the snapshot: the two must agree.
+  const running = runningDispatchers(f, { drop: false });
   return plans.map((p) => ({
     ...p,
+    dispatch: planDispatch(s, running, p),
     steps: p.steps.map((step) => {
       let waits: { step: number; title: string; tasks: string[] }[] = [];
       if (p.state === "active") {
