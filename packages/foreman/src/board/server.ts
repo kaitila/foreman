@@ -17,6 +17,7 @@ import { isLabelColor, type LabelColor, readColors, setColor } from "../projects
 import { type Plan, Plans } from "../plans";
 import { holdsUp, type PathNode, pathOf, pathText, type Reason, snapshot, type Snapshot, waitsOn } from "../waiting";
 import { type DispatcherInfo, runningDispatchers } from "../dispatchers";
+import { Dispatcher, type DispatchOptions } from "../dispatch";
 
 export const LANES: Status[] = [
   "draft",
@@ -70,7 +71,21 @@ export interface BoardOptions {
     onError?: (project: string, error: unknown) => void;
     /** Removes finished tasks' sessions after each pass (T-0099). Default: the janitor's removeFinishedSessions. */
     cleanSessions?: (f: Foreman) => void;
+    /**
+     * After each project's merge-queue pass, start a verifier for each of its `in_review`
+     * tasks whose worktree exists, as `fm dispatch --verify-only` would, once per submission
+     * (D0046). It never claims a ready task. On unless false (`fm serve --queue --no-verify`).
+     */
+    verify?: false | VerifyPassOptions;
   };
+}
+
+/** The --queue loop's verify pass: the dispatcher's own options, for each project. */
+export interface VerifyPassOptions extends Pick<DispatchOptions, "max" | "model" | "budgetUsd" | "mode" | "launcher"> {
+  /** A line the pass would print: a verifier started or ended, or why one didn't start. */
+  log?: (project: string, line: string) => void;
+  /** The pass threw. The merge queue and the loop go on. */
+  onError?: (project: string, error: unknown) => void;
 }
 
 export interface Board {
@@ -512,14 +527,51 @@ export function startBoard(opts: BoardOptions): Board {
   let ticking: Promise<void> = Promise.resolve();
   const auto = opts.autoQueue;
   if (auto) {
+    // One verify-only dispatcher per project, kept for the life of the loop: it holds the
+    // session limit and which submission each task's verifier was started for (D0046). It is
+    // not in the dispatcher registry: it starts no workers, so it covers no ready task.
+    const verify = auto.verify === false ? null : (auto.verify ?? {});
+    const verifiers = new Map<Ctx, Dispatcher>();
+    if (verify) {
+      const { log, onError: _onError, ...dispatch } = verify;
+      for (const c of ctxs) {
+        verifiers.set(
+          c,
+          new Dispatcher(c.f, {
+            ...dispatch,
+            verifyOnly: true,
+            reverify: true,
+            actor: auto.actor,
+            // The loop removes finished sessions itself, below.
+            cleanSessions: () => {},
+            log: (l) => (log ? log(c.name, l) : console.log(ctxs.length > 1 ? `${c.name}: ${l}` : l)),
+          }),
+        );
+      }
+    }
     const tick = async () => {
       for (const c of ctxs) {
         if (stopped) return;
-        if (c.passing) continue;
+        // A pass already running here (a click) is left alone; the verify pass doesn't merge, so it still runs.
+        if (!c.passing) {
+          try {
+            // Not inline in the call: without an onPass, `?.()` would skip the pass too.
+            const entries = await pass(c, auto.actor);
+            auto.onPass?.(c.name, entries);
+          } catch (e) {
+            auto.onError?.(c.name, e);
+          }
+        }
+        if (stopped) return;
+        // Submitted tasks get their verifier (D0046). Never breaks the merge queue or the loop.
         try {
-          auto.onPass?.(c.name, await pass(c, auto.actor));
+          verifiers.get(c)?.tick();
         } catch (e) {
-          auto.onError?.(c.name, e);
+          try {
+            (verify?.onError ?? ((p: string, err: unknown) => console.error(`${p}: verify pass failed: ${err instanceof Error ? err.message : String(err)}`)))(c.name, e);
+          } catch {
+            /* the report failed too: the loop still goes on */
+          }
         }
         // Finished tasks' sessions leave the person's sessions list (T-0099). Never breaks the loop.
         try {
