@@ -7,6 +7,7 @@
 **Chosen:**
 - **One version, kept by a script and a test.** `bun run release:version <x.y.z>` sets the version in every `packages/*/package.json`, the private agent-kit included, as a text edit. A test in `packages/foreman/test/release.test.ts` fails when any two differ.
 - **What each package ships is listed.** docs-check, test-kit and design-kit get a `files` field (their `src`, README and, for design-kit, the tokens files), as foreman already had. Without it they shipped their tests. `.github/scripts/release.ts pack` refuses a pack holding tests, fixtures, `.foreman` or `node_modules`, or missing `package.json` or `README.md`.
+- **Each published package names the repository** (`repository.url` and `directory` in its `package.json`). `npm publish --provenance` compares that URL with the repository the workflow runs in and refuses a package without one, so the pack step checks it too, against `GITHUB_REPOSITORY` in Actions. A repository rename then fails in the PR's dry run, not in the publish job.
 - **CI dry-runs the pack on every run** (`bun run release:pack --dry-run`), so a packaging break shows up in the PR that causes it.
 - **The release workflow** (`.github/workflows/release.yml`) has two jobs:
   - `pack`, with read access only: checks the tag is `v<version>`, runs `bun run check` against Postgres, packs each package with `bun pm pack` and checks it, and uploads the tarballs.

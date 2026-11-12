@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Keep a repository's docs true to its code: links, anchors, paths, one-file-per-decision log, references, review freshness, code-to-doc registries",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/kaitila/foreman.git", "directory": "packages/docs-check" },
   "type": "module",
   "files": ["src", "README.md"],
   "bin": { "docs-check": "src/cli.ts" },
