@@ -5,7 +5,7 @@
 // - pathOf: those reasons followed through the tasks they name, to the end, as a tree.
 // - holdsUp: the reverse, everything downstream that waits on a task.
 import type { Actor, Foreman, Status, Task } from "./core";
-import { pathsOverlap } from "./policy";
+import { loadShared, pathsOverlap } from "./policy";
 
 /** Tasks whose paths are taken: someone is working on them or their PR is being checked. */
 export const ACTIVE: Status[] = ["claimed", "in_progress", "in_review", "verifying"];
@@ -79,6 +79,8 @@ export interface Snapshot {
   place: Map<string, { plan: string; step: number }>;
   /** Plan id to its steps, in order. */
   steps: Map<string, { n: number; title: string; tasks: string[] }[]>;
+  /** The repo's shared paths (D0043), once something has needed them. */
+  shared?: string[];
 }
 
 type Row = Record<string, unknown>;
@@ -110,6 +112,17 @@ export function snapshot(f: Foreman): Snapshot {
 
 const snap = (from: Foreman | Snapshot): Snapshot => ("order" in from ? from : snapshot(from));
 
+/**
+ * Could the two tasks edit the same file? Paths that are both shared don't count (D0037,
+ * D0043). foreman.json's list is read once per snapshot, and only when the paths overlap
+ * at all: it can only take overlaps away, and reading it runs git.
+ */
+function overlap(s: Snapshot, t: Task, o: Task): boolean {
+  if (!pathsOverlap(t.paths, o.paths)) return false;
+  s.shared ??= loadShared(s.f.root);
+  return pathsOverlap(t.paths, o.paths, s.shared);
+}
+
 function reasonsFor(s: Snapshot, t: Task): Reason[] {
   if (!OPEN.includes(t.status)) return [];
   const out: Reason[] = [];
@@ -127,7 +140,7 @@ function reasonsFor(s: Snapshot, t: Task): Reason[] {
     }
   }
   for (const o of s.order) {
-    if (o.id !== t.id && ACTIVE.includes(o.status) && pathsOverlap(t.paths, o.paths)) out.push({ kind: "paths", task: o.id, status: o.status });
+    if (o.id !== t.id && ACTIVE.includes(o.status) && overlap(s, t, o)) out.push({ kind: "paths", task: o.id, status: o.status });
   }
   if (t.risk === "human") out.push({ kind: "human" });
   return out;

@@ -8,7 +8,15 @@
     ".gitleaks.toml",
     "renovate.json",
     "foreman.json",
-    "packages/foreman/src/**",
+    "packages/foreman/src/core.ts",
+    "packages/foreman/src/store.ts",
+    "packages/foreman/src/policy.ts",
+    "packages/foreman/src/roles.ts",
+    "packages/foreman/src/launch.ts",
+    "packages/foreman/src/queue.ts",
+    "packages/foreman/src/mcp.ts",
+    "packages/foreman/src/board/server.ts",
+    "packages/foreman/src/cli/approve.ts",
     "packages/agent-kit/templates/**",
     "package.json",
     "**/package.json",
@@ -16,6 +24,10 @@
     "**/tsconfig*.json",
     "AGENTS.md",
     "CLAUDE.md"
+  ],
+  "sharedPaths": [
+    "packages/foreman/README.md",
+    "AGENTS.md"
   ],
   "roles": {
     "$comment": "Deny rules per agent role (D0019): \"agent\" applies to every FOREMAN_ACTOR session, \"worker\", \"verifier\" and \"intake\" to actors named after them; a person's session gets none. None here yet. Example: \"agent\": { \"deny\": [\"Bash(gh pr merge *)\", \"Bash(ssh *)\"] }."
