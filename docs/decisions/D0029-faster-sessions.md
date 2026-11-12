@@ -1,6 +1,6 @@
 # D0029. Sessions do their own review, edit mechanically by script, and tasks claim narrow paths (2026-11-09)
 
-**Status:** Active
+**Status:** Amended by D0047
 
 **Context:** Measured from the session transcripts of T-0081 and T-0083: a dispatched worker took 4.3 minutes and its verifier 4.0, of which about 1.5 minutes each was `bun run check`, run twice. T-0083, a rename, took 11 minutes in 140 Edit and 75 Read calls, nearly all of it model time, not tool time. T-0083 to T-0087 all declared `packages/**` or `docs/decisions/**`, so the dispatcher ([D0011](D0011-foreman-dispatch.md)) ran them one at a time with two of its three slots idle. Interactive sessions on `ship` (T-0079, T-0080) took 10 and 32 minutes with test-writer, docs-writer and reviewer each starting cold.
 
