@@ -572,11 +572,15 @@ function undoneTag(t) {
 function liveDot() { const d = el("span", "live-dot"); d.title = "A session is running"; return d; }
 // Why a task hasn't started, and what it holds up (T-0118). The server works both out from the
 // one rule everything reads (D0042): the page only words what it was sent.
-const LEAF = { running: "Running", "needs a person": "Needs you", "can start": "Can start", stuck: "Stuck" };
-const LEAF_CLS = { running: "run", "needs a person": "you", "can start": "free", stuck: "stuck" };
+// "no dispatcher" (D0045) is worded from the task's side: it can start, and nothing running would start it.
+const LEAF = { running: "Running", "needs a person": "Needs you", "can start": "Can start", "no dispatcher": "Can start, no dispatcher", stuck: "Stuck" };
+const LEAF_CLS = { running: "run", "needs a person": "you", "can start": "free", "no dispatcher": "free", stuck: "stuck" };
+const NO_DISP = "can start: no dispatcher covers it";
+const NO_DISP_WHY = "The task itself is fine: it is ready, with nothing to wait on. No running dispatcher would start it. Start one from the terminal (fm dispatch, or fm dispatch --plan for its plan), or claim it in a session.";
 // The state of the task a path ends at, in a few words.
 function leafState(l) {
   if (l.text.startsWith("cycle:")) return "cycle";
+  if (l.kind === "no dispatcher") return "can start, no dispatcher";
   if (l.status === "missing") return "missing";
   if (l.status === "needs_approval") return "needs your approval";
   if (l.kind === "needs a person") return l.status === "draft" ? "draft, needs you to mark it ready" : "needs you to do it";
@@ -604,6 +608,12 @@ function waitsTag(t) {
     if (t.status !== "ready") return null;
     const s = el("span", "waits free", "can start");
     s.title = "Ready, with nothing to wait on: a dispatcher or a session can pick it up";
+    return s;
+  }
+  // Nothing to wait on, but no dispatcher would start it: said like "can start", not like a blocker.
+  if (w.reason.kind === "no dispatcher") {
+    const s = el("span", "waits free nodisp", NO_DISP);
+    s.title = NO_DISP_WHY;
     return s;
   }
   const s = el("span", "waits"), r = w.reason, e = w.end;
@@ -872,9 +882,66 @@ function planRow(p) {
   main.append(title, sub);
   const side = el("div", "side");
   if (multi && view === "all") { const s = el("span", "slot s-proj"); s.append(projChip(p.project)); side.append(s); }
+  // Whether a dispatcher covers it: the marker in the side on a wide screen, under the title on a phone.
+  const cover = planCover(p);
+  if (cover) { sub.append(planCover(p)); side.append(cover); r.setAttribute("aria-label", r.getAttribute("aria-label") + ", " + cover.title); }
   side.append(pips(p), el("span", "progress", progressText(p)));
   r.append(planGlyph(p), el("span", "id", p.id), main, side);
   return r;
+}
+// A plan and the dispatchers (D0045). The server says which running ones cover it and which of
+// its ready tasks none would start; the page only words that.
+const startCmd = (p) => "fm dispatch --plan " + p.id;
+const slotsText = (d) => d.inUse + " of " + d.max + " slots";
+function readyText(n) { return n === 1 ? "1 ready task" : n + " ready tasks"; }
+// The Plans list's marker: the play glyph and slots in use when one covers the plan, and a few
+// faint words when it has ready tasks nothing would start. null when there is nothing to say.
+function planCover(p) {
+  const c = p.dispatch;
+  if (!c || (!c.dispatchers.length && !c.uncovered.length)) return null;
+  const box = el("span", "plan-cover"), said = [];
+  if (c.dispatchers.length) {
+    const m = el("span", "disp-mark");
+    m.append(icon("dispatch"), el("span", "", c.dispatchers.reduce((a, d) => a + d.inUse, 0) + "/" + c.dispatchers.reduce((a, d) => a + d.max, 0)));
+    said.push((c.dispatchers.length > 1 ? c.dispatchers.length + " dispatchers cover this plan: " : "A dispatcher covers this plan: ") + m.textContent.replace("/", " of ") + " slots in use");
+    box.append(m);
+  }
+  if (c.uncovered.length) {
+    box.append(el("span", "plan-nodisp", c.dispatchers.length ? "starts nothing new" : "no dispatcher"));
+    said.push(readyText(c.uncovered.length) + " can start, but no running dispatcher would start " + (c.uncovered.length === 1 ? "it" : "them") + ": " + startCmd(p));
+  }
+  box.title = said.join(". ");
+  return box;
+}
+// The plan's header: a line per dispatcher that covers it (which one, slots in use), and, when it
+// has ready tasks none would start, a quiet line with the command to start one. Text only: the
+// board never starts a dispatcher.
+function planDispatch(p) {
+  const c = p.dispatch;
+  if (!c || (!c.dispatchers.length && !c.uncovered.length)) return null;
+  const box = el("div", "plan-disp");
+  for (const d of c.dispatchers) {
+    const line = el("p", "disp"), dot = el("span", "dot");
+    line.dataset.pid = String(d.pid);
+    dot.title = "Running, pid " + d.pid;
+    const slots = el("span", "disp-slots", slotsText(d));
+    slots.title = d.inUse + " sessions running, at most " + d.max + " at once (--max), across everything it covers";
+    line.append(dot, el("strong", "", "Dispatcher"), el("span", "disp-scope", d.scope === "everything" ? "for everything" : d.scope.includes(",") ? "for " + d.scope.split(",").join(", ") : "for this plan"), slots);
+    if (d.flags.verifyOnly) line.append(el("span", "disp-flag", "verify only"));
+    if (d.flags.once) line.append(el("span", "disp-flag", "once"));
+    const by = el("span", "disp-by", "by " + starterText(d.starter));
+    by.title = "Started by " + d.starter.name + (d.starter.kind === "agent" ? " (an agent)" : "") + (d.starter.session ? ", session " + d.starter.session : "") + ", pid " + d.pid;
+    line.append(by);
+    box.append(line);
+  }
+  if (c.uncovered.length) {
+    const n = c.uncovered.length, line = el("p", "disp-none");
+    // One that covers the plan but starts no new work (--once, --verify-only) is named above.
+    line.append(el("strong", "", c.dispatchers.length ? "No dispatcher running that starts new work here." : "No dispatcher running for this plan."),
+      " " + readyText(n) + " can start, and nothing will pick " + (n === 1 ? "it" : "them") + " up. Start one from the terminal: ", el("code", "", startCmd(p)));
+    box.append(line);
+  }
+  return box;
 }
 function renderPlans(box, now) {
   const p = curPlan();
@@ -930,6 +997,8 @@ function renderPlan(box, p, now) {
   meta.append(planGlyph(p), el("span", "id", p.id), el("span", "", PLAN_NAMES[p.state]), el("span", "progress", progressText(p)));
   const title = el("h2", "plan-title", p.title);
   head.append(back, meta, title);
+  const disp = planDispatch(p);
+  if (disp) head.append(disp);
   if (p.state === "cancelled" && p.cancelReason) head.append(el("p", "why", "Cancelled: " + p.cancelReason));
   if (p.goal) head.append(spec(p.goal));
   wrap.append(head);
@@ -1084,7 +1153,21 @@ function dispatcherLine(project, d, now) {
   slots.title = d.sessions.length + " sessions running, at most " + d.max + " at once (--max)";
   li.append(dot, el("strong", "", "Dispatcher"));
   if (multi && view === "all") li.append(projChip(project));
-  li.append(el("span", "disp-scope", d.scope), slots);
+  // What it takes work from: everything, or the plans it was started for, each a link to the plan.
+  const scope = el("span", "disp-scope");
+  if (d.scope === "everything") scope.append(d.scope);
+  else d.scope.split(",").forEach((id, i) => {
+    if (i) scope.append(", ");
+    const p = plans.find((x) => x.project === project && x.id === id);
+    const a = el(p ? "a" : "span", "disp-plan id", id);
+    if (p) {
+      a.href = "#" + (multi ? "p=" + encodeURIComponent(project) + "&" : "") + "plan=" + id;
+      a.title = "Plan " + id + " " + p.title + ": it starts only this plan's tasks";
+      a.addEventListener("click", (e) => { e.preventDefault(); goToPlan(project, id); });
+    }
+    scope.append(a);
+  });
+  li.append(scope, slots);
   if (d.flags.verifyOnly) { const f = el("span", "disp-flag", "verify only"); f.title = "--verify-only: it verifies submitted tasks and claims nothing new"; li.append(f); }
   if (d.flags.once) { const f = el("span", "disp-flag", "once"); f.title = "--once: it exits when nothing more can start"; li.append(f); }
   const by = el("span", "disp-by", "by " + starterText(d.starter));
@@ -1112,7 +1195,7 @@ function renderDispatchers(now) {
   const box = $("#dispatchers");
   const names = PROJECTS.filter((n) => view === "all" || n === view);
   const running = names.flatMap((n) => (DISP.get(n) || []).map((d) => [n, d]));
-  const sig = JSON.stringify([view, running.map(([n, d]) => n + dispKey([d])), running.map(([n, d]) => [ago(d.startedAt, now), d.sessions.map((s) => !!byKey(n + "/" + s.task))])]);
+  const sig = JSON.stringify([view, running.map(([n, d]) => n + dispKey([d])), running.map(([n, d]) => [ago(d.startedAt, now), d.sessions.map((s) => !!byKey(n + "/" + s.task)), d.scope.split(",").map((id) => plans.some((x) => x.project === n && x.id === id))])]);
   if (sig === dispSig && box.childNodes.length) return;
   dispSig = sig;
   box.classList.toggle("none", !running.length);
@@ -1758,8 +1841,8 @@ async function poll() {
     // A dispatcher that started or exited wrote no event: every poll carries the running ones.
     let moved = false;
     for (const [n, r] of rs) if (r.dispatchers && dispKey(r.dispatchers) !== dispKey(DISP.get(n) || [])) { DISP.set(n, r.dispatchers); moved = true; }
-    if (changed) await refresh();
-    else if (moved) { nav(); renderDispatchers(Date.now()); }
+    // Either way everything is read again: which tasks and plans a dispatcher covers moved with it.
+    if (changed || moved) await refresh();
   } catch { setLive(false); }
   setTimeout(poll, 2000);
 }

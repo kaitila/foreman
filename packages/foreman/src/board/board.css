@@ -138,7 +138,16 @@ kbd + kbd { margin-left: var(--space-0); }
 .disp-task { white-space: nowrap; font-size: var(--text-xs); }
 .disp-task .id { color: var(--color-ink); }
 .disp-mark { flex: none; display: inline-flex; align-items: center; color: var(--color-ink-faint); font-size: var(--text-xs); font-weight: var(--weight-regular); }
-.disp-mark svg { color: var(--color-go); }
+.disp-mark svg { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--color-go); }
+.disp-plan { color: var(--color-ink); }
+a.disp-plan { text-decoration: underline; text-decoration-color: var(--color-line-strong); text-underline-offset: var(--space-0); }
+/* A plan and the dispatchers: in its header the ones that cover it and the command when none starts its ready tasks; in the Plans list a marker */
+.plan-disp { display: flex; flex-direction: column; gap: var(--space-1); max-width: 100%; color: var(--color-ink-muted); font-size: var(--text-sm); }
+.plan-disp .disp-none { color: var(--color-ink-faint); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.plan-disp .disp-none strong { color: var(--color-ink-muted); font-weight: var(--weight-medium); }
+.plan-disp code { padding: 0 var(--space-1); border-radius: var(--radius-sm); background: var(--color-sunk); color: var(--color-ink-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.plan-cover { flex: none; display: inline-flex; align-items: center; gap: var(--space-2); }
+.plan-nodisp { color: var(--color-ink-faint); font-size: var(--text-xs); white-space: nowrap; }
 
 /* Status glyphs: one shape per state, colour only where it means something */
 .si { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--color-ink-faint); }
@@ -549,6 +558,8 @@ a.tlink { color: var(--color-ink-muted); }
   .disp-list { gap: var(--space-2); }
   .step-check { padding-left: var(--space-4); }
   .plan-row .side .progress { display: none; }
+  .plan-row .side .plan-cover { display: none; }
+  .dstrip a.disp-plan, .plan-disp a { display: inline-flex; align-items: center; min-height: var(--control-height-touch); }
   .qnote-list .qr { flex-basis: 100%; }
   .title-line { flex-wrap: wrap; }
   .row .side .waits { display: none; }

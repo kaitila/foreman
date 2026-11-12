@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { type Board, startBoard } from "../src/board/server";
 import { pageHtml } from "../src/board/page";
 import { type Actor, Foreman } from "../src/core";
+import { registerDispatcher } from "../src/dispatchers";
 import { DEFAULT_PROTECTED } from "../src/policy";
 import { Plans } from "../src/plans";
 import { openDb } from "../src/store";
@@ -34,7 +35,10 @@ function toApproval(id: string) {
 
 beforeAll(() => {
   let clock = 1_000_000;
-  f = new Foreman(openDb(":memory:"), null, () => (clock += 1000), { protectedPaths: DEFAULT_PROTECTED, changedFiles: () => [] });
+  f = new Foreman(openDb(":memory:"), null, () => (clock += 1000), { protectedPaths: DEFAULT_PROTECTED, changedFiles: () => [] }, (pid) => pid === 7100);
+  // A whole-board dispatcher runs, so a free task is one it will start: what a task shows when
+  // none covers it is in board-dispatchers.test.ts (T-0120).
+  registerDispatcher(f, { pid: 7100, max: 3, flags: { once: false, verifyOnly: false, print: false }, starter: { name: "ada", kind: "human" }, cwd: "/repo", startedAt: clock });
   // Every task names its own files: tasks with no paths overlap everything in flight.
   const task = (title: string, dir: string, more: Partial<Parameters<Foreman["create"]>[0]> = {}) =>
     f.create({ title, acceptance: ["cmd: true"], risk: "auto", ready: true, paths: [`src/${dir}/**`], ...more }, ada).id;
