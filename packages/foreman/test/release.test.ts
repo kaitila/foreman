@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { contentProblems, forbidden, packages, PUBLISHED, setVersion, sharedVersion, tagProblem } from "../../../.github/scripts/release";
+import { contentProblems, forbidden, packages, PUBLISHED, repositoryProblem, ROOT, setVersion, sharedVersion, tagProblem } from "../../../.github/scripts/release";
 
 function fakeRepo(versions: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "release-"));
@@ -53,6 +53,33 @@ describe("tagProblem", () => {
     expect(tagProblem("v1.2.3", root)).toBeNull();
     expect(tagProblem("v1.2.4", root)).toMatch(/want v1\.2\.3/);
     expect(tagProblem("1.2.3", root)).not.toBeNull();
+  });
+});
+
+describe("repository, for npm provenance", () => {
+  const withRepository = (repository: unknown) => {
+    const root = fakeRepo({ a: "1.0.0" });
+    writeFileSync(join(root, "packages", "a", "package.json"), JSON.stringify({ name: "@x/a", version: "1.0.0", repository }));
+    return root;
+  };
+  const good = { type: "git", url: "git+https://github.com/owner/name.git", directory: "packages/a" };
+
+  test("every published package names this repository and its own folder", () => {
+    // In Actions this compares with the repository the workflow runs in, as npm will.
+    for (const dir of PUBLISHED) expect(`${dir}: ${repositoryProblem(dir)}`).toBe(`${dir}: null`);
+    const urls = PUBLISHED.map((dir) => JSON.parse(readFileSync(join(ROOT, "packages", dir, "package.json"), "utf8")).repository.url);
+    expect(new Set(urls).size).toBe(1);
+  });
+
+  test("a missing, foreign or mismatched repository is refused", () => {
+    expect(repositoryProblem("a", "owner/name", withRepository(good))).toBeNull();
+    expect(repositoryProblem("a", "Owner/Name", withRepository(good))).toBeNull();
+    expect(repositoryProblem("a", undefined, withRepository(good))).toBeNull();
+    expect(repositoryProblem("a", "owner/name", withRepository(undefined))).toContain("no repository.url");
+    expect(repositoryProblem("a", "owner/name", withRepository("https://gitlab.com/owner/name"))).toContain("not a GitHub repository");
+    expect(repositoryProblem("a", "owner/renamed", withRepository(good))).toContain("names owner/name, but this is owner/renamed");
+    expect(repositoryProblem("a", "owner/name", withRepository({ ...good, directory: "packages/b" }))).toContain('want "packages/a"');
+    expect(repositoryProblem("a", "owner/name", withRepository({ type: "git", url: good.url }))).toContain("repository.directory is missing");
   });
 });
 

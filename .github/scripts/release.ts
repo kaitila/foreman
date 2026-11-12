@@ -76,6 +76,24 @@ export function contentProblems(files: string[]): string[] {
   return problems;
 }
 
+/**
+ * Why npm would refuse a published package's provenance, or null. `npm publish --provenance`
+ * compares package.json's repository.url with the GitHub repository the workflow runs in, so
+ * it must be there and name that repository ("owner/name"; in Actions, GITHUB_REPOSITORY).
+ * Without one to compare with, any GitHub repository URL passes.
+ */
+export function repositoryProblem(dir: string, repo: string | undefined = process.env.GITHUB_REPOSITORY, root = ROOT): string | null {
+  const j = JSON.parse(readFileSync(join(root, "packages", dir, "package.json"), "utf8")) as { repository?: string | { url?: string; directory?: string } };
+  const url = typeof j.repository === "string" ? j.repository : j.repository?.url;
+  if (!url) return `package.json has no repository.url: npm refuses its provenance`;
+  const m = /github\.com[/:]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url);
+  if (!m) return `repository.url "${url}" is not a GitHub repository`;
+  if (repo && m[1]!.toLowerCase() !== repo.toLowerCase()) return `repository.url names ${m[1]}, but this is ${repo}: npm refuses its provenance`;
+  const where = typeof j.repository === "object" ? j.repository.directory : undefined;
+  if (where !== `packages/${dir}`) return `repository.directory is ${where ? `"${where}"` : "missing"}, want "packages/${dir}"`;
+  return null;
+}
+
 function run(cmd: string[], cwd: string): string {
   const r = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const out = r.stdout.toString() + r.stderr.toString();
@@ -122,7 +140,8 @@ function main(argv: string[]): number {
     let failed = false;
     for (const dir of PUBLISHED) {
       const { files, tarball } = arg === "--dry-run" ? { files: dryRunFiles(dir), tarball: "(dry run)" } : packTo(dir, resolve(arg));
-      const problems = contentProblems(files);
+      const repository = repositoryProblem(dir);
+      const problems = [...contentProblems(files), ...(repository ? [repository] : [])];
       if (problems.length) {
         failed = true;
         console.error(`${dir}@${version}:\n${problems.map((p) => `  ${p}`).join("\n")}`);
