@@ -137,6 +137,8 @@ const NAMES = { draft: "Draft", ready: "Ready", claimed: "Claimed", in_progress:
 const LIST_ORDER = ["needs_approval", "approved", "verifying", "in_review", "in_progress", "claimed", "ready", "draft", "done", "cancelled"];
 const EMPTY = { needs_approval: "Nothing to sign off.", approved: "Nothing to merge." };
 const YOURS = (t) => t.status === "needs_approval" || t.status === "approved";
+// The rows that use the list's action slot: a button for the person, or why the task hasn't started.
+const SLOTTED = (t) => YOURS(t) || t.status === "ready" || (t.status === "draft" && !!t.wait);
 // Tasks of every project, merged. t.k (project/id) is the key: ids repeat across projects.
 const PROJECTS = (S.projects || [{ name: "", tasks: S.tasks || [], lastEvent: S.lastEvent || 0 }]).map((p) => p.name);
 const multi = PROJECTS.length > 1;
@@ -568,6 +570,87 @@ function undoneTag(t) {
   return f;
 }
 function liveDot() { const d = el("span", "live-dot"); d.title = "A session is running"; return d; }
+// Why a task hasn't started, and what it holds up (T-0118). The server works both out from the
+// one rule everything reads (D0042): the page only words what it was sent.
+const LEAF = { running: "Running", "needs a person": "Needs you", "can start": "Can start", stuck: "Stuck" };
+const LEAF_CLS = { running: "run", "needs a person": "you", "can start": "free", stuck: "stuck" };
+// The state of the task a path ends at, in a few words.
+function leafState(l) {
+  if (l.text.startsWith("cycle:")) return "cycle";
+  if (l.status === "missing") return "missing";
+  if (l.status === "needs_approval") return "needs your approval";
+  if (l.kind === "needs a person") return l.status === "draft" ? "draft, needs you to mark it ready" : "needs you to do it";
+  if (l.kind === "stuck") return l.status === "cancelled" ? "cancelled" : "stuck";
+  if (l.status === "ready") return "can start";
+  return NAMES[l.status].toLowerCase();
+}
+// A task's id as a link that opens it; plain text for a task this board doesn't have.
+function taskLink(project, id) {
+  const t = byKey(project + "/" + id);
+  const a = el(t ? "a" : "span", "id tlink", id);
+  if (t) {
+    a.href = hashFor(t);
+    a.title = id + " " + t.title + " (" + NAMES[t.status] + ")";
+    a.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); goToTask(t); });
+  }
+  return a;
+}
+// The marker on a row or card: "waits on T-0112 ← T-0110 in progress", the direct reason and
+// where its path ends. The whole chain is in its title. A ready task with nothing to wait on says so.
+function waitsTag(t) {
+  if (t.status !== "draft" && t.status !== "ready") return null;
+  const w = t.wait;
+  if (!w) {
+    if (t.status !== "ready") return null;
+    const s = el("span", "waits free", "can start");
+    s.title = "Ready, with nothing to wait on: a dispatcher or a session can pick it up";
+    return s;
+  }
+  const s = el("span", "waits"), r = w.reason, e = w.end;
+  s.append(el("span", "waits-label", "waits on"), " ");
+  const end = (cls, text) => {
+    const x = el("span", "waits-end" + (cls ? " " + cls : ""));
+    // What needs the person is amber with the dot, like everything else that waits for them.
+    if (cls === "you") x.append(el("span", "attn-dot"));
+    x.append(text);
+    return x;
+  };
+  if (r.kind === "human") s.append(end("you", "you: a person does it"));
+  else {
+    const head = r.kind === "blocked" ? r.task : r.kind === "step" ? "step " + r.step : "paths of " + r.task;
+    // The direct blocker is where the path ends: name it once.
+    const direct = !!e && r.kind !== "step" && r.task === e.task;
+    if (!e) s.append(el("span", "waits-head", head));
+    else if (direct) s.append(end(LEAF_CLS[e.kind], head + " " + leafState(e)));
+    else s.append(el("span", "waits-head", head), " ← ", end(LEAF_CLS[e.kind], e.task + " " + leafState(e)));
+  }
+  s.title = w.chain + "\\n\\n" + w.summary;
+  return s;
+}
+function holdsTag(t) {
+  if (!t.holds || !t.holds.count) return null;
+  const s = el("span", "holds", "holds up " + t.holds.count);
+  s.title = t.holds.count + (t.holds.count === 1 ? " task waits" : " tasks wait") + " on this one, directly or through others: " + t.holds.tasks.join(", ");
+  return s;
+}
+// In a plan, the task under the pointer or the focus lights up the tasks on its path and the
+// tasks it holds up, each with a note saying which.
+let hover = null;
+function markPath() {
+  const rows = document.querySelectorAll("#content .plan-detail .row");
+  if (!rows.length) return;
+  const a = document.activeElement, f = a && a.closest ? a.closest("#content .plan-detail .row") : null;
+  const src = byKey(hover || (f ? f.dataset.id : "")) || null;
+  const keys = (ids) => new Set((ids || []).map((id) => src.project + "/" + id));
+  const on = src && src.wait ? keys(src.wait.on) : new Set(), held = src && src.holds ? keys(src.holds.tasks) : new Set();
+  for (const r of rows) {
+    const what = on.has(r.dataset.id) ? "on" : held.has(r.dataset.id) ? "held" : "";
+    r.classList.toggle("hl-on", what === "on");
+    r.classList.toggle("hl-held", what === "held");
+    const note = r.querySelector(".hl-note");
+    if (note) note.textContent = what === "on" ? src.id + " waits on this" : what === "held" ? "waits on " + src.id : "";
+  }
+}
 function bindItem(n, t) {
   n.dataset.id = t.k;
   n.tabIndex = sel === t.k ? 0 : -1;
@@ -584,14 +667,28 @@ function row(t, now) {
   const title = el("span", "title", t.title);
   title.title = t.title;
   const sub = el("div", "sub");
+  // Why it waits: in the action slot on a wide screen, on its own line under the title on a phone.
+  const waits = waitsTag(t);
+  if (waits) sub.append(waitsTag(t));
   sub.append(el("span", "", t.id));
   if (multi && view === "all") sub.append(projChip(t.project));
   if (t.risk !== "auto") sub.append(riskTag(t.risk));
   if (t.assignee) sub.append(el("span", "", t.assignee));
   sub.append(when(t, now));
-  const flag = undoneTag(t);
-  if (flag) { const line = el("span", "title-line"); line.append(title, flag); main.append(line, sub); }
+  const inPlan = !!curPlan();
+  const holds = holdsTag(t);
+  const marks = [undoneTag(t), holds, inPlan ? el("span", "hl-note") : null].filter(Boolean);
+  if (marks.length) { const line = el("span", "title-line"); line.append(title, ...marks); main.append(line, sub); }
   else main.append(title, sub);
+  // The label a screen reader hears says why it waits too.
+  const said = [waits, holds].filter(Boolean).map((m) => m.textContent);
+  if (said.length) r.setAttribute("aria-label", r.getAttribute("aria-label") + ", " + said.join(", "));
+  if (inPlan) {
+    r.addEventListener("mouseenter", () => { hover = t.k; markPath(); });
+    r.addEventListener("mouseleave", () => { if (hover === t.k) hover = null; markPath(); });
+    r.addEventListener("focusin", markPath);
+    r.addEventListener("focusout", () => setTimeout(markPath, 0));
+  }
   // Fixed slots, so each column lines up from row to row; an empty slot keeps its width.
   const side = el("div", "side");
   const slot = (cls, ...kids) => { const s = el("span", "slot " + cls); s.append(...kids.filter(Boolean)); side.append(s); };
@@ -599,7 +696,7 @@ function row(t, now) {
   if (multi && view === "all") slot("s-proj", projChip(t.project));
   slot("s-tag", t.risk !== "auto" ? riskTag(t.risk) : null);
   const act = actionArea(t, true);
-  slot("s-act", act);
+  slot("s-act", act || waits);
   // An approved task's Merge button already names its PR.
   slot("s-pr", t.status === "approved" && act ? null : prLink(t));
   side.append(avatar(t.assignee), when(t, now));
@@ -616,6 +713,9 @@ function card(t, now) {
   const meta = el("div", "card-meta");
   const flag = undoneTag(t);
   if (flag) meta.append(flag);
+  const waits = waitsTag(t), holds = holdsTag(t);
+  if (waits) meta.append(waits);
+  if (holds) meta.append(holds);
   if (t.risk !== "auto") meta.append(riskTag(t.risk));
   const pr = t.status === "approved" && prNumber(t.pr) ? null : prLink(t);
   if (pr) meta.append(pr);
@@ -697,7 +797,7 @@ function queueNotice(r) {
 }
 
 function renderList(box, shown, now) {
-  const wrap = el("div", "list" + (shown.some(YOURS) ? " with-act" : ""));
+  const wrap = el("div", "list" + (shown.some(SLOTTED) ? " with-act" : ""));
   // In the list the queue's notice sits on top, so it stays in sight even when Approved empties.
   const q = queueOut("list-out");
   if (q) wrap.append(q);
@@ -818,7 +918,7 @@ function renderPlans(box, now) {
 // One plan: its goal, then each step in order with its check, its state and its tasks as normal rows.
 function renderPlan(box, p, now) {
   const ts = planTasks(p), shown = ts.filter(matches);
-  const wrap = el("div", "list plan-detail" + (shown.some(YOURS) ? " with-act" : ""));
+  const wrap = el("div", "list plan-detail" + (shown.some(SLOTTED) ? " with-act" : ""));
   const head = el("div", "plan-head");
   const back = el("button", "btn quiet back");
   back.type = "button";
@@ -847,6 +947,15 @@ function renderPlan(box, p, now) {
     const check = el("p", "step-check");
     check.append(el("span", "step-label", "Check"), document.createTextNode(s.check));
     sec.append(check);
+    // A step that waits on an earlier one says so, and names what is unfinished there.
+    for (const w of s.waits || []) {
+      const line = el("p", "step-check step-waits");
+      const names = el("span", "step-on");
+      names.append("step " + w.step + ", " + w.title + ": ");
+      w.tasks.forEach((id, i) => { if (i) names.append(", "); names.append(taskLink(p.project, id)); });
+      line.append(el("span", "step-label", "Waits on"), names);
+      sec.append(line);
+    }
     const mine = shown.filter((t) => s.tasks.some((x) => p.project + "/" + x.id === t.k));
     if (!s.tasks.length) sec.append(el("div", "group-note", "No tasks yet. File one with fm add … --plan " + p.id + " --step " + s.n + "."));
     else if (!mine.length && filter) sec.append(el("div", "group-note", "No task here matches the filter."));
@@ -959,6 +1068,8 @@ function render() {
   else $("#total").textContent = filter ? shown.length + " of " + mine.length : String(mine.length);
   if (openId) { const t = byKey(openId); const slot = $("#detail-act"); if (t && slot) slot.replaceChildren(...[actionArea(t, false)].filter(Boolean)); }
   restoreFocus(fk);
+  if (hover && !node(hover)) hover = null;
+  markPath();
 }
 
 // The dispatcher strip: each dispatcher running in the projects in view, or one quiet line saying none is.
@@ -1240,6 +1351,9 @@ async function openTask(id) {
   const act = actionArea({ ...k, status: t.status, pr: t.pr, assignee: t.assignee }, false);
   if (act) slot.append(act);
   body.append(slot);
+  const ws = waitsSection(k.project, t, d.waiting), hs2 = holdsSection(k.project, d.waiting);
+  if (ws) body.append(ws);
+  if (hs2) body.append(hs2);
   if (t.spec) {
     const s = el("section", "section");
     s.append(el("h3", "", "Spec"), spec(t.spec));
@@ -1270,7 +1384,7 @@ async function openTask(id) {
   let anyLive = false;
   for (const s of d.sessions || []) {
     if (s.live) anyLive = true;
-    const sec = el("section", "section");
+    const sec = el("section", "section session");
     const sh = el("h3", "", s.role.charAt(0).toUpperCase() + s.role.slice(1) + " session");
     if (s.live) sh.append(liveDot());
     sh.append(el("span", "n", s.turns + " turns · $" + s.costUsd.toFixed(2)));
@@ -1297,6 +1411,92 @@ async function openTask(id) {
   p.replaceChildren(panelBar(k, t.status), body);
   body.scrollTop = keepScroll;
   restoreFocus(fk);
+  // Arrived from a path's "its activity" link: show the session.
+  if (wantSessions === id) { wantSessions = null; const se = body.querySelector(".session"); if (se) se.scrollIntoView({ block: "start" }); }
+}
+// Where a path stops: who has to act, in the server's words.
+let wantSessions = null;
+function leafLine(project, l, cycle) {
+  const e = el("div", "wt-end " + LEAF_CLS[l.kind]);
+  if (l.kind === "running" && l.live) e.append(liveDot());
+  if (l.kind === "needs a person") e.append(el("span", "attn-dot"));
+  // A cancelled or missing task, or a cycle, moves on nothing: its text says what to do instead.
+  const plain = cycle || /^cycle:| was cancelled| doesn't exist/.test(l.text);
+  e.append(el("strong", "", cycle ? "Cycle" : LEAF[l.kind]), " " + (plain ? l.text.replace(/^cycle: /, "") : "moves when " + l.text));
+  const x = l.kind === "running" ? byKey(project + "/" + l.task) : null;
+  if (x) {
+    const a = el("a", "wt-act", "its activity");
+    a.href = hashFor(x);
+    a.title = "Open " + x.id + " at its session";
+    a.addEventListener("click", (ev) => { ev.preventDefault(); wantSessions = x.k; goToTask(x); });
+    e.append(" ", a);
+  }
+  return e;
+}
+// Why a node is on the path: what its parent waits on it for.
+function viaText(v) {
+  if (v.kind === "blocked") return "blocked by";
+  if (v.kind === "step") return "earlier step " + v.step + ", " + v.title;
+  if (v.kind === "paths") return "overlapping paths";
+  return v.kind;
+}
+// The path as a nested list: a row per task, its children indented under it.
+function pathTree(project, nodes) {
+  const ul = el("ul", "wt");
+  for (const n of nodes) {
+    const li = el("li", "wt-node"), row = el("div", "wt-row"), head = el("div", "wt-head");
+    li.dataset.task = n.task;
+    if (n.via) {
+      const via = el("span", "wt-via", viaText(n.via));
+      if (n.via.kind === "paths") {
+        via.append(": ");
+        if (!n.via.globs || !n.via.globs.length) via.append("no paths named, so every file");
+        else n.via.globs.forEach((g, i) => { if (i) via.append(", "); via.append(el("code", "", g)); });
+      }
+      row.append(via);
+    }
+    head.append(statusIcon(n.status === "missing" ? "cancelled" : n.status), taskLink(project, n.task),
+      el("span", "wt-title", n.title || "No such task"), el("span", "wt-status", n.status === "missing" ? "Missing" : NAMES[n.status]));
+    if (n.ref) head.append(el("span", "wt-ref", "shown above"));
+    row.append(head);
+    if (n.end) row.append(leafLine(project, n.end, !!n.cycle));
+    li.append(row);
+    if (n.children.length) li.append(pathTree(project, n.children));
+    ul.append(li);
+  }
+  return ul;
+}
+function waitsSection(project, t, w) {
+  if (!w || (t.status !== "draft" && t.status !== "ready")) return null;
+  const p = w.path, s = el("section", "section waits-on");
+  const h = el("h3", "", "Waits on");
+  if (p.depth) h.append(el("span", "n", p.depth + " deep"));
+  const moves = el("p", "moves");
+  const m = /^moves when: (.*)$/.exec(p.summary);
+  moves.append(el("strong", "", m ? "Moves when:" : "Moves:"), " " + (m ? m[1] : p.summary));
+  s.append(h, moves);
+  if (p.root.children.length) {
+    // What the task itself still needs (a draft to mark ready, a person to do it), then the tree.
+    if (p.root.end) { const self = el("div", "wt-self"); self.append(el("span", "wt-via", "this task"), leafLine(project, p.root.end, false)); s.append(self); }
+    s.append(pathTree(project, p.root.children));
+  }
+  return s;
+}
+// Everything downstream: the tasks that wait on this one directly, then the ones reached through them.
+function holdsSection(project, w) {
+  if (!w || !w.holdsUp.count) return null;
+  const s = el("section", "section holds-up");
+  const h = el("h3", "", "Holds up");
+  h.append(el("span", "n", w.holdsUp.count));
+  const ul = el("ul", "held");
+  for (const x of w.holdsUp.tasks) {
+    const li = el("li");
+    li.append(statusIcon(x.status), taskLink(project, x.id), el("span", "wt-title", x.title));
+    if (!x.direct) li.append(el("span", "wt-ref", "through others"));
+    ul.append(li);
+  }
+  s.append(h, ul);
+  return s;
 }
 // On the board the panel floats over the right of the columns: keep the open card left of it.
 function clearOfPanel(k) {

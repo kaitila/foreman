@@ -329,6 +329,52 @@ kbd + kbd { margin-left: var(--space-0); }
 .flag-note { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); background: var(--color-danger-soft); font-size: var(--text-sm); }
 .flag-note strong { color: var(--color-danger); font-weight: var(--weight-semibold); }
 
+/* Why a task waits (T-0118): a marker on its row, the path as a tree in its panel, a highlight in a plan */
+.waits { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-ink-muted); font-size: var(--text-xs); }
+.waits.free { color: var(--color-ink-faint); }
+/* On a row it sits in the action slot, which a task that hasn't started leaves empty, read from the left. */
+.row .s-act .waits { margin-right: auto; }
+.waits-label { color: var(--color-ink-faint); }
+.waits-head { font-family: var(--font-mono); }
+.waits-end.you { color: var(--color-attn); font-weight: var(--weight-medium); }
+.waits-end.stuck { color: var(--color-danger); }
+.waits .attn-dot, .wt-end .attn-dot { display: inline-block; margin-right: var(--space-1); vertical-align: middle; }
+.holds { flex: none; padding: 0 var(--space-2); border: var(--border-width) solid var(--color-line); border-radius: var(--radius-full); color: var(--color-ink-muted); font-size: var(--text-xs); line-height: var(--kbd-size); white-space: nowrap; }
+.row.sel .holds, .row.open .holds { border-color: var(--color-selected-line); }
+.card-meta .waits { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.tlink { text-decoration: underline; text-decoration-color: var(--color-line-strong); text-underline-offset: var(--space-0); }
+a.tlink { color: var(--color-ink-muted); }
+.step-waits .step-on { min-width: 0; }
+.hl-note { flex: none; color: var(--color-ink-muted); font-size: var(--text-xs); white-space: nowrap; }
+.hl-note:empty { display: none; }
+/* On the hovered or focused task's path: a solid ring. Held up by it: a dashed one. */
+.row.hl-on:not(.sel, .open)::before { background: var(--color-hover); box-shadow: inset 0 0 0 var(--border-width) var(--color-line-strong); }
+.row.hl-held:not(.sel, .open)::before { background: var(--color-hover); border: var(--border-width) dashed var(--color-line-strong); }
+.moves { max-width: var(--measure); color: var(--color-ink-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.moves strong { color: var(--color-ink); font-weight: var(--weight-semibold); }
+.wt { display: flex; flex-direction: column; }
+.waits-on > .wt, .wt-self { margin-top: var(--space-3); }
+.wt .wt { margin-left: var(--space-1); padding-left: var(--space-3); border-left: var(--border-width) solid var(--color-line); }
+/* Past eight levels the tree stops indenting, so a long chain never runs off a phone. */
+.wt .wt .wt .wt .wt .wt .wt .wt .wt { margin-left: 0; padding-left: 0; border-left: 0; }
+.wt-row, .wt-self { display: flex; flex-direction: column; gap: var(--space-0); padding: var(--space-2) 0; min-width: 0; }
+.wt-node + .wt-node > .wt-row { border-top: var(--border-width) solid var(--color-line-soft); }
+.wt-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; font-size: var(--text-sm); }
+.wt-title { flex: 1 1 var(--reason-min); min-width: 0; overflow-wrap: anywhere; }
+.wt-status, .wt-ref, .wt-via { color: var(--color-ink-faint); font-size: var(--text-xs); }
+.wt-status, .wt-ref { flex: none; white-space: nowrap; }
+.wt-via { overflow-wrap: anywhere; }
+.wt-via code { font-family: var(--font-mono); color: var(--color-ink-muted); }
+.wt-end { color: var(--color-ink-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.wt-end strong { font-weight: var(--weight-semibold); }
+.wt-end .live-dot { display: inline-block; margin-right: var(--space-1); vertical-align: middle; }
+.wt-end.you strong { color: var(--color-attn); }
+.wt-end.stuck strong { color: var(--color-danger); }
+.wt-end a { text-decoration: underline; text-decoration-color: var(--color-line-strong); text-underline-offset: var(--space-0); }
+.held { display: flex; flex-direction: column; border: var(--border-width) solid var(--color-line); border-radius: var(--radius-lg); }
+.held li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); padding: var(--space-2) var(--space-3); min-width: 0; font-size: var(--text-sm); }
+.held li + li { border-top: var(--border-width) solid var(--color-line-soft); }
+
 /* Board view: workflow columns of cards */
 .app.panel-open .board::after { content: ""; flex: 0 0 var(--panel-width); }
 .board { display: flex; gap: var(--space-3); height: 100%; padding: var(--space-3); overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scroll-padding-inline: var(--space-3); }
@@ -505,6 +551,11 @@ kbd + kbd { margin-left: var(--space-0); }
   .plan-row .side .progress { display: none; }
   .qnote-list .qr { flex-basis: 100%; }
   .title-line { flex-wrap: wrap; }
+  .row .side .waits { display: none; }
+  .row .sub .waits { flex: 1 0 100%; white-space: normal; overflow-wrap: anywhere; }
+  .wt .wt { margin-left: 0; padding-left: var(--space-3); }
+  .wt .tlink, .held .tlink, .step-waits .tlink { display: inline-flex; align-items: center; min-height: var(--control-height-touch); }
+  .wt-end a { display: flex; align-items: center; min-height: var(--control-height-touch); }
   .board { scroll-snap-type: x mandatory; gap: var(--space-2); }
   .lane { flex-basis: calc(100vw - var(--space-8)); }
   .lane.empty { flex-basis: var(--lane-width-empty); }

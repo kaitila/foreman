@@ -8,13 +8,14 @@
 import { timingSafeEqual } from "node:crypto";
 import { basename } from "node:path";
 import { type Actor, type Event, type Foreman, ForemanError, type Status, type Task } from "../core";
-import { asyncRunner, GITHUB_PR } from "../policy";
+import { asyncRunner, GITHUB_PR, pathsOverlap } from "../policy";
 import { judgeChecks, mergeQueuePass, parsePr, PR_VIEW, type QueueEntry, type QueueOptions } from "../queue";
 import { pageHtml } from "./page";
 import { hasLiveSession, recentActivity, taskSessions } from "../activity";
 import { removeFinishedSessions } from "../janitor";
 import { isLabelColor, type LabelColor, readColors, setColor } from "../projects";
-import { Plans } from "../plans";
+import { type Plan, Plans } from "../plans";
+import { holdsUp, type PathNode, pathOf, pathText, type Reason, snapshot, type Snapshot, waitsOn } from "../waiting";
 import { type DispatcherInfo, runningDispatchers } from "../dispatchers";
 
 export const LANES: Status[] = [
@@ -162,6 +163,89 @@ export function placement(f: Foreman, taskId: string) {
   return { plan: p.id, planTitle: p.title, planState: p.state, step: at.step, stepTitle: step?.title ?? "", stepState: step?.state ?? "empty" };
 }
 
+/**
+ * What a waiting task's row shows (T-0118), all of it from waiting.ts (D0042): the first direct
+ * reason, where its path ends (`end`: the first place that isn't the task itself), every leaf,
+ * the depth, the "moves when" line, the whole chain as text for the title, and the tasks on the
+ * path (`on`, for the plan view's highlight). null: nothing to wait on, or a plain draft, whose
+ * status already says so.
+ */
+export function waitCard(s: Snapshot, id: string) {
+  const reason = waitsOn(s, id).find((r) => r.kind !== "draft");
+  if (!reason) return null;
+  const p = pathOf(s, id);
+  const on = new Set<string>();
+  const walk = (n: PathNode) => {
+    for (const c of n.children) {
+      on.add(c.task);
+      walk(c);
+    }
+  };
+  walk(p.root);
+  on.delete(id);
+  const end = p.leaves.find((l) => l.task !== id || l.text.startsWith("cycle:")) ?? null;
+  return { reason, end, leaves: p.leaves, depth: p.depth, summary: p.summary, chain: pathText(p), on: [...on] };
+}
+
+/** How many tasks wait on this one, directly or through others, and which. */
+export function heldCard(s: Snapshot, id: string) {
+  // Nothing waits on a done task, so the common case costs nothing.
+  if (s.tasks.get(id)?.status === "done") return { count: 0, tasks: [] as string[] };
+  const h = holdsUp(s, id);
+  return { count: h.count, tasks: h.tasks.map((t) => t.id) };
+}
+
+/** A node of the path as the panel draws it: a `paths` reason also names the globs that overlap. */
+export type BoardPathNode = Omit<PathNode, "via" | "children"> & { via: (Reason & { globs?: string[] }) | null; children: BoardPathNode[] };
+
+/**
+ * A task's panel (T-0118): the whole path it waits on as a tree, and everything downstream
+ * that waits on it, the direct ones first.
+ */
+export function waitDetail(s: Snapshot, id: string) {
+  const path = pathOf(s, id);
+  const node = (n: PathNode, parent: string | null): BoardPathNode => {
+    let via: BoardPathNode["via"] = n.via;
+    if (n.via?.kind === "paths" && parent) {
+      const mine = s.tasks.get(parent)?.paths ?? [];
+      const theirs = s.tasks.get(n.task)?.paths ?? [];
+      // No paths at all means everything: there is no glob to name.
+      via = { ...n.via, globs: mine.filter((g) => pathsOverlap([g], theirs)) };
+    }
+    return { ...n, via, children: n.children.map((c) => node(c, n.task)) };
+  };
+  const held = holdsUp(s, id);
+  return {
+    path: { ...path, root: node(path.root, null) },
+    holdsUp: { count: held.count, tasks: [...held.tasks.filter((t) => t.direct), ...held.tasks.filter((t) => !t.direct)] },
+  };
+}
+
+/**
+ * Plans for the board: each step also says which earlier steps it waits on and their
+ * unfinished tasks, read from what one of its own waiting tasks waits on (D0042). A step with
+ * no task that waits (empty, or already started) names none.
+ */
+export function plansWithWaits(f: Foreman, plans: Plan[]) {
+  const s = snapshot(f);
+  return plans.map((p) => ({
+    ...p,
+    steps: p.steps.map((step) => {
+      let waits: { step: number; title: string; tasks: string[] }[] = [];
+      if (p.state === "active") {
+        for (const t of step.tasks) {
+          const rs = waitsOn(s, t.id).flatMap((r) => (r.kind === "step" ? [{ step: r.step, title: r.title, tasks: r.tasks }] : []));
+          if (rs.length) {
+            waits = rs;
+            break;
+          }
+        }
+      }
+      return { ...step, waits };
+    }),
+  }));
+}
+
 /** What one project needs: its database, where gh runs, its PR cache and its one-pass-at-a-time flag. */
 interface Ctx {
   name: string;
@@ -220,11 +304,19 @@ export function startBoard(opts: BoardOptions): Board {
     const evs = c.f.events();
     const byTask = new Map<string, Event[]>();
     for (const e of evs) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
+    // Why each task waits and what it holds up (T-0118), from one snapshot of the tasks.
+    const s = snapshot(c.f);
     return {
       color: labels.get(c.dir),
       lanes: LANES,
-      // An approved task is approved again, whatever happened before: nothing to flag.
-      tasks: c.f.list().map((t) => ({ ...card(t), live: hasLiveSession(c.f, t.id), undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []) })),
+      tasks: s.order.map((t) => ({
+        ...card(t),
+        live: hasLiveSession(c.f, t.id),
+        // An approved task is approved again, whatever happened before: nothing to flag.
+        undone: t.status === "approved" ? null : approvalUndone(byTask.get(t.id) ?? []),
+        wait: waitCard(s, t.id),
+        holds: heldCard(s, t.id),
+      })),
       lastEvent: evs.at(-1)?.id ?? 0,
       canApprove: token !== null,
       dispatchers: dispatchers(c),
@@ -324,7 +416,7 @@ export function startBoard(opts: BoardOptions): Board {
             canApprove: token !== null,
             // Who signs off here, so the page doesn't alarm the person about their own rework.
             me: opts.approver?.name ?? null,
-            projects: ctxs.map((c) => ({ name: c.name, ...state(c), plans: new Plans(c.f).list() })),
+            projects: ctxs.map((c) => ({ name: c.name, ...state(c), plans: plansWithWaits(c.f, new Plans(c.f).list()) })),
           };
           return new Response(pageHtml(nonce, initial), {
             headers: { ...security(nonce), "content-type": "text/html; charset=utf-8" },
@@ -352,9 +444,9 @@ export function startBoard(opts: BoardOptions): Board {
         if (req.method === "GET" || req.method === "HEAD") {
           if (path === "/api/tasks") return json(state(ctx));
           // Plans, active first, each with its steps, their tasks and the progress made from them.
-          if (path === "/api/plans") return json({ plans: new Plans(f).list() });
+          if (path === "/api/plans") return json({ plans: plansWithWaits(f, new Plans(f).list()) });
           const pl = /^\/api\/plans\/([A-Za-z0-9_-]+)$/.exec(path);
-          if (pl) return json({ plan: new Plans(f).get(pl[1]!) });
+          if (pl) return json({ plan: plansWithWaits(f, [new Plans(f).get(pl[1]!)])[0] });
           if (path === "/api/events") {
             const since = Number(url.searchParams.get("since") ?? 0) || 0;
             const events = f.events().filter((e) => e.id > since);
@@ -371,7 +463,7 @@ export function startBoard(opts: BoardOptions): Board {
               role: s.role, actor: s.actor, name: s.name ?? null, id: s.id ?? null, live: s.live,
               ...(s.path ? recentActivity(s.path, 10) : { lines: [], turns: 0, costUsd: 0 }),
             }));
-            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions, placement: placement(f, t.id) });
+            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions, placement: placement(f, t.id), waiting: waitDetail(snapshot(f), t.id) });
           }
           return fail(404, "not_found", "no such page");
         }
