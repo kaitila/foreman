@@ -167,3 +167,56 @@ test("the mocked VERSION doesn't leak past its test", async () => {
     JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version,
   );
 });
+
+test("run_plan and stop_plan are refused for dispatched actors over MCP, and watch_plan returns the plan's state", async () => {
+  const d = mkdtempSync(join(tmpdir(), "foreman-mcp-run-"));
+  Bun.spawnSync(["git", "init", "-q", d]);
+  const connect = async (actor: string) => {
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: "bun",
+        args: [CLI, "mcp"],
+        cwd: d,
+        env: { ...(process.env as Record<string, string>), FOREMAN_DB: "", FOREMAN_ACTOR: actor },
+      }),
+    );
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const r = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
+      return { error: r.isError === true, text: r.content[0]!.text };
+    };
+    return { client, call };
+  };
+  try {
+    // A person's session: files the plan, and may watch it.
+    const planner = await connect("planner");
+    const names = (await planner.client.listTools()).tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["run_plan", "watch_plan", "stop_plan"]));
+    const plan = JSON.parse((await planner.call("create_plan", { title: "Run me", steps: [{ title: "One", check: "it works" }] })).text) as { id: string };
+    const task = JSON.parse((await planner.call("create_task", { title: "A draft", acceptance: ["cmd: true"], plan: plan.id, step: 1 })).text) as { id: string };
+    const watch = JSON.parse((await planner.call("watch_plan", { id: plan.id })).text) as { plan: { id: string }; tasks: { id: string; status: string }[]; next: number; dispatchers: string[] };
+    expect(watch).toMatchObject({ plan: { id: plan.id }, tasks: [{ id: task.id, status: "draft" }], dispatchers: [] });
+    expect(watch.next).toBeGreaterThan(0);
+    // Nothing covers the plan: with `since`, that is said at once and not waited out.
+    const gone = JSON.parse((await planner.call("watch_plan", { id: plan.id, since: watch.next, timeoutSeconds: 30 })).text) as { happened: { kind: string }[] };
+    expect(gone.happened.map((h) => h.kind)).toEqual(["no_dispatcher"]);
+    // Not refused for who it is: there is just no dispatcher of this plan to stop.
+    const stop = await planner.call("stop_plan", { id: plan.id });
+    expect(stop.text).toStartWith("not_found: no running dispatcher");
+    await planner.client.close();
+
+    for (const actor of ["worker-T-0001", "verifier-T-0001", "intake"]) {
+      const { client, call } = await connect(actor);
+      const role = actor.split("-")[0];
+      const run = await call("run_plan", { id: plan.id });
+      expect(run.error).toBe(true);
+      expect(run.text).toStartWith(`not_allowed: a dispatched ${role} session can't start a dispatcher`);
+      const stopped = await call("stop_plan", { id: plan.id });
+      expect(stopped.error).toBe(true);
+      expect(stopped.text).toStartWith(`not_allowed: a dispatched ${role} session can't stop a dispatcher`);
+      await client.close();
+    }
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}, 30_000);

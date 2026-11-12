@@ -7,6 +7,7 @@ import { type Actor, Foreman, ForemanError, type Status, type Task } from "./cor
 import { toMarkdown } from "./export";
 import { VERSION } from "./kit/paths";
 import { planText, Plans } from "./plans";
+import { runPlan, stopPlan, watchPlan } from "./run-plan";
 import { holdsUp, pathOf, snapshot, waitingText, waitShort } from "./waiting";
 
 const STATUSES = [
@@ -162,6 +163,45 @@ export function buildServer(f: Foreman, me: Actor, opts: ServerOptions = {}): Mc
       if (plan === undefined || step === undefined) throw new ForemanError("invalid", "plan_task needs plan and step, or remove");
       return plans.add(task, plan, step, me);
     }),
+  );
+  const planId = { id: z.string().describe("Plan id, e.g. P-0001") };
+  server.registerTool(
+    "run_plan",
+    {
+      description:
+        "Start the plan's dispatcher: a background process that runs a worker for each ready task of the plan, in step order, and a fresh verifier for each submitted one. It outlives this session and logs to a file under .foreman/. It marks nothing ready: do that first, when the person has said yes. If a dispatcher already covers the plan, that one is returned (started: false) and nothing is started. Then follow it with watch_plan. Not for a dispatched session: its sessions spend money.",
+      inputSchema: {
+        ...planId,
+        max: z.number().int().positive().optional().describe("Sessions at once, workers and verifiers together (default 3)"),
+        model: z.string().optional(),
+        budgetUsd: z.number().positive().optional().describe("Each session's limit in USD"),
+      },
+    },
+    wrap(({ id, ...o }: { id: string; max?: number; model?: string; budgetUsd?: number }) => runPlan(f, id, me, o)),
+  );
+  server.registerTool(
+    "watch_plan",
+    {
+      description:
+        "Watch a plan. Without `since`: its state now, at once. With `since` (the `next` of the last call): waits until something happened to the plan's tasks after that event (submitted, passed or failed verification, waiting for a person's approval, a session that ended without submitting, approved, merged), no dispatcher covers the plan any more, or the timeout. Returns what happened, each task's status and what it waits on, live sessions with their last lines, and `next`. Call it in a loop; don't tail the log.",
+      inputSchema: {
+        ...planId,
+        since: z.number().int().nonnegative().optional().describe("Event id: the `next` of the previous call"),
+        timeoutSeconds: z.number().positive().max(600).optional().describe("How long to wait when nothing happens (default 60)"),
+      },
+    },
+    wrap(({ id, since, timeoutSeconds }: { id: string; since?: number; timeoutSeconds?: number }) =>
+      watchPlan(f, id, { since, timeoutMs: timeoutSeconds === undefined ? undefined : timeoutSeconds * 1000 }),
+    ),
+  );
+  server.registerTool(
+    "stop_plan",
+    {
+      description:
+        "Stop the dispatcher started for the plan: its sessions stop, a worker's task goes back to ready and a verifier's to in_review. Work a session hadn't pushed stays in its worktree. Not for a dispatched session.",
+      inputSchema: planId,
+    },
+    wrap(({ id }: { id: string }) => stopPlan(f, id, me)),
   );
   server.registerTool(
     "claim_task",

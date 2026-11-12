@@ -75,7 +75,8 @@ describe("buildLaunch", () => {
     expect(flag(cmd, "--max-budget-usd")).toBe("0.25");
   });
 
-  const PLAN_WRITES = ["create_plan", "edit_plan", "plan_task"].map((n) => `mcp__foreman__${n}`);
+  // The plan-shaping tools (D0033), and the two that start or stop a dispatcher (D0048).
+  const PLAN_WRITES = ["create_plan", "edit_plan", "plan_task", "run_plan", "stop_plan"].map((n) => `mcp__foreman__${n}`);
   const WORKER_FORBIDDEN = [...["start_verify", "record_verdict", "mark_merged", "rework_task"].map((n) => `mcp__foreman__${n}`), ...PLAN_WRITES];
   const EDITS = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
@@ -189,6 +190,7 @@ describe("role deny rules from foreman.json (T-0055, D0019)", () => {
     expect(denied).toEqual([
       "mcp__foreman__start_verify", "mcp__foreman__record_verdict", "mcp__foreman__mark_merged", "mcp__foreman__rework_task",
       "mcp__foreman__create_plan", "mcp__foreman__edit_plan", "mcp__foreman__plan_task",
+      "mcp__foreman__run_plan", "mcp__foreman__stop_plan",
       "Bash(gh pr merge *)", "Bash(ssh *)", "Bash(gh release *)",
     ]);
     // Another role's rules stay out; Bash itself stays allowed (deny beats allow for the rest).
@@ -218,7 +220,7 @@ describe("role deny rules from foreman.json (T-0055, D0019)", () => {
   });
 
   test("no roles block: the role defaults only; a malformed one refuses to build the launch", () => {
-    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: fresh("none") })).cmd, "--disallowedTools")).toHaveLength(7);
+    expect(list(buildLaunch(base({ role: "worker", taskId: "T-1", policyRoot: fresh("none") })).cmd, "--disallowedTools")).toHaveLength(9);
     expect(() => buildLaunch(base({ role: "worker", policyRoot: withRoles({ workers: {} }) }))).toThrow("unknown role");
   });
 });

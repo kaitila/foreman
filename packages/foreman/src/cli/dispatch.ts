@@ -2,6 +2,7 @@
 // plans, stop a running one, and see the dispatchers running (D0011, D0041, D0045).
 import { ForemanError } from "../core";
 import { dispatcherLine, runningDispatchers, stopDispatcher, stoppedText } from "../dispatchers";
+import { refuseDispatched } from "../run-plan";
 import type { Module } from "./context";
 
 export const help = {
@@ -37,6 +38,8 @@ function positive(v: string | undefined, what: string): number | undefined {
 
 export const commands: Module["commands"] = {
   async dispatch({ f, me, o, out }) {
+    // Starting and stopping dispatchers is for a person or a session a person runs (D0048).
+    refuseDispatched(me, o.stop !== undefined ? "stop" : "start");
     if (o.stop !== undefined) {
       const stopped = await stopDispatcher(f, o.stop, me);
       return out(stopped, stoppedText(stopped, (id) => f.get(id).status)), 0;
