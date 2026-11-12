@@ -82,7 +82,7 @@ export function contentProblems(files: string[]): string[] {
  * it must be there and name that repository ("owner/name"; in Actions, GITHUB_REPOSITORY).
  * Without one to compare with, any GitHub repository URL passes.
  */
-export function repositoryProblem(dir: string, repo: string | undefined = process.env.GITHUB_REPOSITORY, root = ROOT): string | null {
+export function repositoryProblem(dir: string, repo: string | null = process.env.GITHUB_REPOSITORY ?? null, root = ROOT): string | null {
   const j = JSON.parse(readFileSync(join(root, "packages", dir, "package.json"), "utf8")) as { repository?: string | { url?: string; directory?: string } };
   const url = typeof j.repository === "string" ? j.repository : j.repository?.url;
   if (!url) return `package.json has no repository.url: npm refuses its provenance`;

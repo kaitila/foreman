@@ -74,7 +74,7 @@ describe("repository, for npm provenance", () => {
   test("a missing, foreign or mismatched repository is refused", () => {
     expect(repositoryProblem("a", "owner/name", withRepository(good))).toBeNull();
     expect(repositoryProblem("a", "Owner/Name", withRepository(good))).toBeNull();
-    expect(repositoryProblem("a", undefined, withRepository(good))).toBeNull();
+    expect(repositoryProblem("a", null, withRepository(good))).toBeNull();
     expect(repositoryProblem("a", "owner/name", withRepository(undefined))).toContain("no repository.url");
     expect(repositoryProblem("a", "owner/name", withRepository("https://gitlab.com/owner/name"))).toContain("not a GitHub repository");
     expect(repositoryProblem("a", "owner/renamed", withRepository(good))).toContain("names owner/name, but this is owner/renamed");
