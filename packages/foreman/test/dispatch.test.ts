@@ -62,7 +62,7 @@ function setup(onLaunch?: (s: Session) => void) {
   const add = (title: string, paths: string[]) =>
     f.create({ title, acceptance: ["cmd: true"], paths, risk: "auto", ready: true }, human);
   const log: string[] = [];
-  const dispatcher = (o: { max?: number; once?: boolean; verifyOnly?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
+  const dispatcher = (o: { max?: number; once?: boolean; verifyOnly?: boolean; reverify?: boolean; cleanSessions?: (f: Foreman) => void } = {}) =>
     new Dispatcher(f, { ...o, launcher, worktrees, pollMs: 5, log: (l) => log.push(l) });
   return { f, sessions, alive, add, dispatcher, log, peak: () => peak, tick: (ms: number) => (clock += ms) };
 }
@@ -234,6 +234,71 @@ describe("dispatch", () => {
     expect(env.f.get(theirs.id).status).toBe("approved");
     expect(env.f.get(ready.id).status).toBe("ready");
     expect(env.f.events(ready.id).some((e) => e.type === "claimed")).toBe(false);
+  });
+
+  // What a long-lived verify-only dispatcher (the fm serve --queue loop, D0046) needs.
+  const resubmit = (env: ReturnType<typeof setup>, id: string) => {
+    const other: Actor = { name: "interactive-session", kind: "agent" };
+    env.f.rework(id, human, "one more thing");
+    env.f.claim(id, other);
+    env.f.submit(id, other, { pr: "https://example.com/pull/1", summary: "again" });
+  };
+
+  test("one verifier per run by default: a task submitted again is left for the next run", async () => {
+    const env = setup();
+    const t = submittedElsewhere(env, "again", ["src/a/**"]);
+    const d = env.dispatcher({ verifyOnly: true });
+    d.tick();
+    expect(env.sessions.length).toBe(1);
+    pass(env.f, env.sessions[0]!);
+    await flush();
+    resubmit(env, t.id);
+    d.tick();
+    expect(env.sessions.length).toBe(1);
+    expect(env.f.get(t.id).status).toBe("in_review");
+  });
+
+  test("reverify: a task submitted again gets a fresh verifier; the same submission never gets a second", async () => {
+    const env = setup();
+    const t = submittedElsewhere(env, "again", ["src/a/**"]);
+    const d = env.dispatcher({ verifyOnly: true, reverify: true });
+    d.tick();
+    expect(env.sessions.length).toBe(1);
+    // The verifier dies without a verdict: its lease is released, the task is in review again.
+    env.sessions[0]!.end();
+    await flush();
+    expect(env.f.get(t.id).status).toBe("in_review");
+    for (let i = 0; i < 3; i++) d.tick();
+    expect(env.sessions.length).toBe(1);
+    // Submitted again: one new verifier, however many ticks follow.
+    resubmit(env, t.id);
+    for (let i = 0; i < 3; i++) d.tick();
+    expect(env.sessions.length).toBe(2);
+    expect(env.sessions[1]!.opts).toMatchObject({ role: "verifier", taskId: t.id });
+    pass(env.f, env.sessions[1]!);
+    await flush();
+    expect(env.f.get(t.id).status).toBe("approved");
+    d.tick();
+    expect(env.sessions.length).toBe(2);
+  });
+
+  test("reverify: a verification that can't be started is tried once per submission", () => {
+    const env = setup();
+    const t = submittedElsewhere(env, "refused", ["src/a/**"]);
+    const startVerify = env.f.startVerify.bind(env.f);
+    let calls = 0;
+    env.f.startVerify = (...a) => {
+      calls++;
+      throw new Error("no");
+    };
+    const d = env.dispatcher({ verifyOnly: true, reverify: true });
+    for (let i = 0; i < 4; i++) d.tick();
+    expect(calls).toBe(1);
+    expect(env.log.filter((l) => l.includes("not verified"))).toEqual([`${t.id} not verified: no`]);
+    env.f.startVerify = startVerify;
+    resubmit(env, t.id);
+    d.tick();
+    expect(env.sessions.map((s) => s.opts.role)).toEqual(["verifier"]);
   });
 
   test("workers and verifiers get their own actor, tools, and the lessons in their prompt", () => {

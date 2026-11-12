@@ -210,6 +210,13 @@ export interface DispatchOptions {
   /** Only start verifiers for submitted tasks: never claim a ready task. */
   verifyOnly?: boolean;
   /**
+   * One verifier per submission, not per run (D0046): a task submitted again after rework
+   * gets a fresh verifier from the same Dispatcher. For one that is ticked for as long as
+   * its process lives (the `fm serve --queue` loop). A verifier that didn't start, or
+   * ended without a verdict, is still not tried again until the task is submitted again.
+   */
+  reverify?: boolean;
+  /**
    * Take only these plans' tasks (D0045): workers for their ready tasks, verifiers for
    * their submitted ones. It then stays up until nothing of the plans is left that could
    * start without a person. None: the whole board.
@@ -258,6 +265,8 @@ export class Dispatcher {
   private running = new Map<string, { role: Role; done: Promise<void>; rec: SessionRecord }>();
   /** Roles already started per task in this run: each task gets one worker and one verifier. */
   private tried = new Map<string, Set<Role>>();
+  /** With `reverify`: the submission (its event id) each task's verifier was last started for. */
+  private verifiedAt = new Map<string, number>();
   private first = true;
   readonly sessions: SessionRecord[] = [];
   /** Most sessions running at the same time, for the summary and the tests. */
@@ -292,6 +301,17 @@ export class Dispatcher {
 
   private triedRole(id: string, role: Role): boolean {
     return this.tried.get(id)?.has(role) ?? false;
+  }
+
+  /** The task's latest submission, as its event id (0: never submitted). */
+  private submission(id: string): number {
+    return this.f.events(id).findLast((e) => e.type === "submitted")?.id ?? 0;
+  }
+
+  /** Has this task had its verifier: in this run, or with `reverify` for its latest submission? */
+  private triedVerifier(id: string): boolean {
+    if (!this.opts.reverify) return this.triedRole(id, "verifier");
+    return this.verifiedAt.get(id) === this.submission(id);
   }
 
   private mark(id: string, role: Role) {
@@ -349,7 +369,7 @@ export class Dispatcher {
     // Finish work before starting more: submitted tasks get a verifier first.
     for (const t of this.f.list({ status: ["in_review"] })) {
       if (!free()) break;
-      if (!mine(t) || this.running.has(t.id) || this.triedRole(t.id, "verifier")) continue;
+      if (!mine(t) || this.running.has(t.id) || this.triedVerifier(t.id)) continue;
       if (!t.worktree || !existsSync(t.worktree)) continue; // nowhere to verify it
       this.startVerifier(t);
     }
@@ -410,6 +430,7 @@ export class Dispatcher {
   private startVerifier(t: Task) {
     const actor: Actor = { name: actorFor("verifier", t.id), kind: "agent" };
     this.mark(t.id, "verifier");
+    if (this.opts.reverify) this.verifiedAt.set(t.id, this.submission(t.id));
     let task: Task;
     try {
       task = this.f.startVerify(t.id, actor);

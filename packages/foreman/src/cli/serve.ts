@@ -1,15 +1,24 @@
-// fm serve: the local web board, with the merge queue in the same process under --queue (D0024).
+// fm serve: the local web board, with the merge queue in the same process under --queue (D0024),
+// which also starts a verifier for each submitted task (D0046).
 import { Foreman, ForemanError } from "../core";
 import type { QueueEntry } from "../queue";
 import { type Exit, type Local, type Module, num } from "./context";
 
 export const help = {
   "serve-short": `  serve [--port 4499] [--queue] local web board on 127.0.0.1; approve and merge from the link it prints;
-                                --queue runs the merge queue in the same process (see below)`,
-  serve: `  serve [--port 4499] [--project name|dir] [--queue [--interval 60] [--settle-seconds 30]]
+                                --queue runs the merge queue in the same process and verifies
+                                submitted tasks (see below)`,
+  serve: `  serve [--port 4499] [--project name|dir]
+        [--queue [--interval 60] [--settle-seconds 30] [--no-verify] [--max 3] [--model m] [--budget usd] [--print]]
                                 local web board on 127.0.0.1 for every project on this machine (or one);
                                 approve and merge from the link it prints; --queue also runs the
-                                merge queue for each project shown, a pass every --interval seconds`,
+                                merge queue for each project shown, a pass every --interval seconds,
+                                and after each pass starts a verifier for every submitted task whose
+                                worktree exists, once per submission, as "dispatch --verify-only"
+                                would: at most --max verifier sessions at once per project, --model,
+                                --budget and --print as for dispatch. It never starts a worker: a task
+                                sent back for a conflict waits for "fm dispatch". --no-verify: the
+                                merge queue only`,
 };
 
 async function serve({ o, me }: Local): Promise<Exit> {
@@ -54,6 +63,11 @@ async function serve({ o, me }: Local): Promise<Exit> {
     // --queue: the merge queue runs in this process too, as `fm merge-queue` would.
     const queueActor = process.env.FOREMAN_ACTOR ? me : { name: "merge-queue", kind: me.kind };
     const prefix = projects.length > 1;
+    const max = o.max === undefined ? 3 : Number(o.max);
+    if (!Number.isInteger(max) || max < 1) throw new ForemanError("invalid", `--max must be a whole number of at least 1, got "${o.max}"`);
+    const budget = o.budget === undefined ? undefined : Number(o.budget);
+    if (budget !== undefined && (!Number.isFinite(budget) || budget <= 0)) throw new ForemanError("invalid", `--budget must be a positive number, got "${o.budget}"`);
+    const withProject = (name: string, text: string) => (prefix ? `${name}: ${text}` : text);
     const autoQueue = o.queue
       ? {
           actor: queueActor,
@@ -64,6 +78,17 @@ async function serve({ o, me }: Local): Promise<Exit> {
             console.log(prefix ? text.split("\n").map((l) => `${name}: ${l}`).join("\n") : text);
           },
           onError: (name: string, e: unknown) => console.error(`${name}: merge queue pass failed: ${e instanceof Error ? e.message : String(e)}`),
+          // Submitted tasks get a verifier too (D0046), unless --no-verify.
+          verify: o["no-verify"]
+            ? (false as const)
+            : {
+                max,
+                model: o.model,
+                budgetUsd: budget,
+                mode: o.print ? ("print" as const) : undefined,
+                log: (name: string, l: string) => console.log(withProject(name, l)),
+                onError: (name: string, e: unknown) => console.error(`${name}: verify pass failed: ${e instanceof Error ? e.message : String(e)}`),
+              },
         }
       : undefined;
     board = startBoard({
@@ -95,7 +120,14 @@ async function serve({ o, me }: Local): Promise<Exit> {
     throw e;
   }
   console.log(`projects: ${projects.map((p) => p.name).join(", ")}`);
-  if (board.queueRunning) console.log(`merge queue: on, a pass every ${num(o.interval, 60, "--interval")} s (Ctrl-C stops it and the board)`);
+  if (board.queueRunning) {
+    console.log(`merge queue: on, a pass every ${num(o.interval, 60, "--interval")} s (Ctrl-C stops it and the board)`);
+    console.log(
+      o["no-verify"]
+        ? "verifiers: off (--no-verify): submitted tasks wait for fm dispatch"
+        : `verifiers: on, one for each submitted task after every pass, at most ${o.max ?? 3} at once per project (--no-verify turns it off; Ctrl-C stops them too)`,
+    );
+  }
   if (board.token) {
     // The token rides in the fragment, which the browser keeps to itself (D0021).
     console.log(`foreman board: ${board.openUrl}`);

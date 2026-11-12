@@ -52,6 +52,7 @@ function parseFlags(argv: string[]) {
       max: { type: "string" },
       once: { type: "boolean" },
       "verify-only": { type: "boolean" },
+      "no-verify": { type: "boolean" },
       print: { type: "boolean" },
       model: { type: "string" },
       budget: { type: "string" },

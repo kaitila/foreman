@@ -1,9 +1,15 @@
 // `fm serve --queue` (T-0079): the board runs a merge-queue pass per project every interval,
 // through a fake gh. An approved, settled-green task merges with no click; a tick and a click
 // never run two passes on one project at once; without autoQueue there is no loop.
-import { afterEach, describe, expect, test } from "bun:test";
-import { type Board, type BoardOptions, startBoard } from "../src/board/server";
+// The loop also verifies submitted tasks (T-0107): the last describe, with a fake launcher.
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Board, type BoardOptions, startBoard, type VerifyPassOptions } from "../src/board/server";
 import { type Actor, Foreman } from "../src/core";
+import type { Launcher, SessionResult } from "../src/dispatch";
+import { actorFor } from "../src/launch";
 import { DEFAULT_PROTECTED, type Policy } from "../src/policy";
 import type { QueueEntry } from "../src/queue";
 import { openDb } from "../src/store";
@@ -447,5 +453,227 @@ describe("a pass doesn't block the board (T-0081)", () => {
     }
     expect((await click).status).toBe(200);
     expect(f.get(id).status).toBe("done");
+  });
+});
+
+// The loop's verify pass (T-0107, D0046): after a project's merge-queue pass, every submitted
+// task whose worktree exists gets a verifier, with no `fm dispatch` running. A fake launcher
+// stands in for Claude Code: its sessions are promises the test ends.
+describe("fm serve --queue verifies submitted tasks", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "foreman-board-verify-"));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+  const DONE: SessionResult = { exitCode: 0, costUsd: 0, isError: false, timedOut: false, result: "done" };
+
+  interface Session {
+    task: string;
+    role: string;
+    cwd: string;
+    actor: Actor;
+    end(): void;
+  }
+
+  /** A foreman whose pinned leases follow fake PIDs, and the launcher that hands them out. */
+  function env(gh: GH, refuse: (taskId: string) => boolean = () => false) {
+    let clock = 1;
+    const alive = new Set<number>();
+    const f = new Foreman(openDb(":memory:"), null, () => ++clock, gh.policy, (pid) => alive.has(pid));
+    const sessions: Session[] = [];
+    const refused: string[] = [];
+    let nextPid = 5000;
+    let running = 0;
+    let peak = 0;
+    const launcher: Launcher = (o, onSpawn) => {
+      if (refuse(o.taskId!)) {
+        refused.push(o.taskId!);
+        return Promise.reject(new Error("claude --bg refused"));
+      }
+      return new Promise((resolve) => {
+        const pid = nextPid++;
+        alive.add(pid);
+        peak = Math.max(peak, ++running);
+        sessions.push({
+          task: o.taskId!,
+          role: o.role,
+          cwd: o.cwd,
+          actor: { name: actorFor(o.role, o.taskId), kind: "agent" },
+          end() {
+            alive.delete(pid);
+            running--;
+            resolve(DONE);
+          },
+        });
+        onSpawn(pid);
+      });
+    };
+    return { f, sessions, refused, launcher, peak: () => peak };
+  }
+
+  /** A task an interactive session submitted from its own worktree: in_review, nobody verifying. */
+  function submitted(f: Foreman, gh: GH, n: number, o: { worktree?: boolean } = {}) {
+    const branch = `t-${n}`;
+    gh.prs.set(PR(n), { head: branch, sha: `sha${n}aaaaaaaa`, mergeable: "MERGEABLE", checks: [ok("check")], merged: false });
+    const t = f.create({ title: `task ${n}`, acceptance: ["cmd: true"], paths: [`src/${n}/**`], ready: true, risk: "auto" }, human);
+    const worktree = join(tmp, `wt-${n}`);
+    if (o.worktree !== false) mkdirSync(worktree, { recursive: true });
+    f.claim(t.id, worker);
+    f.progress(t.id, worker, { branch, worktree });
+    f.submit(t.id, worker, { pr: PR(n) });
+    expect(f.get(t.id).status).toBe("in_review");
+    return t.id;
+  }
+
+  const passAll = (f: Foreman, s: Session) => {
+    f.recordVerify(s.task, s.actor, f.get(s.task).acceptance.map((c) => ({ check: c.id, pass: true, evidence: "ran it" })));
+    s.end();
+  };
+
+  const boardFor = (e: ReturnType<typeof env>, gh: GH, o: { intervalMs?: number; verify?: false | VerifyPassOptions; onPass?: (p: string, r: QueueEntry[]) => void } = {}) =>
+    start({
+      foreman: e.f,
+      port: 0,
+      approver: null,
+      queue: { run: gh.run, settleSeconds: 0, sleep: () => Promise.resolve() },
+      autoQueue: {
+        actor: queueActor,
+        intervalMs: o.intervalMs ?? 10_000,
+        onPass: o.onPass,
+        cleanSessions: () => {},
+        verify: o.verify === false ? false : { launcher: e.launcher, log: () => {}, ...o.verify },
+      },
+    });
+
+  test("a submitted task with a worktree gets a verifier on the first tick; a ready task is never claimed", async () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    const id = submitted(e.f, gh, 41);
+    const gone = submitted(e.f, gh, 42, { worktree: false });
+    const ready = e.f.create({ title: "ready", acceptance: ["cmd: true"], paths: ["src/r/**"], ready: true, risk: "auto" }, human);
+    // One tick only: the interval is far longer than the test.
+    boardFor(e, gh);
+    expect(await until(() => e.sessions.length > 0)).toBe(true);
+    expect(e.sessions.map((s) => `${s.task} ${s.role}`)).toEqual([`${id} verifier`]);
+    expect(e.sessions[0]!.cwd).toBe(join(tmp, "wt-41"));
+    expect(e.f.get(id)).toMatchObject({ status: "verifying", assignee: `verifier-${id}` });
+    // No worktree, nowhere to verify it: left in review. The ready task is untouched.
+    expect(e.f.get(gone).status).toBe("in_review");
+    expect(e.f.get(ready.id).status).toBe("ready");
+    expect(e.f.events(ready.id).some((ev) => ev.type === "claimed")).toBe(false);
+  });
+
+  test("a conflict send-back that is reworked and submitted again gets a fresh verifier, and then merges", async () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    const id = submitted(e.f, gh, 43);
+    const actions: string[] = [];
+    boardFor(e, gh, { intervalMs: 15, onPass: (_p, r) => actions.push(...r.map((x) => x.action)) });
+    expect(await until(() => e.sessions.length === 1)).toBe(true);
+    // Verified and approved, but main moved under it: the queue sends it back (D0012).
+    gh.prs.get(PR(43))!.mergeable = "CONFLICTING";
+    passAll(e.f, e.sessions[0]!);
+    expect(await until(() => e.f.get(id).status === "ready")).toBe(true);
+    expect(gh.merges()).toEqual([]);
+    // The loop starts no worker for it (D0046): it stays ready until someone takes it.
+    await Bun.sleep(60);
+    expect(e.f.get(id).status).toBe("ready");
+    expect(e.sessions.length).toBe(1);
+    // A worker merges main and submits again, in the same serve process.
+    e.f.claim(id, worker);
+    Object.assign(gh.prs.get(PR(43))!, { mergeable: "MERGEABLE", sha: "sha43bbbbbbbb" });
+    e.f.submit(id, worker, { pr: PR(43) });
+    expect(await until(() => e.sessions.length === 2)).toBe(true);
+    expect(e.sessions[1]).toMatchObject({ task: id, role: "verifier" });
+    passAll(e.f, e.sessions[1]!);
+    expect(await until(() => e.f.get(id).status === "done")).toBe(true);
+    expect(e.sessions.length).toBe(2);
+  });
+
+  test("a verifier that could not start is tried once, not on every tick, until the task is submitted again", async () => {
+    const gh = fakeGitHub();
+    let refuse = true;
+    const e = env(gh, () => refuse);
+    const id = submitted(e.f, gh, 44);
+    let passes = 0;
+    boardFor(e, gh, { intervalMs: 5, onPass: () => passes++ });
+    expect(await until(() => passes >= 6)).toBe(true);
+    expect(e.refused).toEqual([id]);
+    // Its lease was let go: back in review, where a person can see it.
+    expect(e.f.get(id)).toMatchObject({ status: "in_review", assignee: null });
+    // Reworked and submitted again: a new submission, so one new try.
+    refuse = false;
+    e.f.rework(id, human, "try again");
+    e.f.claim(id, worker);
+    e.f.submit(id, worker, { pr: PR(44) });
+    expect(await until(() => e.sessions.length === 1)).toBe(true);
+    expect(e.sessions[0]).toMatchObject({ task: id, role: "verifier" });
+  });
+
+  test("the session limit holds across ticks: with max 1, the second task waits for the first verifier to end", async () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    const a = submitted(e.f, gh, 45);
+    const b = submitted(e.f, gh, 46);
+    let passes = 0;
+    boardFor(e, gh, { intervalMs: 5, onPass: () => passes++, verify: { max: 1 } });
+    expect(await until(() => passes >= 5)).toBe(true);
+    expect(e.sessions.map((s) => s.task)).toEqual([a]);
+    expect(e.f.get(b).status).toBe("in_review");
+    passAll(e.f, e.sessions[0]!);
+    expect(await until(() => e.sessions.length === 2)).toBe(true);
+    expect(e.sessions[1]!.task).toBe(b);
+    expect(e.peak()).toBe(1);
+  });
+
+  test("verify: false (--no-verify) runs the merge queue only", async () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    const id = submitted(e.f, gh, 47);
+    const approved = approvedTask(e.f, gh, 48);
+    let passes = 0;
+    boardFor(e, gh, { intervalMs: 5, onPass: () => passes++, verify: false });
+    expect(await until(() => passes >= 4)).toBe(true);
+    expect(e.f.get(approved).status).toBe("done");
+    expect(e.sessions).toEqual([]);
+    expect(e.f.get(id).status).toBe("in_review");
+  });
+
+  test("a verify pass that throws is reported, and the merge queue still merges on that tick and the next", async () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    submitted(e.f, gh, 49);
+    const first = approvedTask(e.f, gh, 50);
+    // The verify pass reads the in_review tasks; the merge queue reads the approved ones.
+    const list = e.f.list.bind(e.f);
+    e.f.list = (filter = {}) => {
+      if (filter.status?.includes("in_review")) throw new Error("database is locked");
+      return list(filter);
+    };
+    const errors: string[] = [];
+    const queueErrors: unknown[] = [];
+    start({
+      foreman: e.f,
+      port: 0,
+      approver: null,
+      queue: { run: gh.run, settleSeconds: 0, sleep: () => Promise.resolve() },
+      autoQueue: {
+        actor: queueActor,
+        intervalMs: 5,
+        onError: (_p, err) => queueErrors.push(err),
+        cleanSessions: () => {},
+        verify: { launcher: e.launcher, log: () => {}, onError: (p, err) => errors.push(`${p}: ${(err as Error).message}`) },
+      },
+    });
+    expect(await until(() => e.f.get(first).status === "done")).toBe(true);
+    const second = approvedTask(e.f, gh, 51);
+    expect(await until(() => e.f.get(second).status === "done")).toBe(true);
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    expect(errors[0]).toBe("project: database is locked");
+    expect(queueErrors).toEqual([]);
+    expect(e.sessions).toEqual([]);
+  });
+
+  test("a bad session limit is refused when the board starts, not on every tick", () => {
+    const gh = fakeGitHub();
+    const e = env(gh);
+    expect(() => boardFor(e, gh, { verify: { max: 0 } })).toThrow("--max must be a whole number of at least 1");
   });
 });
