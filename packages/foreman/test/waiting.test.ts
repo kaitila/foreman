@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type Actor, Foreman, ForemanError, type CreateInput } from "../src/core";
 import { branchFor, Dispatcher, type Launcher } from "../src/dispatch";
 import { buildServer } from "../src/mcp";
+import { registerDispatcher, unregisterDispatcher } from "../src/dispatchers";
 import { Plans } from "../src/plans";
 import { DEFAULT_PROTECTED } from "../src/policy";
 import { openDb } from "../src/store";
@@ -22,9 +23,25 @@ const verifier: Actor = { name: "verifier-1", kind: "agent" };
 const PASS = [{ check: "c1", pass: true, evidence: "ok" }];
 const FAIL = [{ check: "c1", pass: false, evidence: "red" }];
 
-function setup(db = openDb(":memory:")) {
-  const alive = new Set<number>();
+/** A dispatcher's record, as `fm dispatch` writes it: for the whole board unless `scope` names plans. */
+const running = (pid: number, scope?: string, flags: { once?: boolean; verifyOnly?: boolean } = {}) => ({
+  pid,
+  max: 3,
+  flags: { once: false, verifyOnly: false, print: false, ...flags },
+  starter: { name: "ada", kind: "human" as const },
+  cwd: "/repo",
+  startedAt: 1_000_000,
+  ...(scope ? { scope } : {}),
+});
+
+/**
+ * A board with a whole-board dispatcher running (this process stands in for it), so a
+ * free task "can start". `covered: false` leaves it out: then nothing covers a ready task (D0045).
+ */
+function setup(db = openDb(":memory:"), { covered = true } = {}) {
+  const alive = new Set<number>(covered ? [process.pid] : []);
   const f = new Foreman(db, null, () => 1_000_000, { protectedPaths: DEFAULT_PROTECTED, changedFiles: () => ["src/x.ts"] }, (pid) => alive.has(pid));
+  if (covered) registerDispatcher(f, running(process.pid));
   const plans = new Plans(f, () => 1_000_000);
   let n = 0;
   /** A ready task with its own paths, so nothing overlaps unless the test says so. */
@@ -419,5 +436,72 @@ describe("editing what a task is blocked by", () => {
     plans.add(late, p, 2, ada);
     expect(code(() => f.edit(early, ada, { addBlockedBy: [late] }))).toBe("cycle");
     expect(f.get(early).blockedBy).toEqual([]);
+  });
+});
+
+describe("no dispatcher (D0045)", () => {
+  test("a ready task nothing covers says so, until a covering dispatcher runs", () => {
+    const { f, plans, add, twoSteps, alive } = setup(undefined, { covered: false });
+    const p = twoSteps();
+    const inPlan = add("in the plan");
+    const later = add("step two");
+    const free = add("in no plan");
+    plans.add(inPlan, p, 1, ada);
+    plans.add(later, p, 2, ada);
+
+    // Nothing runs: both free tasks wait for a dispatcher, and only for that.
+    for (const id of [inPlan, free]) {
+      expect(waitsOn(f, id)).toEqual([{ kind: "no dispatcher" }]);
+      expect(waitShort(f, id)).toBe("waits: no dispatcher");
+      expect(pathOf(f, id).leaves).toEqual([{ task: id, status: "ready", kind: "no dispatcher", text: `${id} is picked up (can start, but no dispatcher covers it)` }]);
+    }
+    expect(pathText(pathOf(f, free))).toContain("=> no dispatcher:");
+    // It is not a reason to refuse a claim: a session may still take the task by hand.
+    expect(f.ready("agent").map((t) => t.id)).toEqual([inPlan, free]);
+
+    // A task that waits on something else doesn't wait for a dispatcher yet; its chain ends in one.
+    expect(waitsOn(f, later)).toEqual([{ kind: "step", plan: p, step: 1, title: "First", tasks: [inPlan] }]);
+    expect(pathOf(f, later).leaves.map((l) => [l.task, l.kind])).toEqual([[inPlan, "no dispatcher"]]);
+    expect(waitShort(f, later)).toBe(`waits: step 1 of ${p} <- ${inPlan} (ready, no dispatcher)`);
+
+    // A dispatcher for the plan: its task can start, the one in no plan still has nobody.
+    alive.add(7001);
+    registerDispatcher(f, running(7001, p));
+    expect(waitsOn(f, inPlan)).toEqual([]);
+    expect(waitShort(f, inPlan)).toBeNull();
+    expect(pathOf(f, inPlan).leaves[0]).toMatchObject({ kind: "can start" });
+    expect(pathOf(f, later).leaves.map((l) => [l.task, l.kind])).toEqual([[inPlan, "can start"]]);
+    expect(waitsOn(f, free)).toEqual([{ kind: "no dispatcher" }]);
+
+    // A whole-board one covers the rest.
+    alive.add(7002);
+    registerDispatcher(f, running(7002));
+    expect(waitsOn(f, free)).toEqual([]);
+
+    // Stopped (the record gone) or killed (the pid dead): back to no dispatcher.
+    unregisterDispatcher(f, 7002);
+    expect(waitsOn(f, free)).toEqual([{ kind: "no dispatcher" }]);
+    alive.delete(7001);
+    expect(waitsOn(f, inPlan)).toEqual([{ kind: "no dispatcher" }]);
+  });
+
+  test("a dispatcher that starts no new workers doesn't cover a ready task", () => {
+    const { f, add, alive } = setup(undefined, { covered: false });
+    const free = add("free");
+    alive.add(7001).add(7002);
+    registerDispatcher(f, running(7001, undefined, { verifyOnly: true }));
+    registerDispatcher(f, running(7002, undefined, { once: true }));
+    expect(waitsOn(f, free)).toEqual([{ kind: "no dispatcher" }]);
+  });
+
+  test("only a ready task with nothing else to wait on: not a draft, a person's task, or one in flight", () => {
+    const { f, add } = setup(undefined, { covered: false });
+    const draft = add("draft", { ready: false });
+    const human = add("by hand", { risk: "human" });
+    const held = add("held");
+    f.claim(held, worker);
+    expect(waitsOn(f, draft)).toEqual([{ kind: "draft" }]);
+    expect(waitsOn(f, human)).toEqual([{ kind: "human" }]);
+    expect(waitsOn(f, held)).toEqual([]);
   });
 });

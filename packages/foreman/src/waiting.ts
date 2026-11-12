@@ -1,10 +1,11 @@
-// Why a task hasn't started, and what has to move first (D0042).
+// Why a task hasn't started, and what has to move first (D0042, and D0045 for "no dispatcher").
 // One rule, read by everything that hands out work: Foreman.ready() and claim() (core.ts),
 // the dispatcher (dispatch.ts), and what `fm show`, `fm list` and `fm next` print.
 // - waitsOn: the direct reasons a draft or ready task waits.
 // - pathOf: those reasons followed through the tasks they name, to the end, as a tree.
 // - holdsUp: the reverse, everything downstream that waits on a task.
 import type { Actor, Foreman, Status, Task } from "./core";
+import { type DispatcherInfo, runningDispatchers, startsWorkers } from "./dispatchers";
 import { loadShared, pathsOverlap } from "./policy";
 
 /** Tasks whose paths are taken: someone is working on them or their PR is being checked. */
@@ -23,9 +24,11 @@ export type Reason =
   /** Its paths overlap a task in flight. */
   | { kind: "paths"; task: string; status: Status }
   /** Risk "human": a person does it. */
-  | { kind: "human" };
+  | { kind: "human" }
+  /** Ready with nothing else to wait on, and no running dispatcher would start it (D0045). */
+  | { kind: "no dispatcher" };
 
-export type LeafKind = "running" | "needs a person" | "can start" | "stuck";
+export type LeafKind = "running" | "needs a person" | "can start" | "no dispatcher" | "stuck";
 
 /** Why a path stops at a task, and who has to act. */
 export interface Leaf {
@@ -79,13 +82,18 @@ export interface Snapshot {
   place: Map<string, { plan: string; step: number }>;
   /** Plan id to its steps, in order. */
   steps: Map<string, { n: number; title: string; tasks: string[] }[]>;
+  /**
+   * The dispatchers running now: their scopes and flags say which ready tasks one would
+   * start. null: not asked, so nothing is reported as "no dispatcher".
+   */
+  dispatchers: Pick<DispatcherInfo, "scope" | "flags">[] | null;
   /** The repo's shared paths (D0043), once something has needed them. */
   shared?: string[];
 }
 
 type Row = Record<string, unknown>;
 
-export function snapshot(f: Foreman): Snapshot {
+export function snapshot(f: Foreman, o: { dispatchers?: boolean } = {}): Snapshot {
   const order = f.list();
   const place: Snapshot["place"] = new Map();
   const steps: Snapshot["steps"] = new Map();
@@ -107,7 +115,9 @@ export function snapshot(f: Foreman): Snapshot {
     step.tasks.push(r.task_id as string);
     place.set(r.task_id as string, { plan: r.plan_id as string, step: r.step as number });
   }
-  return { f, order, tasks: new Map(order.map((t) => [t.id, t])), place, steps };
+  // Read only: a snapshot is taken on every read of the board, and dropping dead records is the registry's job.
+  const dispatchers = o.dispatchers === false ? null : runningDispatchers(f, { drop: false });
+  return { f, order, tasks: new Map(order.map((t) => [t.id, t])), place, steps, dispatchers };
 }
 
 const snap = (from: Foreman | Snapshot): Snapshot => ("order" in from ? from : snapshot(from));
@@ -143,17 +153,31 @@ function reasonsFor(s: Snapshot, t: Task): Reason[] {
     if (o.id !== t.id && ACTIVE.includes(o.status) && overlap(s, t, o)) out.push({ kind: "paths", task: o.id, status: o.status });
   }
   if (t.risk === "human") out.push({ kind: "human" });
+  // Only when it is the whole answer: a task that waits on something else isn't waiting for a dispatcher yet.
+  if (!out.length && t.status === "ready" && s.dispatchers && !s.dispatchers.some((d) => startsWorkers(d, at?.plan))) out.push({ kind: "no dispatcher" });
   return out;
 }
 
+/** The reasons that name something to wait for. "no dispatcher" isn't one: the task itself can start. */
+const held = (reasons: Reason[]) => reasons.filter((r) => r.kind !== "no dispatcher");
+
 /**
- * What a task waits on, directly. Empty means it can start now. Only a draft or ready
- * task waits: one that is already started, finished or cancelled returns nothing.
+ * What a task waits on, directly. Empty means it can start now and a running dispatcher
+ * will start it. Only a draft or ready task waits: one that is already started, finished
+ * or cancelled returns nothing.
  */
 export function waitsOn(from: Foreman | Snapshot, id: string): Reason[] {
   const s = snap(from);
   const t = s.tasks.get(id);
   return t ? reasonsFor(s, t) : [];
+}
+
+/**
+ * What holds a dispatcher that covers the task: every reason but "no dispatcher", which
+ * is about whether one runs, not about the task.
+ */
+export function holdsDispatch(reasons: Reason[]): Reason[] {
+  return held(reasons);
 }
 
 /**
@@ -181,6 +205,8 @@ export function reasonText(r: Reason): string {
       return `its paths overlap ${r.task}'s (${words(r.status)})`;
     case "human":
       return `risk "human": a person does it`;
+    case "no dispatcher":
+      return "no running dispatcher covers it";
   }
 }
 
@@ -227,9 +253,10 @@ function endOf(s: Snapshot, t: Task, reasons: Reason[]): Leaf | undefined {
       return leaf("needs a person", "is marked ready (a draft)");
     case "ready": {
       if (t.risk === "human") return leaf("needs a person", `is done by a person (risk "human")`);
-      if (reasons.length) return undefined; // the tasks it waits on carry the path further
+      if (held(reasons).length) return undefined; // the tasks it waits on carry the path further
       const back = cameBack(s, t.id);
       if (back) return leaf("stuck", `gets a new run (${back})`);
+      if (reasons.length) return leaf("no dispatcher", "is picked up (can start, but no dispatcher covers it)");
       return leaf("can start", "is picked up (ready, nothing to wait on)");
     }
   }
@@ -327,10 +354,11 @@ export function waitShort(from: Foreman | Snapshot, id: string): string | null {
   const first = waitsOn(s, id).find((r) => r.kind !== "draft");
   if (!first) return null;
   if (first.kind === "human") return "waits: a person (risk human)";
+  if (first.kind === "no dispatcher") return "waits: no dispatcher";
   const head = first.kind === "blocked" ? first.task : first.kind === "step" ? `step ${first.step} of ${first.plan}` : `paths overlap ${first.task}`;
   const leaf = pathOf(s, id).leaves.find((l) => l.task !== id || l.text.startsWith("cycle:"));
   if (!leaf) return `waits: ${head}`;
-  const state = leaf.text.startsWith("cycle:") ? "cycle" : words(leaf.status);
+  const state = leaf.text.startsWith("cycle:") ? "cycle" : leaf.kind === "no dispatcher" ? `${words(leaf.status)}, no dispatcher` : words(leaf.status);
   const direct = first.kind !== "step" && first.task === leaf.task;
   return `waits: ${head}${direct ? "" : ` <- ${leaf.task}`} (${state})`;
 }

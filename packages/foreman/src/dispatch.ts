@@ -7,13 +7,15 @@
 // - Workers and verifiers run as `claude --bg` sessions the person sees in `claude agents`
 //   (D0022), unless --print or FOREMAN_LAUNCH=print asks for D0011's print mode.
 // - While it runs it keeps a record of itself in the registry (D0041, dispatchers.ts).
+// - With `plans` it takes only those plans' tasks, and stays up until the plans have
+//   nothing left that could start without a person (D0045).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type Actor, type Event, Foreman, ForemanError, type Status, type Task } from "./core";
-import { type DispatcherSession, registerDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
+import { type DispatcherScope, type DispatcherSession, scopeCovers, scopeOf, scopePlans, startDispatcher, touchDispatcher, unregisterDispatcher } from "./dispatchers";
 import { actorFor, type BgSession, launch, type LaunchMode, type LaunchOptions, type Role } from "./launch";
 import { loadConfig } from "./policy";
-import { reasonText, waitsOn } from "./waiting";
+import { holdsDispatch, pathOf, reasonText, snapshot, type Snapshot, waitsOn } from "./waiting";
 import { removeFinishedSessions } from "./janitor";
 
 /** What the dispatcher needs back from a session. */
@@ -207,6 +209,12 @@ export interface DispatchOptions {
   once?: boolean;
   /** Only start verifiers for submitted tasks: never claim a ready task. */
   verifyOnly?: boolean;
+  /**
+   * Take only these plans' tasks (D0045): workers for their ready tasks, verifiers for
+   * their submitted ones. It then stays up until nothing of the plans is left that could
+   * start without a person. None: the whole board.
+   */
+  plans?: string[];
   model?: string;
   /** Each session's --max-budget-usd. Default: the role's own limit. */
   budgetUsd?: number;
@@ -245,6 +253,8 @@ export interface SessionRecord {
 
 export class Dispatcher {
   readonly max: number;
+  /** What it takes work from: "everything", or its plans (D0045). */
+  readonly scope: DispatcherScope;
   private running = new Map<string, { role: Role; done: Promise<void>; rec: SessionRecord }>();
   /** Roles already started per task in this run: each task gets one worker and one verifier. */
   private tried = new Map<string, Set<Role>>();
@@ -263,6 +273,12 @@ export class Dispatcher {
   ) {
     this.max = opts.max ?? 3;
     if (!Number.isInteger(this.max) || this.max < 1) throw new ForemanError("invalid", `--max must be a whole number of at least 1, got ${opts.max}`);
+    this.scope = scopeOf(opts.plans);
+    for (const id of scopePlans(this.scope) ?? []) {
+      const plan = f.db.query(`SELECT status FROM plans WHERE id = ?`).get(id) as { status: string } | null;
+      if (!plan) throw new ForemanError("not_found", `no plan ${id}`);
+      if (plan.status === "cancelled") throw new ForemanError("invalid", `plan ${id} is cancelled: nothing to dispatch`);
+    }
     this.launcher = opts.launcher ?? defaultLauncher;
     this.worktrees = opts.worktrees ?? gitWorktree();
     this.actor = opts.actor ?? { name: "dispatcher", kind: "agent" };
@@ -326,11 +342,14 @@ export class Dispatcher {
       /* tried again next tick */
     }
     const free = () => this.running.size < this.max;
+    // Which plan each task is in doesn't change within a pass.
+    const place = snapshot(this.f).place;
+    const mine = (t: Task) => scopeCovers(this.scope, place.get(t.id)?.plan);
 
     // Finish work before starting more: submitted tasks get a verifier first.
     for (const t of this.f.list({ status: ["in_review"] })) {
       if (!free()) break;
-      if (this.running.has(t.id) || this.triedRole(t.id, "verifier")) continue;
+      if (!mine(t) || this.running.has(t.id) || this.triedRole(t.id, "verifier")) continue;
       if (!t.worktree || !existsSync(t.worktree)) continue; // nowhere to verify it
       this.startVerifier(t);
     }
@@ -340,10 +359,11 @@ export class Dispatcher {
     this.first = false;
     for (const t of this.f.ready("agent")) {
       if (!free()) break;
-      if (this.running.has(t.id) || this.triedRole(t.id, "worker")) continue;
+      if (!mine(t) || this.running.has(t.id) || this.triedRole(t.id, "worker")) continue;
       // Asked again for each task, so a worker started a moment ago in this pass counts.
-      // What is left for a claimable task is an overlap with a task in flight (waiting.ts).
-      const waits = waitsOn(this.f, t.id);
+      // What is left for a claimable task is an overlap with a task in flight (waiting.ts),
+      // another dispatcher's included. "no dispatcher" isn't a hold: this is one.
+      const waits = holdsDispatch(waitsOn(this.f, t.id));
       if (waits.length) {
         this.log(`${t.id} waits: ${reasonText(waits[0]!)}`);
         continue;
@@ -462,6 +482,7 @@ export class Dispatcher {
    * Run until nothing is running and nothing more can start. For that time the dispatcher
    * is in the registry (D0041): the record goes when run() ends, and when the process
    * exits or is interrupted. A kill that skips both leaves a record the next read drops.
+   * Refused when a dispatcher with the same scope already runs (D0045).
    */
   async run(): Promise<SessionRecord[]> {
     const pid = process.pid;
@@ -475,8 +496,9 @@ export class Dispatcher {
     // An interrupt must end in process.exit, so "exit" listeners run: this one, and the
     // launch adapter's, which stops the sessions.
     const signals = (["SIGINT", "SIGTERM"] as const).map((sig, i) => ({ sig, on: () => process.exit([130, 143][i]) }));
-    registerDispatcher(this.f, {
+    startDispatcher(this.f, {
       pid,
+      scope: this.scope,
       max: this.max,
       flags: { once: this.opts.once === true, verifyOnly: this.opts.verifyOnly === true, print: launchModeFrom(this.opts.mode) === "print" },
       starter: { name: this.actor.name, kind: this.actor.kind, session: this.opts.starterSession ?? (process.env.CLAUDE_CODE_SESSION_ID || undefined) },
@@ -494,11 +516,57 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * A plan dispatcher with nothing running: is there still something of its plans it would
+   * start later, once a task someone else holds, or one that can start, has moved (D0045)?
+   * Not when all that is left is done, approved, waiting for a person, or has had its one
+   * try here. The whole-board dispatcher never waits: it ends when nothing runs, as before.
+   */
+  moreToCome(): boolean {
+    if (scopePlans(this.scope) === null || this.opts.once) return false;
+    const s = snapshot(this.f);
+    for (const t of s.order) {
+      if (!scopeCovers(this.scope, s.place.get(t.id)?.plan)) continue;
+      switch (t.status) {
+        case "claimed":
+        case "in_progress":
+          // Someone else's worker: its task comes here for a verifier when it is submitted.
+          if (!this.triedRole(t.id, "verifier")) return true;
+          break;
+        case "verifying":
+          // Someone else's verifier: a failed verdict makes it ready again, for a worker from here.
+          if (!this.opts.verifyOnly && !this.triedRole(t.id, "worker")) return true;
+          break;
+        case "in_review":
+          if (!this.triedRole(t.id, "verifier") && t.worktree && existsSync(t.worktree)) return true;
+          break;
+        case "ready":
+          if (!this.opts.verifyOnly && t.risk !== "human" && !this.triedRole(t.id, "worker") && this.canMove(s, t.id)) return true;
+          break;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Does what the task waits on end somewhere that moves without a person: a session
+   * running, or a task a dispatcher will pick up (this one, unless it had its try here)?
+   */
+  private canMove(s: Snapshot, id: string): boolean {
+    return pathOf(s, id).leaves.some((l) => {
+      if (l.kind === "running") return true;
+      if (l.kind !== "can start" && l.kind !== "no dispatcher") return false;
+      // Another dispatcher's task, or the merge queue's: it moves if something will pick it up.
+      if (l.status === "approved" || !scopeCovers(this.scope, s.place.get(l.task)?.plan)) return l.kind === "can start";
+      return !this.triedRole(l.task, l.status === "in_review" ? "verifier" : "worker");
+    });
+  }
+
   private async loop(): Promise<SessionRecord[]> {
     const pollMs = this.opts.pollMs ?? 10_000;
     for (;;) {
       this.tick();
-      if (this.running.size === 0) return this.sessions;
+      if (this.running.size === 0 && !this.moreToCome()) return this.sessions;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const poll = new Promise<void>((res) => {
         timer = setTimeout(res, pollMs);

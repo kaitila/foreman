@@ -1,6 +1,6 @@
 # D0041. A running dispatcher records itself in the task database (2026-11-10)
 
-**Status:** Active
+**Status:** Amended by D0045
 
 **Context:** [D0011](D0011-foreman-dispatch.md)'s dispatcher was recorded nowhere. The only way to know one was running, with what `--max` and on which tasks, was `pgrep -af "fm dispatch"` and reading its terminal. The board can't show that, and a later step scopes a dispatcher to a plan, which needs somewhere to say so. Amends D0011.
 

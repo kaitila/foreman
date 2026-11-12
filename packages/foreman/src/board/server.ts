@@ -164,6 +164,12 @@ export function placement(f: Foreman, taskId: string) {
 }
 
 /**
+ * The board doesn't say yet which ready tasks no dispatcher covers (D0045): it reads the
+ * rule without that reason, so a free task still shows as "can start". T-0120 adds it.
+ */
+const boardSnapshot = (f: Foreman): Snapshot => snapshot(f, { dispatchers: false });
+
+/**
  * What a waiting task's row shows (T-0118), all of it from waiting.ts (D0042): the first direct
  * reason, where its path ends (`end`: the first place that isn't the task itself), every leaf,
  * the depth, the "moves when" line, the whole chain as text for the title, and the tasks on the
@@ -227,7 +233,7 @@ export function waitDetail(s: Snapshot, id: string) {
  * no task that waits (empty, or already started) names none.
  */
 export function plansWithWaits(f: Foreman, plans: Plan[]) {
-  const s = snapshot(f);
+  const s = boardSnapshot(f);
   return plans.map((p) => ({
     ...p,
     steps: p.steps.map((step) => {
@@ -305,7 +311,7 @@ export function startBoard(opts: BoardOptions): Board {
     const byTask = new Map<string, Event[]>();
     for (const e of evs) if (e.taskId) (byTask.get(e.taskId) ?? byTask.set(e.taskId, []).get(e.taskId)!).push(e);
     // Why each task waits and what it holds up (T-0118), from one snapshot of the tasks.
-    const s = snapshot(c.f);
+    const s = boardSnapshot(c.f);
     return {
       color: labels.get(c.dir),
       lanes: LANES,
@@ -463,7 +469,7 @@ export function startBoard(opts: BoardOptions): Board {
               role: s.role, actor: s.actor, name: s.name ?? null, id: s.id ?? null, live: s.live,
               ...(s.path ? recentActivity(s.path, 10) : { lines: [], turns: 0, costUsd: 0 }),
             }));
-            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions, placement: placement(f, t.id), waiting: waitDetail(snapshot(f), t.id) });
+            return json({ task: t, checks: checksWithVerdicts(t, events), events, sessions, placement: placement(f, t.id), waiting: waitDetail(boardSnapshot(f), t.id) });
           }
           return fail(404, "not_found", "no such page");
         }
