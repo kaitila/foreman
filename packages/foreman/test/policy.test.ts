@@ -1,6 +1,9 @@
-// pathsOverlap and globsOverlap: when the dispatcher keeps two tasks apart (D0011, D0037, D0038).
+// pathsOverlap and globsOverlap: when the dispatcher keeps two tasks apart (D0011, D0037, D0038, D0043).
 import { describe, expect, test } from "bun:test";
-import { globsOverlap, mayTouchProtected, pathsOverlap } from "../src/policy";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { globsOverlap, loadShared, mayTouchProtected, pathsOverlap } from "../src/policy";
 
 // Both orders, since overlap is symmetric.
 const overlap = (p: string, q: string) => {
@@ -89,5 +92,61 @@ describe("pathsOverlap", () => {
 
   test("any other shared path still overlaps", () => {
     expect(pathsOverlap(["src/a/**", "docs/decisions/**"], ["src/a/x.ts", "docs/decisions/**"])).toBe(true);
+  });
+});
+
+describe("sharedPaths (D0043)", () => {
+  const shared = ["docs/decisions/**", "README.md", "docs/changelog/**", "notes/*.md"];
+
+  test("two tasks whose only common path is a shared file run side by side", () => {
+    expect(pathsOverlap(["src/a/**", "README.md"], ["src/b/**", "README.md"], shared)).toBe(false);
+    expect(pathsOverlap(["README.md"], ["README.md"])).toBe(true); // not shared unless the repo says so
+  });
+
+  test("a shared folder holds every path and glob under it", () => {
+    expect(pathsOverlap(["docs/changelog/**"], ["docs/changelog/2026.md"], shared)).toBe(false);
+    expect(pathsOverlap(["docs/changelog/*.md"], ["docs/changelog/**"], shared)).toBe(false);
+    expect(pathsOverlap(["docs/decisions/**"], ["docs/decisions/**"], shared)).toBe(false);
+  });
+
+  test("a glob reaching past the shared path still overlaps it", () => {
+    expect(pathsOverlap(["**/*.md"], ["README.md"], shared)).toBe(true);
+    expect(pathsOverlap(["docs/**"], ["docs/changelog/**"], shared)).toBe(true);
+    expect(pathsOverlap(["*.md"], ["README.md"], shared)).toBe(true);
+  });
+
+  test("a shared glob that isn't a whole folder covers plain paths and itself only", () => {
+    expect(pathsOverlap(["notes/a.md"], ["notes/a.md"], shared)).toBe(false);
+    expect(pathsOverlap(["notes/*.md"], ["notes/a.md"], shared)).toBe(false);
+    expect(pathsOverlap(["notes/a*.md"], ["notes/a.md"], shared)).toBe(true); // could it match a file notes/*.md doesn't? don't guess
+  });
+
+  test("other common paths still overlap, and no declared paths overlaps everything", () => {
+    expect(pathsOverlap(["src/a/**", "README.md"], ["src/a/x.ts", "README.md"], shared)).toBe(true);
+    expect(pathsOverlap([], ["README.md"], shared)).toBe(true);
+  });
+
+  test("loadShared: the decision log, then foreman.json's sharedPaths; a bad value is refused", () => {
+    const repo = (json: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "fm-shared-"));
+      writeFileSync(join(dir, "foreman.json"), json);
+      return dir;
+    };
+    expect(loadShared(null)).toEqual(["docs/decisions/**"]);
+    expect(loadShared(repo("{}"))).toEqual(["docs/decisions/**"]);
+    expect(loadShared(repo('{ "sharedPaths": ["README.md", "docs/decisions/**"] }'))).toEqual(["docs/decisions/**", "README.md"]);
+    expect(() => loadShared(repo('{ "sharedPaths": "README.md" }'))).toThrow("sharedPaths");
+    expect(() => loadShared(repo('{ "sharedPaths": [""] }'))).toThrow("sharedPaths");
+  });
+
+  test("this repo protects the files that enforce sign-off, each of which exists", () => {
+    const root = join(import.meta.dir, "../../..");
+    const fj = JSON.parse(readFileSync(join(root, "foreman.json"), "utf8")) as { protectedPaths: string[]; sharedPaths: string[] };
+    const plain = [...fj.protectedPaths, ...fj.sharedPaths].filter((p) => !/[*?[{]/.test(p) && p.startsWith("packages/"));
+    expect(plain).toContain("packages/foreman/src/cli/approve.ts");
+    for (const p of plain) expect(`${p}: ${existsSync(join(root, p))}`).toBe(`${p}: true`);
+    // The board, plans and the other commands merge on a passing verdict (D0044).
+    expect(mayTouchProtected(["packages/foreman/src/board/page.ts", "packages/foreman/src/cli/plan.ts"], fj.protectedPaths)).toBe(false);
+    expect(mayTouchProtected(["packages/foreman/src/**"], fj.protectedPaths)).toBe(true);
   });
 });

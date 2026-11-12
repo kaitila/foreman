@@ -64,6 +64,8 @@ export const DEFAULT_NUMBERS: Record<string, NumberSource> = {
 
 export interface Config {
   protectedPaths?: string[];
+  /** Files several tasks may edit at once: two tasks whose only common paths are these run side by side (D0043). */
+  sharedPaths?: string[];
   numbers?: Record<string, NumberSource>;
   /** Shell command that prepares a fresh worktree (e.g. "bun install && bun install --cwd web"); the dispatcher runs it once per new worktree. */
   setup?: string;
@@ -190,21 +192,43 @@ export function mayTouchProtected(paths: string[], protectedPaths: string[]): bo
   return paths.some((p) => protectedPaths.some((q) => sameFiles(p, q) || reaches(p, q)));
 }
 
-/** The decision log. Tasks add files here with reserved numbers, and its index is generated. */
-const DECISIONS = "docs/decisions/";
+/** The decision log: always shared (D0037). Tasks add files here with reserved numbers. */
+export const DEFAULT_SHARED = ["docs/decisions/**"];
 
-/** Does the glob only match files in the decision log? */
-const inDecisions = (g: string) => prefix(g).startsWith(DECISIONS);
+/** A repo's shared paths: the decision log, then foreman.json's "sharedPaths" (D0043). Throws if that isn't a list of globs. */
+export function loadShared(root: string | null): string[] {
+  const { sharedPaths } = loadConfig(root);
+  if (sharedPaths === undefined) return DEFAULT_SHARED;
+  if (!Array.isArray(sharedPaths) || sharedPaths.some((g) => typeof g !== "string" || g === "")) {
+    throw new Error('foreman.json sharedPaths: must be a list of paths or globs, like ["README.md", "docs/changelog/**"]');
+  }
+  return [...new Set([...DEFAULT_SHARED, ...sharedPaths])];
+}
+
+/**
+ * Does glob g only match files that shared glob s covers? A plain path is matched against s.
+ * A glob counts only when s is a whole folder ("docs/decisions/**") and g stays inside it,
+ * or when the two are the same: anything else could reach a file s doesn't cover.
+ */
+function within(g: string, s: string): boolean {
+  if (g === s) return true;
+  const sp = prefix(s);
+  if (sp === s) return false; // s is one file: only that path is inside it
+  if (prefix(g) === g) return new Bun.Glob(s).match(g);
+  return sp !== "" && s === `${sp}**` && prefix(g).startsWith(sp);
+}
 
 /**
  * Could two tasks edit the same file? A task that declares no paths could touch
  * anything, so it overlaps every task (the dispatcher keeps it apart from the rest).
- * Two globs that both stay inside docs/decisions/ don't count (D0037): new decision
- * files take reserved numbers and the index is regenerated, so they never clash.
+ * Two globs that both stay inside shared paths don't count: the decision log (D0037: new
+ * files take reserved numbers, so they never clash) and foreman.json's "sharedPaths"
+ * (D0043: files most tasks touch, where a rare conflict costs less than running in turn).
  */
-export function pathsOverlap(a: string[], b: string[]): boolean {
+export function pathsOverlap(a: string[], b: string[], shared: string[] = DEFAULT_SHARED): boolean {
   if (a.length === 0 || b.length === 0) return true;
-  return a.some((p) => b.some((q) => !(inDecisions(p) && inDecisions(q)) && globsOverlap(p, q)));
+  const isShared = (g: string) => shared.some((s) => within(g, s));
+  return a.some((p) => b.some((q) => !(isShared(p) && isShared(q)) && globsOverlap(p, q)));
 }
 
 /** Runs a command: its trimmed stdout, or null if it failed. gh and git go through one, so tests need no network. */

@@ -1,7 +1,7 @@
 // The dispatcher (D0011) with a fake launcher: no Claude Code runs, sessions are
 // promises the test settles. One opt-in live test at the end runs the real thing.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Actor, Foreman, type Task } from "../src/core";
@@ -148,6 +148,26 @@ describe("dispatch", () => {
     // Any other shared path still makes a task wait.
     expect(env.f.get(c.id).status).toBe("ready");
     expect(env.log.some((l) => l.includes(`${c.id} waits`) && l.includes(a.id))).toBe(true);
+  });
+
+  test("tasks that share only foreman.json's sharedPaths run at once (D0043)", () => {
+    const env = setup();
+    const config = join(dir, "foreman.json");
+    const a = env.add("a", ["src/a/**", "README.md"]);
+    const b = env.add("b", ["src/b/**", "README.md"]);
+    const c = env.add("c", ["src/c/**", "README.md"]);
+    try {
+      // Without the setting, the README keeps them apart.
+      const d = env.dispatcher({ max: 3 });
+      d.tick();
+      expect(env.sessions.map((s) => s.opts.taskId)).toEqual([a.id]);
+      // The setting is read on each pass: no restart.
+      writeFileSync(config, JSON.stringify({ sharedPaths: ["README.md"] }));
+      d.tick();
+      expect(env.sessions.map((s) => s.opts.taskId)).toEqual([a.id, b.id, c.id]);
+    } finally {
+      rmSync(config, { force: true });
+    }
   });
 
   test("a task without declared paths overlaps everything", () => {
