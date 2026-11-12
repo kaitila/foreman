@@ -1,6 +1,6 @@
 # D0042. Plan steps gate, and one function says why a task waits (2026-11-11)
 
-**Status:** Active
+**Status:** Amended by D0045
 
 **Context:** The reasons a task didn't start lived in three places and none was shown. `Foreman.ready()` dropped tasks with an unfinished `blockedBy`. The dispatcher skipped tasks whose paths overlapped one in flight and said so only in its own log. And a plan's step order held nothing back: [D0033](D0033-plans.md) made steps a way to read progress, so a ready task in step 3 started beside step 1 unless someone repeated the order as `blockedBy` on every task. A person looking at a waiting task saw at most "blocked by T-x", not what T-x itself waited on. Amends D0033 (steps were display only) and [D0011](D0011-foreman-dispatch.md) (the overlap rule moves out of the dispatcher).
 

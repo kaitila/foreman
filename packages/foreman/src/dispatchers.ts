@@ -217,7 +217,7 @@ export interface Stopped {
   scope: DispatcherScope;
   /** What it had running when it was told to stop. */
   sessions: DispatcherSession[];
-  /** Tasks of those sessions whose leases were released: back to ready, or in_review for a verifier. */
+  /** Tasks of those sessions whose leases were released here (back to ready, or in_review for a verifier); another reclaim may have got to one first. */
   released: string[];
   /** Session pids still alive when the wait ran out. */
   stillRunning: number[];
@@ -259,7 +259,7 @@ export function stoppedText(s: Stopped, statusOf: (task: string) => string): str
   return lines.join("\n");
 }
 
-/** `pid 4242  everything  2/3 slots (a plan dispatcher: `P-0004` in place of `everything`)  by ada  up 5 min  T-0001 worker, T-0002 verifier` */
+/** `pid 4242  everything  2/3 slots  by ada  up 5 min  T-0001 worker, T-0002 verifier`; a plan dispatcher has its plans (`P-0004`) in place of `everything`. */
 export function dispatcherLine(d: DispatcherInfo, now: number = Date.now()): string {
   const flags = [d.flags.once && "--once", d.flags.verifyOnly && "--verify-only", d.flags.print && "--print"].filter(Boolean).join(" ");
   const tasks = d.sessions.map((s) => `${s.task} ${s.role}`).join(", ") || "nothing in flight";

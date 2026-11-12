@@ -82,15 +82,18 @@ export interface Snapshot {
   place: Map<string, { plan: string; step: number }>;
   /** Plan id to its steps, in order. */
   steps: Map<string, { n: number; title: string; tasks: string[] }[]>;
-  /** The dispatchers running now: their scopes and flags say which ready tasks one would start. */
-  dispatchers: Pick<DispatcherInfo, "scope" | "flags">[];
+  /**
+   * The dispatchers running now: their scopes and flags say which ready tasks one would
+   * start. null: not asked, so nothing is reported as "no dispatcher".
+   */
+  dispatchers: Pick<DispatcherInfo, "scope" | "flags">[] | null;
   /** The repo's shared paths (D0043), once something has needed them. */
   shared?: string[];
 }
 
 type Row = Record<string, unknown>;
 
-export function snapshot(f: Foreman): Snapshot {
+export function snapshot(f: Foreman, o: { dispatchers?: boolean } = {}): Snapshot {
   const order = f.list();
   const place: Snapshot["place"] = new Map();
   const steps: Snapshot["steps"] = new Map();
@@ -113,7 +116,7 @@ export function snapshot(f: Foreman): Snapshot {
     place.set(r.task_id as string, { plan: r.plan_id as string, step: r.step as number });
   }
   // Read only: a snapshot is taken on every read of the board, and dropping dead records is the registry's job.
-  const dispatchers = runningDispatchers(f, { drop: false });
+  const dispatchers = o.dispatchers === false ? null : runningDispatchers(f, { drop: false });
   return { f, order, tasks: new Map(order.map((t) => [t.id, t])), place, steps, dispatchers };
 }
 
@@ -151,7 +154,7 @@ function reasonsFor(s: Snapshot, t: Task): Reason[] {
   }
   if (t.risk === "human") out.push({ kind: "human" });
   // Only when it is the whole answer: a task that waits on something else isn't waiting for a dispatcher yet.
-  if (!out.length && t.status === "ready" && !s.dispatchers.some((d) => startsWorkers(d, at?.plan))) out.push({ kind: "no dispatcher" });
+  if (!out.length && t.status === "ready" && s.dispatchers && !s.dispatchers.some((d) => startsWorkers(d, at?.plan))) out.push({ kind: "no dispatcher" });
   return out;
 }
 

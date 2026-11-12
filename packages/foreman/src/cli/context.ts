@@ -9,7 +9,9 @@ export function parse(argv: string[]) {
   // `show --path` takes no value, but --path is a glob flag elsewhere: take it out before parsing.
   const treeOnly = argv.find((a) => !a.startsWith("-")) === "show" && argv.includes("--path");
   const parsed = parseFlags(treeOnly ? argv.filter((a) => a !== "--path") : argv);
-  return { ...parsed, values: { ...parsed.values, treeOnly } };
+  // --plan names one plan everywhere but `dispatch`, which takes several: `plan` is the last given, `plans` all of them.
+  const plans = parsed.values.plan ?? [];
+  return { ...parsed, values: { ...parsed.values, plan: plans.at(-1), plans, treeOnly } };
 }
 
 function parseFlags(argv: string[]) {
@@ -68,7 +70,8 @@ function parseFlags(argv: string[]) {
       "no-link": { type: "boolean" },
       follow: { type: "boolean", short: "f" },
       goal: { type: "string" },
-      plan: { type: "string" },
+      plan: { type: "string", multiple: true },
+      stop: { type: "string" },
       step: { type: "string", multiple: true },
     },
   });
