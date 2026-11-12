@@ -40,17 +40,47 @@ function readFile(file: string): { projects?: unknown; colors?: unknown } {
   }
 }
 
-/** The registered directories, in the order they were added. A missing or damaged file is empty. */
-export function readRegistry(file = registryPath()): string[] {
-  const j = readFile(file);
-  return Array.isArray(j.projects) ? j.projects.filter((d): d is string => typeof d === "string") : [];
+/**
+ * The one spelling of a directory the registry goes by: its real path, so a repo reached through
+ * a symlink and by its real path is one project (T-0108). A path that no longer exists stays as
+ * written, so a stale entry still lists and `fm projects prune` removes it.
+ */
+export function realDir(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
 }
 
-/** Each directory's colour label. Unknown colours and malformed entries are left out. */
+/**
+ * The registered directories, in the order they were added, each as its real path and listed
+ * once: a file that holds one repo under two spellings reads as one project without anyone
+ * editing it, and the next write stores it that way. A missing or damaged file is empty.
+ */
+export function readRegistry(file = registryPath()): string[] {
+  const j = readFile(file);
+  const stored = Array.isArray(j.projects) ? j.projects.filter((d): d is string => typeof d === "string") : [];
+  return [...new Set(stored.map(realDir))];
+}
+
+/**
+ * Each directory's colour label, keyed by its real path, so a label set under a symlinked
+ * spelling still shows. If two spellings of one directory carry labels, the real path's wins.
+ * Unknown colours and malformed entries are left out.
+ */
 export function readColors(file = registryPath()): Record<string, LabelColor> {
   const c = readFile(file).colors;
   const out: Record<string, LabelColor> = {};
-  if (c && typeof c === "object" && !Array.isArray(c)) for (const [dir, v] of Object.entries(c)) if (isLabelColor(v)) out[dir] = v;
+  if (!c || typeof c !== "object" || Array.isArray(c)) return out;
+  const exact = new Set<string>();
+  for (const [dir, v] of Object.entries(c)) {
+    if (!isLabelColor(v)) continue;
+    const real = realDir(dir);
+    if (exact.has(real)) continue;
+    out[real] = v;
+    if (real === dir) exact.add(real);
+  }
   return out;
 }
 
@@ -69,6 +99,7 @@ function writeRegistry(dirs: string[], file: string, colors = readColors(file)) 
  * registered yet is added, so a board showing an unregistered repo can still label it.
  */
 export function setColor(dir: string, color: LabelColor | null, file = registryPath()): void {
+  dir = realDir(dir);
   const dirs = readRegistry(file);
   const colors = readColors(file);
   if (color) colors[dir] = color;
@@ -79,12 +110,13 @@ export function setColor(dir: string, color: LabelColor | null, file = registryP
 
 /**
  * Finds a registered project by the name `fm projects` lists, or by any directory inside it
- * (resolved to its repo root, as the registry stores it).
+ * (resolved to its repo root, as the registry stores it), under either spelling of a symlinked path.
  */
 export function findProject(nameOrDir: string, file = registryPath()): Project {
   const root = projectRoot(nameOrDir);
-  const dir = "root" in root ? root.root : resolve(nameOrDir);
-  const hit = listProjects(file).find((p) => p.dir === dir) ?? listProjects(file).find((p) => p.name === nameOrDir);
+  const dir = "root" in root ? root.root : realDir(resolve(nameOrDir));
+  const all = listProjects(file);
+  const hit = all.find((p) => p.dir === dir) ?? all.find((p) => p.name === nameOrDir);
   if (!hit) throw new ForemanError("not_found", `no registered project "${nameOrDir}" (fm projects lists them)`);
   return hit;
 }
@@ -126,10 +158,11 @@ export function addProject(dir: string, file = registryPath()): string {
   return p.root;
 }
 
-/** Removes by name or directory; returns the directory removed. */
+/** Removes by name or directory (either spelling of a symlinked path); returns the directory removed. */
 export function removeProject(nameOrDir: string, file = registryPath()): string {
   const dirs = readRegistry(file);
-  const hit = nameProjects(dirs).find((p) => p.name === nameOrDir || p.dir === resolve(nameOrDir));
+  const dir = realDir(resolve(nameOrDir));
+  const hit = nameProjects(dirs).find((p) => p.name === nameOrDir || p.dir === dir);
   if (!hit) throw new ForemanError("not_found", `no registered project "${nameOrDir}"`);
   writeRegistry(dirs.filter((d) => d !== hit.dir), file);
   return hit.dir;
