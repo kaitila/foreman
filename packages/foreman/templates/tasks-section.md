@@ -2,6 +2,7 @@
 Work here is tracked in foreman: the MCP server `foreman` in `.mcp.json`, or its CLI, `fm help` (install it with `bun add -g @foreman-kit/foreman`). Its board is in `.foreman/`, which git ignores.
 - Before starting: `next_tasks`, then `claim_task`. A request that has no task yet: search `list_tasks`, then `create_task` with acceptance checks and the paths it may touch.
 - Code tasks follow the `ship` skill. Report with `report_progress`, hand in with `submit_task` and the PR.
+- Work of more than one task that the person wants done by agents: follow the `run-plan` skill. File a plan (`create_plan`, then `create_task` with `plan` and `step`), start its dispatcher with `run_plan` on their yes, and follow it with `watch_plan`.
 - The work needs files outside your task's paths: `edit_task` with `addPaths`. A gap found after you submitted: `rework_task` with the reason, then claim it again. Once a person has approved it, don't rework it (foreman refuses): file the new work as its own task with `discoveredFrom`, or ask the person.
 - Found other work on the way: search `list_tasks`, then `create_task` with `discoveredFrom`.
 - Numbers that must be unique (decision files, migrations): take them from `reserve_number`.

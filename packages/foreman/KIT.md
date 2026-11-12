@@ -26,7 +26,7 @@ Each prints one line per file: `created`, `updated`, `merged`, `kept`, `moved`, 
 foreman is always set up. The rest of the kit is in pieces, each chosen by name (`src/kit/pieces.ts`):
 - `docs`: the `AGENTS.md` and `CLAUDE.md` skeletons, and `docs/decisions/D0001-agent-kit.md` if the repo has no decisions yet. With `package.json`, also docs-check as a devDependency and a `docs:check` script. <!-- docs-check: elsewhere -->
 - `guardrails`: agent-kit's `.claude/settings.json` baseline and its hooks.
-- `skills`: the ship and verify skills, and the agents under `.claude/agents/`.
+- `skills`: the ship, verify and run-plan skills, and the agents under `.claude/agents/`.
 - `ci`: a CI workflow (`.github/workflows/ci.yml`, runs `bun run check`), only if the repo has no workflow and `package.json` has a `check` script, so it can pass.
 - `test-kit` and `design`: `@foreman-kit/test-kit` and `@foreman-kit/design-kit` as devDependencies.
 

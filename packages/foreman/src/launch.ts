@@ -71,6 +71,8 @@ const EDIT = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 const fm = (...names: string[]) => names.map((n) => `mcp__foreman__${n}`);
 /** foreman's tools that change plans. */
 const PLAN_WRITES = ["create_plan", "edit_plan", "plan_task"];
+/** foreman's tools that start or stop a dispatcher: never for a session a dispatcher started (D0048; run-plan.ts refuses them too). */
+const PLAN_RUNS = ["run_plan", "stop_plan"];
 
 /**
  * Tools each role may use unless allowedTools overrides, and tools it must never get.
@@ -83,11 +85,11 @@ export const ROLE_TOOLS: Record<Role, { allowed: string[]; disallowed: string[] 
       ...fm("list_tasks", "next_tasks", "show_task", "create_task", "claim_task", "heartbeat", "report_progress", "submit_task", "reserve_number", "edit_task"),
     ],
     // Dispatched sessions don't shape plans (D0033; plans.ts refuses them too); a worker files tasks into one with create_task.
-    disallowed: fm("start_verify", "record_verdict", "mark_merged", "rework_task", ...PLAN_WRITES),
+    disallowed: fm("start_verify", "record_verdict", "mark_merged", "rework_task", ...PLAN_WRITES, ...PLAN_RUNS),
   },
   verifier: {
     allowed: [...READ, "Bash", "Skill", "TodoWrite", ...fm("show_task", "list_tasks", "start_verify", "record_verdict", "heartbeat")],
-    disallowed: [...EDIT, ...fm(...PLAN_WRITES)],
+    disallowed: [...EDIT, ...fm(...PLAN_WRITES, ...PLAN_RUNS)],
   },
   intake: {
     // Files a plan when the request is two or more tasks (T-0098); plans.ts limits it to its own plan and tasks.
@@ -95,7 +97,7 @@ export const ROLE_TOOLS: Record<Role, { allowed: string[]; disallowed: string[] 
     disallowed: [
       ...EDIT, "Bash",
       ...fm("next_tasks", "claim_task", "heartbeat", "report_progress", "submit_task", "start_verify",
-        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task", "edit_plan"),
+        "record_verdict", "mark_merged", "reserve_number", "edit_task", "rework_task", "edit_plan", ...PLAN_RUNS),
     ],
   },
 };

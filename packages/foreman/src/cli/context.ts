@@ -74,6 +74,8 @@ function parseFlags(argv: string[]) {
       goal: { type: "string" },
       plan: { type: "string", multiple: true },
       stop: { type: "string" },
+      since: { type: "string" },
+      timeout: { type: "string" },
       step: { type: "string", multiple: true },
     },
   });
