@@ -1,6 +1,6 @@
 {
   "name": "@foreman-kit/design-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One tokens file as the single source of a design, tokens.ts generated from it, a lint against raw colours and px, and screenshots for a design-critic agent",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/kaitila/foreman.git", "directory": "packages/design-kit" },

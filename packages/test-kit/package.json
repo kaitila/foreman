@@ -1,6 +1,6 @@
 {
   "name": "@foreman-kit/test-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Test infrastructure for Bun + Postgres projects worked on by parallel agents: worktree slots, fast DB reset, fixtures, fake network, fake LLM, affected tests",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/kaitila/foreman.git", "directory": "packages/test-kit" },
