@@ -1,6 +1,6 @@
 {
   "name": "@foreman-kit/agent-kit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The kit's guardrail baseline and templates for Claude Code projects: settings, hooks, subagents, skills. Shipped inside @foreman-kit/foreman (D0032)",
   "license": "MIT",
