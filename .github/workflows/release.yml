@@ -75,5 +75,5 @@ jobs:
         run: |
           npm --version
           for pkg in docs-check test-kit design-kit foreman; do
-            npm publish --provenance --access public dist/foreman-kit-"$pkg"-*.tgz
+            npm publish --provenance --access public ./dist/foreman-kit-"$pkg"-*.tgz
           done
