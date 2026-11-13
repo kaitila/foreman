@@ -1,6 +1,6 @@
 {
   "name": "@foreman-kit/docs-check",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keep a repository's docs true to its code: links, anchors, paths, one-file-per-decision log, references, review freshness, code-to-doc registries",
   "license": "MIT",
   "type": "module",

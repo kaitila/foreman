@@ -1,6 +1,6 @@
 {
   "name": "@foreman-kit/foreman",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local task layer for AI coding agents working in parallel git worktrees",
   "license": "MIT",
   "type": "module",
